@@ -31,6 +31,28 @@ struct HistoricalCalibrationManifestResolverTests {
         #expect(try Data(contentsOf: manifestURL) == original)
     }
 
+    @Test func missingArchiveSnapshotFallsBackToExactCurrentFile() throws {
+        let sandbox = try makeSandbox()
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+        let original = try productionManifestData()
+        _ = try writeManifest(original, root: sandbox)
+        let missingSnapshot = sandbox.appendingPathComponent(
+            ".photobench/calibration-archives/not-created/source-manifest.json"
+        )
+
+        let resolved = try HistoricalCalibrationManifestResolver.resolve(
+            root: sandbox,
+            manifestPath: "calibration/manifest-v4.json",
+            expectedSHA256: SHA256Digest.data(original),
+            expectedSuiteID: try decodedSuiteID(original),
+            archiveSnapshotURL: missingSnapshot
+        )
+
+        #expect(resolved.data == original)
+        #expect(resolved.source == .currentFile)
+        #expect(!FileManager.default.fileExists(atPath: missingSnapshot.path))
+    }
+
     @Test func historicalProcessingAndRAWProfileDoNotDependOnCurrentBuild() throws {
         let sandbox = try makeSandbox()
         defer { try? FileManager.default.removeItem(at: sandbox) }

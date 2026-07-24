@@ -1282,7 +1282,9 @@ public enum HistoricalCalibrationManifestResolver {
         let attributes: [FileAttributeKey: Any]
         do {
             attributes = try FileManager.default.attributesOfItem(atPath: standardizedURL.path)
-        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+        } catch let error as CocoaError where
+            error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile
+        {
             return nil
         } catch {
             throw CalibrationManifestError.invalid(
