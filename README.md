@@ -71,14 +71,14 @@ preview parityは、原寸・3,072px・3,840pxの各RAW decodeへ同じ編集を
 
 ## 性能基準の現在地
 
-manifest v4の最新正式benchmark archive `bbb5bc5b-7c12-4b29-b803-c863d6059d55`はeligibleで、4 workload中3件が合格しました。ただしWB観測source追加前のmanifest / sourceへ固定され、現行HEADとはfingerprintが異なります。production render graphの変更を示す差ではありませんが、現行sourceのformal性能合否としては未評価です。
+manifest v4の現行source正式benchmark run `74e553f0-6b7c-4e2a-9e5d-4f09bc2910ce`はeligibleで、manifest / source / binary / inputの開始・終了整合を確認し、4 workload中3件が合格しました。
 
 | engine workload | p95 | gate | 判定 |
 |---|---:|---:|---|
-| process-fresh tone preview | 357.9902 ms | ≤ 1,000 ms | 合格 |
-| warm exposure-perturbation proxy | 55.6492 ms | ≤ 50 ms | 不合格 |
-| warm full-current preview | 58.0227 ms | ≤ 300 ms | 合格 |
-| 原寸JPEG quality 0.92 | 225.9223 ms | ≤ 3,000 ms | 合格 |
+| process-fresh tone preview | 358.4783 ms | ≤ 1,000 ms | 合格 |
+| warm exposure-perturbation proxy | 60.1203 ms | ≤ 50 ms | 不合格 |
+| warm full-current preview | 61.8840 ms | ≤ 300 ms | 合格 |
+| 原寸JPEG quality 0.92 | 244.6853 ms | ≤ 3,000 ms | 合格 |
 
 slider proxyだけが50ms gateを超えました。これは1回のengine runで、安定性や実UIのinput-to-screen latencyを証明しません。canonical v3の連続3 runは履歴として残しますが、v4の合否へ継承しません。詳しくは[BENCHMARK.md](./BENCHMARK.md)を参照してください。
 

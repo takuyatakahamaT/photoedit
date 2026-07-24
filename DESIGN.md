@@ -31,7 +31,7 @@ P1では`interactive-preview`と`full-resolution`のdecode intent、原寸export
 
 RAW WBは製品経路を変えず、As Shotを既存production decoder delegateへ委ねた出力と、fresh `CIRAWFilter`へcustom neutralを設定した出力を比較する開発専用観測経路を追加した。正式run `51ba2f46-185d-4b87-8345-407d380214cd`は2 development scene、各18固定候補、合計40 artifact、setter順序のbyte一致、構造・hash・release provenance検証に合格した。中心customはAs Shotと平均ΔE `0.000151 / 0.000323`でほぼ一致した一方、Lightroom As Shotとの差は平均ΔE `3.6660 / 2.1292`残った。これは候補の優劣やAdobe→Apple変換を示さず、教師sweep・gray基準・sealed holdoutを揃えるまでproduction採用を禁止する。
 
-最新のarchived v4 formal benchmark run `bbb5bc5b-7c12-4b29-b803-c863d6059d55`は3 / 4合格し、warm sliderだけが`55.649 ms`で50ms gateを超えた。ただしWB観測source追加前のmanifest / sourceへ固定され、現行HEADとはfingerprintが異なるため、現行sourceの性能合否へ読み替えない。旧v3の連続3 runも履歴として残すが、v4の安定性証明へ混ぜない。
+現行sourceのv4 formal benchmark run `74e553f0-6b7c-4e2a-9e5d-4f09bc2910ce`は3 / 4合格し、warm sliderだけが`60.120 ms`で50ms gateを超えた。現行sourceのrunは1件だけなので安定性を証明せず、旧v4 / v3 runも履歴として残すが現行反復へ混ぜない。
 
 Metal直接表示のnative rasterは従来経路と全channel 1 LSB以内で一致し、queue / aspect fitも自動テストを通過した。最終ハードニング直前の実UI smokeではGPU commandが2回`completed`になった後、1回目は`presentedTime == 0`、2回目はpresented callback不返却となり、10秒deadlineでlegacyへfallbackした。その後に`drawableSize > 0`のwatchdog条件と`allowsNextDrawableTimeout = true`を追加し、最終sourceではfallback後のlegacy写真と空表示がないことを再確認したが、同じ詳細traceは再取得していない。したがってpositive presentation、実画面parity・p95・drop率・RSSは未承認である。
 
@@ -45,7 +45,7 @@ v4最終レポートでは、P1524180 / P1522877のRAW・Lightroom入力計4経�
 
 ### 1.3 性能ゲートの到達点
 
-manifest v4固定の24MP RAWをrelease buildで測った最新archiveでは、process-fresh `357.990 ms`、warm high-quality `58.023 ms`、原寸JPEG `225.922 ms`が合格し、warm slider `55.649 ms`だけが50ms gateに不合格だった。1 runだけで安定性を証明せず、現行HEADとはsource fingerprintも異なる。これは実験2,560px engine経路で、production full-decode UIやinput-to-screenを測ったものでもない。
+manifest v4固定の24MP RAWをrelease buildで測った現行source runでは、process-fresh `358.478 ms`、warm high-quality `61.884 ms`、原寸JPEG `244.685 ms`が合格し、warm slider `60.120 ms`だけが50ms gateに不合格だった。現行sourceのrunは1件だけで安定性を証明しない。これは実験2,560px engine経路で、production full-decode UIやinput-to-screenを測ったものでもない。
 
 ## 2. Goal
 
@@ -529,16 +529,16 @@ Mask
 
 ## 12. 性能目標
 
-完成形の目安とengine実測、製品UXを分けて管理する。Mac16,10 / Apple M4 / macOS 26.3.1、manifest v4既定24MP RAW、release buildの最新archived formal run（WB観測source追加前）は次のとおり。
+完成形の目安とengine実測、製品UXを分けて管理する。Mac16,10 / Apple M4 / macOS 26.3.1、manifest v4既定24MP RAW、release buildの現行source formal runは次のとおり。
 
-| engine workload | archived p95 | gate | 判定 |
+| engine workload | current-source p95 | gate | 判定 |
 |---|---:|---:|---|
-| process-fresh tone engine preview | 357.990 ms | ≤ 1,000 ms | 合格 |
-| warm exposure-perturbation engine proxy | 55.649 ms | ≤ 50 ms | 不合格 |
-| warm full-current-settings engine preview | 58.023 ms | ≤ 300 ms | 合格 |
-| 原寸JPEG quality 0.92 | 225.922 ms | ≤ 3,000 ms | 合格 |
+| process-fresh tone engine preview | 358.478 ms | ≤ 1,000 ms | 合格 |
+| warm exposure-perturbation engine proxy | 60.120 ms | ≤ 50 ms | 不合格 |
+| warm full-current-settings engine preview | 61.884 ms | ≤ 300 ms | 合格 |
+| 原寸JPEG quality 0.92 | 244.685 ms | ≤ 3,000 ms | 合格 |
 
-benchmark schema v3はrun / workload境界と40個のprocess-fresh workerの開始・終了にsystem loadを記録する。latest archive `bbb5bc5b-7c12-4b29-b803-c863d6059d55`は3 / 4合格だが、1回だけなので安定性を証明しない。さらに現行HEADとはmanifest SHA / source fingerprintが異なるため現行合否ではない。旧v3の3 runは履歴として`BENCHMARK.md`に残し、v4反復へ混ぜない。
+benchmark schema v3はrun / workload境界と40個のprocess-fresh workerの開始・終了にsystem loadを記録する。現行run `74e553f0-6b7c-4e2a-9e5d-4f09bc2910ce`は3 / 4合格だが、1回だけなので安定性を証明しない。旧v4 / v3 runは履歴として`BENCHMARK.md`に残し、現行反復へ混ぜない。
 
 manifest v4の3,072px候補は2 / 6、3,840px候補は4 / 6比較でspatial plateau gateに失敗し、両方不採用である。原寸full-decode graphのMetal直接描画は実装したが、実画面のpresent成功を確認できず、既定はlegacyを維持する。`cacheIntermediates = true`、draft / settle二層化、100% detail windowはそれぞれ別の受入条件とRSS / 知覚契約が必要な仮説であり、現時点の採用仕様ではない。
 
@@ -580,8 +580,8 @@ manifest v4の3,072px候補は2 / 6、3,840px候補は4 / 6比較でspatial plat
 #### Spike C: 操作と書き出し
 
 - JPEGとRW2を同じUIで表示する
-- 露出摂動proxyの直接2,560px実験engine p95はlatest archived v4 runで`55.649ms`となり、50ms gateに不合格
-- 原寸sRGB JPEGは24MP・品質92のarchived p95 `225.922ms`で3秒gateを通過。ただし1 runだけで、現行HEADとはsource fingerprintが異なる
+- 露出摂動proxyの直接2,560px実験engine p95は現行source v4 runで`60.120ms`となり、50ms gateに不合格
+- 原寸sRGB JPEGは24MP・品質92の現行source p95 `244.685ms`で3秒gateを通過。ただし現行sourceのrunは1件だけ
 - oversample parity v4は3,072pxが2 / 6、3,840pxが4 / 6比較でspatial plateau gateに不合格。productionは原寸decodeを維持する
 - 原寸decode graphのMetal直接経路はopt-inで実装。offscreen / native rasterの1 LSB parityは通過したが、実UIでpositive presentationは未確認、10秒deadlineからlegacyへのfallbackは成立
 - EXIF Orientation、DateTimeOriginal、Make/ModelとICC profileを保持する
@@ -779,7 +779,7 @@ Phase 1以降で追加:
 - manifest schema 4を正本に、7入力、26 calibration source、実行binary、122 artifactを開始前後と解析時にSHA-256検証するfail-closed校正基盤。run manifestはschema 2、analyzer reportはschema 5
 - 製品経路から分離したRAW WB観測runner。2scene×18固定候補、合計40 artifact、28 source、setter順序byte一致、metadata scrub、private input / Git拒否、release provenance、write-once runを検証し、候補順位やproduction採用を意図的に出力しない
 - `interactive-preview` / `full-resolution`の責務分離、RAW `scaleFactor`候補、共通Lanczos、1px morphologyを含む2シーン×2候補×3段階のpreview parity、run archive、app-side source fingerprint
-- release benchmark schema 3とsystem-load provenance。latest archived v4正式runは3 / 4合格でslider proxyだけ不合格。1 runかつ現行HEADとはfingerprint不一致なので、安定性と現行合否は未証明
+- release benchmark schema 3とsystem-load provenance。現行source v4正式runは3 / 4合格でslider proxyだけ不合格。1 runだけなので安定性は未証明
 - 正式parity v4で3,072pxを2 / 6、3,840pxを4 / 6比較不合格として不採用にし、productionの原寸decode維持を決定
 - canonical settle v4でextended-linear編集 → edge-clamped Lanczos → terminal sRGB変換を固定し、2 development sceneの縮小後clip非回帰を確認。旧v3失敗runはarchiveへ保持
 - `PHOTO_BENCH_PREVIEW_ROUTE=metal-direct`のopt-in原寸Metal直接表示、可視性・再試行・deadline・一方向fallback、signpost / counterを実装。native raster parityは通過、実画面presentは未成立

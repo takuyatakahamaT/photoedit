@@ -13,7 +13,7 @@
 
 - 画質と再現性: `.photobench/calibration/report.json`、`.photobench/calibration/run-manifest.json`
 - RAW WB観測: `.photobench/white-balance-observations/51ba2f46-185d-4b87-8345-407d380214cd/run.json`と同directoryの`analysis.json`
-- 性能: 最新のv4 formal archiveは`.photobench/benchmark/latest.json`とrun `bbb5bc5b-7c12-4b29-b803-c863d6059d55`。ただし現行HEADとはmanifest SHAとsource fingerprintが異なり、現行sourceの性能合否は未評価。旧v3の正本3 runは`5b2dae18` / `a13033d0` / `c2c4794f`で、いずれもv4の反復へ混ぜない
+- 性能: `.photobench/benchmark/latest.json`とrun `74e553f0-6b7c-4e2a-9e5d-4f09bc2910ce`が現行sourceのv4 formal正本。3 / 4合格でwarm sliderだけ不合格。旧v4 `bbb5bc5b...`と旧v3の正本3 run `5b2dae18` / `a13033d0` / `c2c4794f`は別sourceの履歴で、現行runの反復へ混ぜない
 - 入力、処理、閾値の現行契約: `calibration/manifest-v4.json`。manifest schema は 4、校正 run manifest schema は 2、派生する analyzer report schema は 5 と区別する
 
 `reviews/2026-07-24-claude-research-improvement-proposals.md` は、外部調査から得た仮説と優先順位案をまとめた助言資料である。ここにある数値、ライセンス解釈、製品比較、技術効果は未確認のものを含み、現行仕様や合格証跡ではない。Lightroom は当面継続するため、契約終了を急いで機能数だけを増やすのではなく、教師出力を活用して画像品質と日常機能を Lightroom と遜色ない水準へ近づける。個別仮説は新しい契約と実測で検証してから採否を決める。
@@ -164,7 +164,7 @@ Core Image RAW 8
 - canonical settle v4 は full-resolution RAWを `basic-legacy` / `full-current` で編集し、edge-clamped Lanczosで2,560pxへ縮小した後にterminal sRGB変換する同一production順序を固定。complete / near clipの画素数非増加と新規plateau面積を独立判定
 - path traversal、symlink、case-only alias、artifact 衝突、実行途中の変更を拒否
 - latest校正を置換する前に、旧complete runを全artifactのbyte count / SHA-256検証付きで`.photobench/calibration-archives/<run-id>/`へ退避
-- release benchmark schema 3でprocess-fresh、warm preview、slider proxy、原寸JPEGとsystem loadを記録。archived v4はsource / binary固定のformal runを1件保存しているが現行HEADとはfingerprint不一致で、旧v3連続3 runも別履歴として分離
+- release benchmark schema 3でprocess-fresh、warm preview、slider proxy、原寸JPEGとsystem loadを記録。現行source / binary固定のformal runを1件保存し、旧v4と旧v3連続3 runは別履歴として分離
 - 実装と証跡を Claude に設計・実装・最終レビューしてもらい、確定した指摘を文書とゲートへ反映
 
 ### 6.5 P1 preview / export 分離の安全基盤
@@ -260,16 +260,16 @@ preview parity v4は、このLightroom品質ゲートとは独立に、full-reso
 
 ### 7.5 性能の現在値
 
-Mac16,10 / Apple M4 / macOS 26.3.1のrelease buildで、24MP RAWをwarm各20回、process-fresh 40回測定したv4 formal archiveは1件である。ただしこれはWB観測source追加前のmanifest SHA `87a9ea...` / source fingerprint `1451c62b...`へ固定され、現行HEADと一致しない。production render graphの変更はないが、現行sourceのformal性能合否としては未評価である。測定する2,560px `interactive-preview` engine経路は画質不合格の実験候補で、実UIのfull-resolution decode、`MTKView`提示、入力イベントから画面到達までのlatencyを表さない。
+Mac16,10 / Apple M4 / macOS 26.3.1のrelease buildで、24MP RAWをwarm各20回、process-fresh 40回測定した現行sourceのv4 formal runは1件である。runはmanifest SHA `9da1fd...` / source fingerprint `b7d8c57f...`へ固定され、開始・終了時の入力・source・binary一致とeligible条件を満たした。測定する2,560px `interactive-preview` engine経路は画質不合格の実験候補で、実UIのfull-resolution decode、`MTKView`提示、入力イベントから画面到達までのlatencyを表さない。
 
 | workload | p95 | gate | 判定 |
 |---|---:|---:|---|
-| process-fresh tone engine preview | 357.9901622 ms | ≤ 1,000 ms | 合格 |
-| warm exposure-perturbation engine proxy | 55.6492479 ms | ≤ 50 ms | 不合格 |
-| warm full-current-settings engine preview | 58.0226753 ms | ≤ 300 ms | 合格 |
-| full-resolution JPEG q0.92 | 225.92233125 ms | ≤ 3,000 ms | 合格 |
+| process-fresh tone engine preview | 358.47830595 ms | ≤ 1,000 ms | 合格 |
+| warm exposure-perturbation engine proxy | 60.12030895 ms | ≤ 50 ms | 不合格 |
+| warm full-current-settings engine preview | 61.8840378 ms | ≤ 300 ms | 合格 |
+| full-resolution JPEG q0.92 | 244.6852809 ms | ≤ 3,000 ms | 合格 |
 
-最新v4 archiveは`3 / 4`合格で、slider proxyだけが50ms gateを超えた。1 runだけで、さらに現行HEADとfingerprintが異なるため、安定性や現行合否を証明しない。canonical v3の連続3 runは`BENCHMARK.md`に履歴として保存するが、v4へ合格を継承しない。direct経路はpositive presentationも未確認で、UI p95やactual-screen parityの数値はまだない。
+現行v4 runは`3 / 4`合格で、slider proxyだけが50ms gateを超えた。現行sourceのrunは1件だけなので安定性を証明しない。旧v4とcanonical v3の連続3 runは`BENCHMARK.md`に履歴として保存するが、現行反復へ数えない。direct経路はpositive presentationも未確認で、UI p95やactual-screen parityの数値はまだない。
 
 ### 7.6 証跡 ID
 
@@ -281,10 +281,10 @@ Mac16,10 / Apple M4 / macOS 26.3.1のrelease buildで、24MP RAWをwarm各20回�
 - WB manifest SHA-256: `aea4c93626b0a32259c747d2e2ca4ca82b45647d0336507bb709bc86b4e0faf3`
 - WB source fingerprint: `413fce7eb57938b958f3e1efd7f835e6fd7cae5561e8327341e4c4faaaec8b3e`
 - WB release binary SHA-256: `5e08849cc3d431cde4c42aad7523fd4b704591ae5aecb3f2d11404f92a0edf44`
-- latest v4 benchmark archive: `bbb5bc5b-7c12-4b29-b803-c863d6059d55`（3 / 4合格、現行HEADとはfingerprint不一致）
-- benchmark release binary SHA-256: `7563d61a41a66dd0a8762acf2374e1aa4aceff5fffb556405eaf619b739dcec0`
-- benchmark archive manifest SHA-256: `87a9ea124bb8425a8efc8ef4fe79748c54b55097bfcfe503e96ef693304bb312`
-- benchmark archive source fingerprint: `1451c62b42e175814a316c1e7f8ffaaf44d17cd6ae9397ea8edd1e7eb74e3125`
+- current-source v4 benchmark run: `74e553f0-6b7c-4e2a-9e5d-4f09bc2910ce`（eligible、3 / 4合格）
+- benchmark release binary SHA-256: `b61d0d3a29b49e2e08b26c41a41b7ec277aca0ca026633fab4d8a609b40de3f8`
+- benchmark manifest SHA-256: `9da1fd58ec4ead9b921dea477319423711567de3c06f8eb39d429c89980267f6`
+- benchmark source fingerprint: `b7d8c57fab4428679a4f4e7cfacf2f64e67b317e9b9f46a00093cf7b5bf1a858`
 - schema: manifest `4` / calibration run `2` / analyzer report `5` / benchmark report `3`
 - calibration検証対象: 7入力、26 source、122 / 122 artifact
 - WB観測検証対象: 4 private input、28 source、40 / 40 artifact
@@ -455,7 +455,7 @@ swift run -c release PhotoBenchBenchmark .
 
 厳格モードでは、全合格をexit `0`、eligible runの数値gate不合格をexit `1`、構造・hash・runtime不整合およびineligible / `notEvaluated`をexit `2`とする。現行runではcanonical settle単独は合格してexit `0`、Lightroom品質とpreview parityを含めると不合格でexit `1`になる。上記`swift run -c release PhotoBenchCalibration`は新しい測定を開始するため、その結果は新runの証跡で判断する。
 
-benchmarkの最新v4 formal archiveは1件だけで`3 / 4`合格、warm slider engine proxyだけが不合格だった。ただしWB観測source追加前へ固定され、現行HEADとはfingerprintが異なるため、現行sourceの性能合否ではない。engine proxyをUI応答や安定性として解釈せず、現行sourceの追加runは別IDで全件保存する。
+benchmarkの現行source v4 formal runは1件だけで`3 / 4`合格、warm slider engine proxyだけが不合格だった。engine proxyをUI応答や安定性として解釈せず、現行sourceの追加runは別IDで全件保存する。
 
 ## 12. 文書の読み分け
 
@@ -476,7 +476,7 @@ benchmarkの最新v4 formal archiveは1件だけで`3 / 4`合格、warm slider e
 ## 13. 新しいセッションへの引継ぎ手順
 
 1. この文書、`CALIBRATION.md`、`docs/WHITE_BALANCE_OBSERVATION.md`、`BENCHMARK.md`、`DESIGN.md` の順に読む。
-2. `.photobench/calibration/report.json`、WB run `51ba2f46-185d-4b87-8345-407d380214cd`の`run.json` / `analysis.json`、`.photobench/benchmark/latest.json`を確認する。benchmark latestは現行HEADとfingerprintが違うarchiveであり、現行性能合否へ読み替えない。
+2. `.photobench/calibration/report.json`、WB run `51ba2f46-185d-4b87-8345-407d380214cd`の`run.json` / `analysis.json`、`.photobench/benchmark/latest.json`を確認する。benchmark latestは現行production rendering sourceとfingerprintが一致するが、engine 1 runだけなので安定性や実UI性能へ読み替えない。
 3. `calibration/manifest-v4.json`、`calibration/white-balance-observation-v1.json`と各runのhash、source fingerprint、run IDを照合する。旧v3は`.photobench/calibration-archives/`とcanonical benchmark run `5b2dae18` / `a13033d0` / `c2c4794f`で明示的に参照し、現行採否へ混ぜない。
 4. 「Lightroom 相当」を単一の ΔE や処理式で断定せず、画質、操作感、非破壊性、整理、書き出しの不足を分けて評価する。
 5. 新しい改善案には、ユーザー価値、非回帰条件、測定方法、失敗時の rollback 境界を含める。
