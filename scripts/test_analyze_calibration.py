@@ -686,6 +686,142 @@ class CalibrationAnalysisTests(unittest.TestCase):
                 candidate_dimensions=(3072, 3840),
             )
 
+    @staticmethod
+    def canonical_gate_fixture(
+        *,
+        baseline_complete: int = 2,
+        candidate_complete: int = 2,
+        baseline_near: int = 4,
+        candidate_near: int = 4,
+        new_plateau: float = 0.0005,
+    ) -> dict[str, dict[str, object]]:
+        pixel_count = 10_000
+        baseline_plateau = 0.001
+        metrics = {
+            "pixel_count": pixel_count,
+            "complete_clip_normalized_minimum": (
+                ANALYSIS.CANONICAL_SETTLE_THRESHOLD_CONTRACT[
+                    "completeClipNormalizedMinimum"
+                ]
+            ),
+            "near_clip_normalized_minimum": (
+                ANALYSIS.CANONICAL_SETTLE_THRESHOLD_CONTRACT[
+                    "nearClipNormalizedMinimum"
+                ]
+            ),
+            "baseline_complete_clip_pixel_count": baseline_complete,
+            "candidate_complete_clip_pixel_count": candidate_complete,
+            "complete_clip_pixel_count_increase": (
+                candidate_complete - baseline_complete
+            ),
+            "baseline_complete_clip_fraction": baseline_complete / pixel_count,
+            "candidate_complete_clip_fraction": candidate_complete / pixel_count,
+            "baseline_near_clip_pixel_count": baseline_near,
+            "candidate_near_clip_pixel_count": candidate_near,
+            "near_clip_pixel_count_increase": candidate_near - baseline_near,
+            "baseline_near_clip_fraction": baseline_near / pixel_count,
+            "candidate_near_clip_fraction": candidate_near / pixel_count,
+            "baseline_shared_highlight_plateau_fraction": baseline_plateau,
+            "candidate_shared_highlight_plateau_fraction": (
+                baseline_plateau + new_plateau
+            ),
+            "new_shared_highlight_plateau_fraction": new_plateau,
+        }
+        return {"scene": {"metrics": metrics}}
+
+    def test_canonical_settle_metrics_use_exact_integer_clip_counts(self) -> None:
+        baseline = np.full((4, 4, 3), 0.5, dtype=np.float32)
+        candidate = baseline.copy()
+        baseline[0, 0, 0] = 1.0
+        baseline[0, 1, 1] = 0.9995
+        candidate[0, 0, 0] = 1.0
+
+        metrics = ANALYSIS.canonical_settle_metrics(
+            baseline,
+            candidate,
+            thresholds=dict(ANALYSIS.CANONICAL_SETTLE_THRESHOLD_CONTRACT),
+        )
+
+        self.assertEqual(metrics["pixel_count"], 16)
+        self.assertEqual(metrics["baseline_complete_clip_pixel_count"], 1)
+        self.assertEqual(metrics["candidate_complete_clip_pixel_count"], 1)
+        self.assertEqual(metrics["baseline_near_clip_pixel_count"], 2)
+        self.assertEqual(metrics["candidate_near_clip_pixel_count"], 1)
+        self.assertEqual(metrics["near_clip_pixel_count_increase"], -1)
+
+    def test_canonical_settle_gate_passes_at_inclusive_limits(self) -> None:
+        result = ANALYSIS.evaluate_canonical_settle_gates(
+            self.canonical_gate_fixture(),
+            scene_ids=("scene",),
+            thresholds=dict(ANALYSIS.CANONICAL_SETTLE_THRESHOLD_CONTRACT),
+        )
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["evaluated_scene_count"], 1)
+
+    def test_canonical_settle_gate_allows_clip_count_improvement(self) -> None:
+        result = ANALYSIS.evaluate_canonical_settle_gates(
+            self.canonical_gate_fixture(
+                baseline_complete=3,
+                candidate_complete=2,
+                baseline_near=5,
+                candidate_near=4,
+                new_plateau=0,
+            ),
+            scene_ids=("scene",),
+            thresholds=dict(ANALYSIS.CANONICAL_SETTLE_THRESHOLD_CONTRACT),
+        )
+
+        self.assertTrue(result["passed"])
+        checks = result["scenes"]["scene"]["checks"]
+        self.assertEqual(
+            checks["complete_clip_pixel_count_non_regression"][
+                "observed_increase"
+            ],
+            -1,
+        )
+
+    def test_canonical_settle_gate_fails_each_numeric_limit_independently(self) -> None:
+        cases = (
+            (
+                {"candidate_complete": 3},
+                "complete_clip_pixel_count_non_regression",
+            ),
+            (
+                {"candidate_near": 5},
+                "near_clip_pixel_count_non_regression",
+            ),
+            (
+                {"new_plateau": 0.0005001},
+                "new_shared_highlight_plateau_area",
+            ),
+        )
+        for overrides, check_name in cases:
+            with self.subTest(check=check_name):
+                result = ANALYSIS.evaluate_canonical_settle_gates(
+                    self.canonical_gate_fixture(**overrides),
+                    scene_ids=("scene",),
+                    thresholds=dict(
+                        ANALYSIS.CANONICAL_SETTLE_THRESHOLD_CONTRACT
+                    ),
+                )
+                self.assertFalse(result["passed"])
+                self.assertFalse(
+                    result["scenes"]["scene"]["checks"][check_name]["passed"]
+                )
+
+    def test_canonical_settle_missing_scene_is_structural_failure(self) -> None:
+        with self.assertRaisesRegex(
+            ANALYSIS.StructuralValidationError, "scene"
+        ):
+            ANALYSIS.evaluate_canonical_settle_gates(
+                self.canonical_gate_fixture(),
+                scene_ids=("scene", "missing"),
+                thresholds=dict(
+                    ANALYSIS.CANONICAL_SETTLE_THRESHOLD_CONTRACT
+                ),
+            )
+
 
 class CalibrationEvidenceTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -704,7 +840,9 @@ class CalibrationEvidenceTests(unittest.TestCase):
         path.write_bytes(data)
         return {"path": relative, "sha256": self._hash(path)}
 
-    def _make_evidence(self) -> tuple[dict[str, object], dict[str, object]]:
+    def _make_evidence(
+        self, schema_version: int = 2
+    ) -> tuple[dict[str, object], dict[str, object]]:
         preset = self._write_bytes("fixture.xmp", b"preset")
         scene_fixtures: list[dict[str, object]] = []
         for scene_id in ("scene-a", "scene-b"):
@@ -743,8 +881,41 @@ class CalibrationEvidenceTests(unittest.TestCase):
             }
             for identifier, labels in ANALYSIS.STAGE_CANDIDATE_CONTRACT.items()
         ]
+        if schema_version == 2:
+            benchmark = {"previewMaxDimension": 4}
+            preview_parity: dict[str, object] = {
+                "maxDimension": 4,
+                "settingsStageIDs": list(ANALYSIS.PREVIEW_PARITY_STAGE_IDS),
+                "baselineDecodeIntent": "full-resolution",
+                "candidateDecodeIntent": "interactive-preview",
+                "thresholds": {
+                    "meanDeltaEMaximum": 1.0,
+                    "meanEVAbsoluteDriftMaximum": 0.02,
+                    "newSharedPlateauMaximumArea": 0.0001,
+                },
+            }
+        else:
+            benchmark = {"previewMaxDimension": 2560}
+            preview_parity = {
+                "outputMaxDimension": 2560,
+                "candidateDecodeMaximumDimensions": [3072, 3840],
+                "plateauSpatialTolerance": {
+                    "radiusPixels": 1,
+                    "structuringElement": "square-3x3",
+                },
+                "settingsStageIDs": list(ANALYSIS.PREVIEW_PARITY_STAGE_IDS),
+                "baselineDecodeIntent": "full-resolution",
+                "candidateDecodeIntent": "interactive-preview",
+                "thresholds": {
+                    "meanDeltaEMaximum": 1.0,
+                    "blurredDeltaE2000P95Maximum": 2.0,
+                    "meanEVAbsoluteDriftMaximum": 0.02,
+                    "netSharedPlateauAreaIncreaseMaximum": 0.0001,
+                    "spatiallyDistinctNewSharedPlateauMaximumArea": 0.0001,
+                },
+            }
         manifest: dict[str, object] = {
-            "schemaVersion": 2,
+            "schemaVersion": schema_version,
             "suiteID": "test-suite",
             "description": "synthetic calibration evidence",
             "expectedEnvironment": {
@@ -792,20 +963,20 @@ class CalibrationEvidenceTests(unittest.TestCase):
                 "meanEVAbsoluteErrorMaximumIncrease": 0.05,
                 "newSharedPlateauMaximumArea": 0.0005,
             },
-            "benchmark": {"previewMaxDimension": 4},
-            "previewParity": {
-                "maxDimension": 4,
-                "settingsStageIDs": list(ANALYSIS.PREVIEW_PARITY_STAGE_IDS),
-                "baselineDecodeIntent": "full-resolution",
-                "candidateDecodeIntent": "interactive-preview",
-                "thresholds": {
-                    "meanDeltaEMaximum": 1.0,
-                    "meanEVAbsoluteDriftMaximum": 0.02,
-                    "newSharedPlateauMaximumArea": 0.0001,
-                },
-            },
+            "benchmark": benchmark,
+            "previewParity": preview_parity,
             "scenes": scene_fixtures,
         }
+        if schema_version == 4:
+            manifest["canonicalSettleGate"] = {
+                **ANALYSIS.CANONICAL_SETTLE_CONTRACT,
+                "thresholds": dict(
+                    ANALYSIS.CANONICAL_SETTLE_THRESHOLD_CONTRACT
+                ),
+            }
+            manifest["processing"]["fingerprint"]["renderPipeline"] = (
+                ANALYSIS.CURRENT_RENDER_PIPELINE_IDENTIFIER
+            )
         manifest_path = self.root / ANALYSIS.DEFAULT_MANIFEST_PATH
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -823,7 +994,8 @@ class CalibrationEvidenceTests(unittest.TestCase):
                 stage_index = ANALYSIS.PREVIEW_PARITY_STAGE_IDS.index(stage_id)
                 scene_index = ("scene-a", "scene-b").index(scene_id)
                 value = np.uint16(20_000 + scene_index * 1_000 + stage_index * 100)
-                image = np.full((3, 4, 3), value, dtype=np.uint16)
+                preview_shape = (3, 4) if schema_version == 2 else (4, 6)
+                image = np.full((*preview_shape, 3), value, dtype=np.uint16)
                 settings = {"stage": stage_id}
             else:
                 value = np.uint16(30_000 + index * 100)
@@ -864,7 +1036,7 @@ class CalibrationEvidenceTests(unittest.TestCase):
         ).hexdigest()
         decodes: list[dict[str, object]] = []
         for scene_id in ("scene-a", "scene-b"):
-            for route, backend, intent, requested_maximum, scale, width, height in (
+            common_decodes = [
                 ("raw", "RAW-test", "full-resolution", None, 1.0, 6, 4),
                 ("lr-input", "Image I/O", "full-resolution", None, None, 6, 4),
                 (
@@ -876,15 +1048,37 @@ class CalibrationEvidenceTests(unittest.TestCase):
                     6,
                     4,
                 ),
-                (
-                    ANALYSIS.PREVIEW_PARITY_DECODE_ROUTES["interactive-preview"],
-                    "RAW-test",
-                    "interactive-preview",
-                    4,
-                    4 / 6,
-                    4,
-                    3,
-                ),
+            ]
+            if schema_version == 2:
+                preview_decodes = [
+                    (
+                        ANALYSIS.PREVIEW_PARITY_DECODE_ROUTES[
+                            "interactive-preview"
+                        ],
+                        "RAW-test",
+                        "interactive-preview",
+                        4,
+                        4 / 6,
+                        4,
+                        3,
+                    )
+                ]
+            else:
+                preview_decodes = [
+                    (
+                        ANALYSIS.preview_parity_v3_candidate_route(dimension),
+                        "RAW-test",
+                        "interactive-preview",
+                        dimension,
+                        1.0,
+                        6,
+                        4,
+                    )
+                    for dimension in (3072, 3840)
+                ]
+            for route, backend, intent, requested_maximum, scale, width, height in (
+                *common_decodes,
+                *preview_decodes,
             ):
                 is_raw = backend == "RAW-test"
                 decodes.append(
@@ -907,6 +1101,13 @@ class CalibrationEvidenceTests(unittest.TestCase):
                         ),
                     }
                 )
+        run_processing = json.loads(
+            json.dumps(manifest["processing"]["fingerprint"])
+        )
+        if schema_version <= 3:
+            run_processing["renderPipeline"] = (
+                ANALYSIS.LEGACY_RENDER_PIPELINE_IDENTIFIER
+            )
         run: dict[str, object] = {
             "schemaVersion": 2,
             "status": "complete",
@@ -938,7 +1139,7 @@ class CalibrationEvidenceTests(unittest.TestCase):
                     "recommendedMaxWorkingSetSize": 2,
                 },
             },
-            "processing": manifest["processing"]["fingerprint"],
+            "processing": run_processing,
             "sourceFingerprintSHA256": source_fingerprint,
             "postflightSourceFingerprintSHA256": source_fingerprint,
             "sourceFiles": [source_record],
@@ -983,9 +1184,16 @@ class CalibrationEvidenceTests(unittest.TestCase):
         artifact["height"] = image.shape[0]
 
     def test_manifest_and_complete_run_validate_all_evidence(self) -> None:
+        self.assertNotIn(
+            "renderPipeline", self.manifest["processing"]["fingerprint"]
+        )
+        self.assertEqual(
+            self.run["processing"]["renderPipeline"],
+            ANALYSIS.LEGACY_RENDER_PIPELINE_IDENTIFIER,
+        )
         report = ANALYSIS.analyze_calibration(self.root)
 
-        self.assertEqual(report["schema_version"], 4)
+        self.assertEqual(report["schema_version"], 5)
         self.assertEqual(report["validation"]["status"], "passed")
         self.assertEqual(
             report["validation"]["artifacts"]["verified"],
@@ -999,6 +1207,20 @@ class CalibrationEvidenceTests(unittest.TestCase):
         )
         self.assertEqual(report["preview_parity_gates"]["evaluated_pair_count"], 6)
         self.assertTrue(report["preview_parity_gates"]["passed"])
+        self.assertEqual(report["canonical_settle"], {})
+        self.assertFalse(report["canonical_settle_gates"]["applicable"])
+        self.assertTrue(report["canonical_settle_gates"]["passed"])
+
+    def test_legacy_render_pipeline_normalization_rejects_wrong_run_value(self) -> None:
+        self.run["processing"]["renderPipeline"] = (
+            ANALYSIS.CURRENT_RENDER_PIPELINE_IDENTIFIER
+        )
+        self._save_run()
+
+        with self.assertRaisesRegex(
+            ANALYSIS.StructuralValidationError, "run.processing"
+        ):
+            ANALYSIS.analyze_calibration(self.root)
 
     def test_stale_artifact_hash_fails_closed_and_replaces_report(self) -> None:
         artifact = self.run["artifacts"][0]
@@ -1278,6 +1500,103 @@ class CalibrationEvidenceTests(unittest.TestCase):
         ):
             ANALYSIS.validate_manifest(invalid, self.root)
 
+    def test_manifest_canonical_settle_is_forbidden_before_v4_and_required_in_v4(self) -> None:
+        v2_with_gate = json.loads(json.dumps(self.manifest))
+        v2_with_gate["canonicalSettleGate"] = {
+            **ANALYSIS.CANONICAL_SETTLE_CONTRACT,
+            "thresholds": dict(ANALYSIS.CANONICAL_SETTLE_THRESHOLD_CONTRACT),
+        }
+        with self.assertRaisesRegex(
+            ANALYSIS.StructuralValidationError, "schema v2.*指定できません"
+        ):
+            ANALYSIS.validate_manifest(v2_with_gate, self.root)
+
+        manifest_v3, _ = self._make_evidence(3)
+        ANALYSIS.validate_manifest(manifest_v3, self.root)
+        manifest_v3["canonicalSettleGate"] = {
+            **ANALYSIS.CANONICAL_SETTLE_CONTRACT,
+            "thresholds": dict(ANALYSIS.CANONICAL_SETTLE_THRESHOLD_CONTRACT),
+        }
+        with self.assertRaisesRegex(
+            ANALYSIS.StructuralValidationError, "schema v3.*指定できません"
+        ):
+            ANALYSIS.validate_manifest(manifest_v3, self.root)
+
+        manifest_v4, _ = self._make_evidence(4)
+        ANALYSIS.validate_manifest(manifest_v4, self.root)
+        missing_gate = json.loads(json.dumps(manifest_v4))
+        del missing_gate["canonicalSettleGate"]
+        with self.assertRaisesRegex(
+            ANALYSIS.StructuralValidationError, "canonicalSettleGate"
+        ):
+            ANALYSIS.validate_manifest(missing_gate, self.root)
+
+        invalid_placement = json.loads(json.dumps(manifest_v4))
+        invalid_placement["canonicalSettleGate"][
+            "outputTransformPlacement"
+        ] = "before-downsampling"
+        with self.assertRaisesRegex(
+            ANALYSIS.StructuralValidationError, "outputTransformPlacement"
+        ):
+            ANALYSIS.validate_manifest(invalid_placement, self.root)
+
+    def test_manifest_v4_analyzes_reused_canonical_settle_artifacts(self) -> None:
+        self.manifest, self.run = self._make_evidence(4)
+
+        report = ANALYSIS.analyze_calibration(self.root)
+
+        self.assertEqual(report["schema_version"], 5)
+        self.assertTrue(report["canonical_settle_gates"]["applicable"])
+        self.assertTrue(report["canonical_settle_gates"]["passed"])
+        self.assertEqual(set(report["canonical_settle"]), {"scene-a", "scene-b"})
+        self.assertEqual(
+            report["canonical_settle"]["scene-a"]["baseline"]["stage_id"],
+            "basic-legacy",
+        )
+        self.assertEqual(
+            report["canonical_settle"]["scene-a"]["candidate"]["stage_id"],
+            "full-current",
+        )
+        self.assertEqual(
+            report["methodology"]["canonical_settle_output_transform_placement"],
+            "after-downsampling",
+        )
+
+    def test_canonical_settle_reused_artifact_settings_mismatch_is_structural(self) -> None:
+        self.manifest, self.run = self._make_evidence(4)
+        relative = (
+            ".photobench/calibration/renders/scene-a-preview-parity-"
+            "basic-legacy-decode-3072-to-2560.tif"
+        )
+        witness = self._artifact(relative)
+        witness["settings"] = {"stage": "wrong"}
+        canonical_settings = json.dumps(
+            witness["settings"],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        witness["settingsSHA256"] = hashlib.sha256(canonical_settings).hexdigest()
+        self._save_run()
+        manifest_path = self.root / ANALYSIS.DEFAULT_MANIFEST_PATH
+        validation = ANALYSIS.validate_run_manifest(
+            self.run,
+            self.manifest,
+            self.root,
+            ANALYSIS.DEFAULT_MANIFEST_PATH,
+            self._hash(manifest_path),
+        )
+
+        with self.assertRaisesRegex(
+            ANALYSIS.StructuralValidationError, "canonical settle settings"
+        ):
+            ANALYSIS.analyze_canonical_settle(
+                self.root,
+                validation["artifact_map"],
+                self.manifest,
+            )
+
     def test_manifest_v2_fixed_comparison_raw_profile_and_stage_labels(self) -> None:
         invalid_comparison = json.loads(json.dumps(self.manifest))
         invalid_comparison["comparison"]["maxDimension"] = 1499
@@ -1327,6 +1646,23 @@ class CalibrationEvidenceTests(unittest.TestCase):
                 ANALYSIS.main([str(self.root), "--enforce-preview-parity"]), 1
             )
 
+        canonical_failed = {
+            "quality_gates": {"passed": True},
+            "preview_parity_gates": {"passed": True},
+            "canonical_settle_gates": {"applicable": True, "passed": False},
+        }
+        with mock.patch.object(
+            ANALYSIS, "analyze_calibration", return_value=canonical_failed
+        ):
+            self.assertEqual(ANALYSIS.main([str(self.root)]), 0)
+            self.assertEqual(ANALYSIS.main([str(self.root), "--enforce"]), 0)
+            self.assertEqual(
+                ANALYSIS.main([str(self.root), "--enforce-preview-parity"]), 0
+            )
+            self.assertEqual(
+                ANALYSIS.main([str(self.root), "--enforce-canonical-settle"]), 1
+            )
+
     def test_structural_failure_is_always_exit_two(self) -> None:
         error = ANALYSIS.StructuralValidationError("stale evidence")
         with mock.patch.object(ANALYSIS, "analyze_calibration", side_effect=error):
@@ -1334,6 +1670,9 @@ class CalibrationEvidenceTests(unittest.TestCase):
             self.assertEqual(ANALYSIS.main([str(self.root), "--enforce"]), 2)
             self.assertEqual(
                 ANALYSIS.main([str(self.root), "--enforce-preview-parity"]), 2
+            )
+            self.assertEqual(
+                ANALYSIS.main([str(self.root), "--enforce-canonical-settle"]), 2
             )
 
     def test_atomic_json_rejects_nonfinite_without_replacing_old_report(self) -> None:

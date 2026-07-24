@@ -11,19 +11,22 @@ public struct PhotoCoreProcessingFingerprint: Codable, Equatable, Sendable {
     public let toneCurve: String
     public let colorMixer: String
     public let outputTransform: String
+    public let renderPipeline: String
 
     public init(
         rawDecode: String,
         basicTone: String,
         toneCurve: String,
         colorMixer: String,
-        outputTransform: String
+        outputTransform: String,
+        renderPipeline: String
     ) {
         self.rawDecode = rawDecode
         self.basicTone = basicTone
         self.toneCurve = toneCurve
         self.colorMixer = colorMixer
         self.outputTransform = outputTransform
+        self.renderPipeline = renderPipeline
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -32,6 +35,7 @@ public struct PhotoCoreProcessingFingerprint: Codable, Equatable, Sendable {
         case toneCurve
         case colorMixer
         case outputTransform
+        case renderPipeline
     }
 
     public init(from decoder: Decoder) throws {
@@ -42,6 +46,10 @@ public struct PhotoCoreProcessingFingerprint: Codable, Equatable, Sendable {
         toneCurve = try container.decode(String.self, forKey: .toneCurve)
         colorMixer = try container.decode(String.self, forKey: .colorMixer)
         outputTransform = try container.decode(String.self, forKey: .outputTransform)
+        renderPipeline = try container.decodeIfPresent(
+            String.self,
+            forKey: .renderPipeline
+        ) ?? RenderEngine.legacyProcessingIdentifier
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -51,6 +59,7 @@ public struct PhotoCoreProcessingFingerprint: Codable, Equatable, Sendable {
         try container.encode(toneCurve, forKey: .toneCurve)
         try container.encode(colorMixer, forKey: .colorMixer)
         try container.encode(outputTransform, forKey: .outputTransform)
+        try container.encode(renderPipeline, forKey: .renderPipeline)
     }
 
     public static let current = PhotoCoreProcessingFingerprint(
@@ -58,6 +67,16 @@ public struct PhotoCoreProcessingFingerprint: Codable, Equatable, Sendable {
         basicTone: BasicToneModel.identifier,
         toneCurve: ToneCurveModel.identifier,
         colorMixer: PerceptualColorMixer.identifier,
-        outputTransform: SRGBOutputTransform.identifier
+        outputTransform: SRGBOutputTransform.identifier,
+        renderPipeline: RenderEngine.processingIdentifier
+    )
+
+    public static let legacyCurrentRawDecode = PhotoCoreProcessingFingerprint(
+        rawDecode: CoreImageDecoder.processingIdentifier,
+        basicTone: BasicToneModel.identifier,
+        toneCurve: ToneCurveModel.identifier,
+        colorMixer: PerceptualColorMixer.identifier,
+        outputTransform: SRGBOutputTransform.identifier,
+        renderPipeline: RenderEngine.legacyProcessingIdentifier
     )
 }

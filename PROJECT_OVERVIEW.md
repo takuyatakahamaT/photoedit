@@ -1,6 +1,6 @@
 # Photo Bench プロジェクト概要
 
-- 状態: Phase 0 の証跡基盤、P1 preview parity v3 の正式評価、P1-3 の Metal 直接表示実験まで完了。縮小 RAW 候補は不採用、直接表示は実画面への到達を確認できず既定 OFF のため、製品経路は full-resolution RAW decode + 従来表示を維持
+- 状態: Phase 0 の証跡基盤、P1 preview parity、canonical settle v4、P1-3 の Metal 直接表示実験まで完了。v4 の最終縮小順序は 2 development scene で非回帰合格したが、Lightroom 品質と縮小 RAW 候補は未達。製品経路は full-resolution RAW decode + 従来表示を維持
 - 対象: オーナー個人専用の Apple Silicon macOS アプリ
 - 最終更新: 2026-07-24（JST）
 - 開発ルート: `/Users/takuyatakahama/Documents/app/NIHO/others/photo`
@@ -12,14 +12,14 @@
 詳細仕様はリンク先の文書を正とし、実測値や合否に食い違いがある場合は、hash 検証済みの次の JSON を最優先する。
 
 - 画質と再現性: `.photobench/calibration/report.json`、`.photobench/calibration/run-manifest.json`
-- 性能: 最新 run は`.photobench/benchmark/latest.json`、連続3 runの安定性は`BENCHMARK.md`と`.photobench/benchmark/runs/44b4c41e-e18b-4cdd-9720-4c121a365fbd.json`、`9bd69010-e2e7-4a57-ac2c-bd0e3d04e18f.json`、`f9024302-f48c-4f62-bd84-589013696861.json`
-- 入力、処理、閾値の現行契約: `calibration/manifest-v3.json`。manifest schema は 3、校正 run manifest schema は 2、派生する analyzer report schema は 4 と区別する
+- 性能: 現行v4は`.photobench/benchmark/latest.json`とrun `bbb5bc5b-7c12-4b29-b803-c863d6059d55`を正とする。`44b4c41e` / `9bd69010` / `f9024302`は旧v3 sourceの履歴であり、現行合否へ混ぜない
+- 入力、処理、閾値の現行契約: `calibration/manifest-v4.json`。manifest schema は 4、校正 run manifest schema は 2、派生する analyzer report schema は 5 と区別する
 
-`reviews/2026-07-24-claude-research-improvement-proposals.md` は、外部調査から得た次の仮説と優先順位案をまとめた助言資料である。ここにある数値、ライセンス解釈、製品比較、技術効果は未確認のものを含み、現行仕様や合格証跡ではない。本書では、目的と時限性に照らして妥当な「Lightroom 契約中にしか取得できない資産を先に確保する」「Metal 実験を timebox し、編集永続化・カタログ・選別へ移る」という優先順位だけを採用し、個別仮説は新しい契約と実測で検証してから採否を決める。
+`reviews/2026-07-24-claude-research-improvement-proposals.md` は、外部調査から得た仮説と優先順位案をまとめた助言資料である。ここにある数値、ライセンス解釈、製品比較、技術効果は未確認のものを含み、現行仕様や合格証跡ではない。Lightroom は当面継続するため、契約終了を急いで機能数だけを増やすのではなく、教師出力を活用して画像品質と日常機能を Lightroom と遜色ない水準へ近づける。個別仮説は新しい契約と実測で検証してから採否を決める。
 
 ## 1. なぜ作るのか
 
-オーナーは Lightroom を主にローカル写真の画像編集に使っている。クラウド保存、複数端末同期、共有、生成 AI などは現在必要としていない。そのため Lightroom の有料契約をやめ、日常の写真選別・現像・書き出しを、自作のローカル専用アプリへ移行することが本プロジェクトの目的である。
+オーナーは Lightroom を主にローカル写真の画像編集に使っている。クラウド保存、複数端末同期、共有、生成 AI などは現在必要としていない。そのため最終的には Lightroom の有料契約をやめ、日常の写真選別・現像・書き出しを、自作のローカル専用アプリへ移行することが本プロジェクトの目的である。ただし Lightroom は当面継続し、比較基準と退避手段として使う。現在の優先事項は解約時期ではなく、画質と機能性を十分に磨くことである。
 
 完成像は「Lightroom の画面を複製した小さなアプリ」ではない。自分が実際に使う編集ワークフローに範囲を絞りながら、次を同時に満たす Lightroom 代替を目指す。
 
@@ -32,9 +32,9 @@
 
 「Lightroom と遜色ない」は、Adobe Camera Raw の非公開処理をピクセル単位で複製する意味ではない。オーナーが使う写真と編集操作について、見た目、操作感、非破壊性、整理、書き出しまでを含む実用上の完成度で置き換えられることを意味する。Lightroom 解約の最終判断は、代表画像を用いた目視受け入れと自動ゲートの両方を満たした後に行う。
 
-Lightroom は移行期間中の比較基準と退避手段としてだけ用いる。完成後の常用併存は目標にせず、代表ワークフローの受け入れが済んだ時点で契約を終了できる状態を完成条件とする。
+Lightroom は移行期間中の比較基準、教師画像の生成手段、退避手段として積極的に用いる。完成後の常用併存は目標にせず、代表ワークフローの受け入れが済んだ時点で契約を終了できる状態を完成条件とする。
 
-**現時点では Lightroom を解約できる状態ではない。** 画質gate、実画面preview、編集永続化、カタログ・選別、移行データ退避が未達であり、先に契約中限定の基準・移行資産を確保する必要がある。
+**現時点では Lightroom を解約できる状態ではなく、解約を急がない。** 画質gate、実画面preview、編集永続化、カタログ・選別、クロップ等が未達である。Lightroom を使える間に比較用データを増やし、品質差を分解してから移行可否を判断する。
 
 ## 2. 製品原則
 
@@ -115,10 +115,14 @@ Core Image RAW 8
   → 任意の encoded-sRGB tone curve
   → 任意の OKLCh 8 band color mixer
   → vibrance / saturation
-  → highlight shoulder
-  → L / h 固定の gamut compression
+  → edge-clamped Lanczos downsample（preview / 指定サイズ時）
+  → terminal sRGB output transform
+      → highlight shoulder
+      → L / h 固定の gamut compression
   → sRGB preview / export
 ```
+
+現行production graphの順序は、**extended-linear-sRGB edits → edge-clamped Lanczos downsample → terminal sRGB transform** である。`CIContext`のworking color spaceはextended-linear sRGB、出力はsRGBとして明示し、有限画像の外側に現れる透明黒をLanczosが拾わないよう縮小前にedge clampし、縮小後に正確な整数extentへcropする。Core Imageの遅延評価graphは保ったまま、最終ラスタで順序とalphaを回帰テストする。
 
 原本アクセスは App Sandbox と security-scoped bookmark に限定する。JPEG 書き出しは隠し一時ファイルへ完成させてから設置し、原本、既存リンク、既存フォルダを上書きしない。
 
@@ -150,12 +154,14 @@ Core Image RAW 8
 
 ### 6.4 再現可能な画質・性能証跡
 
-- 入力、処理 fingerprint、source、binary、環境、全 artifact を hash-lock する manifest v3 契約を作成
+- 入力、処理 fingerprint、source、binary、環境、全 artifact を hash-lock する manifest v4 契約を作成
 - Lightroom の適用前 / 適用後 16 bit TIFF 2 シーンを RAW と Lightroom-input の 2 経路で比較
 - CIEDE2000、EV drift、complete / near clip、新規共有 plateau を自動判定
 - preview parity は full-resolution / 3,072 px / 3,840 px RAW decode を同じ編集後に共通 Lanczos で最終 2,560 px へ揃え、平均 ΔE00、ぼかし後 ΔE00 p95、EV、plateau 純面積増加、1 px dilation 外の新規 plateau を独立判定
+- canonical settle v4 は full-resolution RAWを `basic-legacy` / `full-current` で編集し、edge-clamped Lanczosで2,560pxへ縮小した後にterminal sRGB変換する同一production順序を固定。complete / near clipの画素数非増加と新規plateau面積を独立判定
 - path traversal、symlink、case-only alias、artifact 衝突、実行途中の変更を拒否
-- release benchmark schema 3 で process-fresh、warm preview、slider proxy、原寸 JPEG と system load を記録し、同一 source / binary の連続 3 正式 run を全件保存
+- latest校正を置換する前に、旧complete runを全artifactのbyte count / SHA-256検証付きで`.photobench/calibration-archives/<run-id>/`へ退避
+- release benchmark schema 3でprocess-fresh、warm preview、slider proxy、原寸JPEGとsystem loadを記録。現行v4はsource / binary固定のformal runを1件保存し、旧v3連続3 runは履歴として分離
 - 実装と証跡を Claude に設計・実装・最終レビューしてもらい、確定した指摘を文書とゲートへ反映
 
 ### 6.5 P1 preview / export 分離の安全基盤
@@ -195,7 +201,7 @@ Core Image RAW 8
 - 6000×4000、sRGB の原寸 JPEG を安全に書き出せる
 - 同じ署名のアプリ再起動後、選択済みフォルダを bookmark から復元できる
 
-自動検証は Swift Testing `93 tests / 7 suites`、Python `52 tests` が成功している。native 寸法・image extent の不正値拒否、preview / export context の別 instance 性、manifest v3 の固定寸法と候補行列、Lanczos 共通縮小、plateau morphology、候補なし時の full-decode fallback、system-load snapshot、benchmark の pass / performanceFailed / notEvaluated 契約に加え、direct / legacy の厳格な1 LSB parity、latest-only queue の resize・再入・順序逆転を回帰対象にした。配布形の `dist/Photo Bench.app` も release build と ad-hoc 署名を完了し、`codesign --verify --deep --strict`を通過している。ただし、ウィンドウ可視性、drawable drop、watchdog timeout、teardown といった app lifecycle 分岐は coordinator 内部にあり、自動化できていない。
+自動検証は Swift Testing `99 tests / 7 suites`、Python `61 tests` が成功している。従来の不正値拒否、decode intent、manifest / artifact、preview parity、Metal queue契約に加え、現行graphがextended-linear編集後にedge-clamped Lanczos縮小し、その後だけterminal sRGB変換すること、未clamp Lanczosで透明黒が境界へ混入するnegative control、旧graphとの識別、bounded neutral rasterのbypass、canonical settleの整数clip countとfail-closed契約を回帰対象にした。配布形の `dist/Photo Bench.app` は以前のsourceでrelease buildとad-hoc署名を完了しているが、今回のv4 sourceで再配布buildを承認したという意味ではない。ウィンドウ可視性、drawable drop、watchdog timeout、teardown といったapp lifecycle分岐も未自動化である。
 
 ### 7.2 画質の現在値
 
@@ -203,57 +209,58 @@ Core Image RAW 8
 
 | シーン / 経路 | 平均 ΔE basic → full | 平均 EV basic → full | 新規共有 plateau | 判定 |
 |---|---:|---:|---:|---|
-| P1524180 / RAW | 7.592 → 6.796 | +0.00376 → +0.20779 | 0.00036 | EV 不合格 |
-| P1524180 / LR-input | 5.556 → 4.835 | -0.12585 → +0.02628 | 0.00037 | 合格 |
-| P1522877 / RAW | 5.858 → 3.341 | -0.18034 → +0.00697 | 0.00007 | 合格 |
-| P1522877 / LR-input | 5.468 → 3.417 | -0.26834 → -0.08396 | 0.00017 | 合格 |
+| P1524180 / RAW | 7.5927 → 6.7963 | +0.00384 → +0.20787 | 0.000357 | EV 不合格 |
+| P1524180 / LR-input | 5.5557 → 4.8355 | -0.12577 → +0.02634 | 0.000371 | 合格 |
+| P1522877 / RAW | 5.8595 → 3.3423 | -0.18014 → +0.00710 | 0.000073 | 合格 |
+| P1522877 / LR-input | 5.4686 → 3.4174 | -0.26830 → -0.08392 | 0.000177 | 合格 |
 
-全経路で平均 ΔE、complete / near clip、新規 plateau のゲートは通ったが、P1524180 / RAW の full は EV 絶対誤差上限 `0.05376 EV`に対して `0.20779 EV`である。したがって、安全な出力基盤は得たものの、Lightroom の画作りを再現した、または curve / mixer を本番既定 ON にできるとは判断しない。
+全経路で平均 ΔE、complete / near clip、新規 plateau のゲートは通ったが、P1524180 / RAW の full は EV 絶対誤差上限 `0.05384 EV`に対して `0.20787 EV`である。目視でもP1524180のfull-currentはLightroom-afterより全体が明るく、暖色・マゼンタと青の彩度が強い。P1522877はより近いが、やや暖色・高彩度に見える。したがって、安全な出力基盤は得たものの、Lightroom の画作りを再現した、または curve / mixer を本番既定 ON にできるとは判断しない。
 
-P1 preview parity v3 は、この Lightroom 品質ゲートとは独立に、full-resolution、3,072 px、3,840 px の RAW decode をそれぞれ `neutral`、`basic-legacy`、`full-current`で編集し、その後すべてを共通 Lanczos で最終 2,560 px へ縮小して比較した。旧 direct 2,560 px decode の不合格結果は履歴として保持するが、現行の採否は v3 の 12 比較を正とする。
+preview parity v4は、このLightroom品質ゲートとは独立に、full-resolution、3,072px、3,840pxのRAW decodeを`neutral`、`basic-legacy`、`full-current`で比較する。現行の採否はmanifest v4の12比較を正とする。
 
 | decode → final | 最大平均 ΔE00 | 最大ぼかし ΔE00 p95 | 最大絶対 EV | 最大 plateau 純増 | 最大 1 px dilation 外面積 | 不合格比較 | 採否 |
 |---:|---:|---:|---:|---:|---:|---:|---|
-| 3,072 → 2,560 | 0.48950815200805664 | 1.5770659446716309 | 0.0057839141227304935 | 0.000016247437024018745 | 0.00012288554481546573 | 3 / 6 | 不採用 |
-| 3,840 → 2,560 | 0.41729527711868286 | 1.256845235824585 | 0.00444698566570878 | 0.00004622510251903925 | 0.0001519478617457528 | 3 / 6 | 不採用 |
+| 3,072 → 2,560 | 0.48846879601478577 | 1.5748517513275146 | 0.005485501606017351 | 0.000054920913884007027 | 0.00012105484768599882 | 2 / 6 | 不採用 |
+| 3,840 → 2,560 | 0.416765421628952 | 1.2567764520645142 | 0.00424525560811162 | 0.00009954415641476274 | 0.00021281854130052725 | 4 / 6 | 不採用 |
 
-閾値は平均 ΔE00 `1.0`、ぼかし後 ΔE00 p95 `2.0`、絶対 EV `0.02`、正の plateau 純面積増加 `0.0001`、参照 plateau を square-3x3 で 1 px 拡張した外側の新規面積 `0.0001`である。両候補とも最初の4ゲートは全比較で通過し、dilation 外面積だけが各3比較で上限を超えた。旧 exact-coordinate set-difference、最大 connected component、worst 128×128 window、距離 histogram は診断値として残したが、正式結果を見た後に閾値を緩めていない。全比較を通る候補がないため formal report の preview parity 判定は **不合格**、`selectedCandidate = null`、fallback は full-resolution RAW decode であり、実 UI もこの経路を維持する。
+閾値は平均 ΔE00 `1.0`、ぼかし後 ΔE00 p95 `2.0`、絶対 EV `0.02`、正の plateau 純面積増加 `0.0001`、参照 plateau を square-3x3 で 1 px 拡張した外側の新規面積 `0.0001`である。v4では3,072px候補が2 / 6、3,840px候補が4 / 6比較でspatial plateau上限を超えた。正式結果を見た後に閾値を緩めていない。全比較を通る候補がないため formal report の preview parity 判定は **不合格**、`selectedCandidate = null`、fallback は full-resolution RAW decode であり、実 UI もこの経路を維持する。
 
-### 7.3 性能の現在値
+### 7.3 canonical settle v4
 
-Mac16,10 / Apple M4 / macOS 26.3.1 の release build で、24 MP RAW を warm 各 20 回、process-fresh 40 回測定した。現行 source・manifest・release binaryを固定し、同じ shell loop で連続 3 正式 run を直列実行した。再起動等を挟む統計的に独立な反復ではない。測定する 2,560 px `interactive-preview` engine 経路は画質不合格の実験候補で、実 UI の full-resolution decode、`MTKView`提示、入力イベントから画面到達までの latency を表さない。
+現行production順序を固定するcanonical settleは、2 development sceneの両方で合格した。
 
-| workload | run 1 p95 | run 2 p95 | run 3 p95 | gate | pass回数 |
-|---|---:|---:|---:|---:|---:|
-| process-fresh tone engine preview | 960.767 ms | 369.026 ms | 575.269 ms | ≤ 1,000 ms | 3 / 3 |
-| warm exposure-perturbation engine proxy | 396.321 ms | 59.836 ms | 52.754 ms | ≤ 50 ms | 0 / 3 |
-| warm full-current-settings engine preview | 131.204 ms | 61.835 ms | 55.598 ms | ≤ 300 ms | 3 / 3 |
-| full-resolution JPEG q0.92 | 1188.771 ms | 234.513 ms | 223.044 ms | ≤ 3,000 ms | 3 / 3 |
+| scene | complete clip pixels basic → full | near clip pixels basic → full | 新規共有plateau面積 | 上限 | 判定 |
+|---|---:|---:|---:|---:|---|
+| P1524180 | 0 → 0 | 0 → 0 | 0.00003592743116578793 | 0.0005 | 合格 |
+| P1522877 | 0 → 0 | 0 → 0 | 0.00009839997070884592 | 0.0005 | 合格 |
 
-| workload | 3-run平均 | min–max | 母CV |
-|---|---:|---:|---:|
-| process-fresh tone engine preview | 635.021 ms | 369.026–960.767 ms | 38.62% |
-| warm exposure-perturbation engine proxy | 169.637 ms | 52.754–396.321 ms | 94.51% |
-| warm full-current-settings engine preview | 82.879 ms | 55.598–131.204 ms | 41.34% |
-| full-resolution JPEG q0.92 | 548.776 ms | 223.044–1188.771 ms | 82.47% |
+これは「terminal sRGB変換を縮小後へ移した現行graphが、旧basic段階に対してclip / plateauを増やさない」ことだけを示す。Lightroom一致、別カメラ、未観測シーン、RAW WB、camera profileの品質合格ではない。
 
-各 run は `3 / 4`合格で、slider proxy は3 runすべて50ms gateを超えた。schema 3 は run / workload境界と process-fresh workerの system-load snapshotを保持し、loadを理由に sample 削除、outlier除外、再試行をしていない。process-fresh、slider proxy、exportの変動が大きく、この結果を安定した製品性能の証明とは扱わない。とくに direct 経路は positive presentation が未確認なので、UI p95 や actual-screen parity の数値はまだ存在しない。これは単一画像 engine 測定で、17,000 枚運用の保証でもない。
+### 7.4 性能の現在値
 
-### 7.4 証跡 ID
+Mac16,10 / Apple M4 / macOS 26.3.1のrelease buildで、24MP RAWをwarm各20回、process-fresh 40回測定した。現行v4 source・manifest・release binaryを固定したformal runは1件である。測定する2,560px `interactive-preview` engine経路は画質不合格の実験候補で、実UIのfull-resolution decode、`MTKView`提示、入力イベントから画面到達までのlatencyを表さない。
 
-- calibration run ID: `ceea9eb4-b490-4a1f-9984-3d294e2f50bb`
-- archived run manifest: `.photobench/calibration/runs/ceea9eb4-b490-4a1f-9984-3d294e2f50bb.json`
-- calibration release binary SHA-256: `11009c7fa63f9a76820238b4ba462734903c381e20b4488ca5a471e60ae51b98`
-- benchmark run 1: `44b4c41e-e18b-4cdd-9720-4c121a365fbd`（3 / 4合格）
-- benchmark run 2: `9bd69010-e2e7-4a57-ac2c-bd0e3d04e18f`（3 / 4合格）
-- benchmark run 3 / latest: `f9024302-f48c-4f62-bd84-589013696861`（3 / 4合格）
-- benchmark release binary SHA-256: `9b6b1594e948e3f291ea9462d24d6413f868d6b3a89c72c8f3037517cafe3579`
-- manifest v3 SHA-256: `2867219602b7abe89ddd8994ab243c1a9f1d020eed5710dac4bb1d475eab92a8`
-- source fingerprint: `f8333be9f764af76b5d7e96d7a2967a44581405fca335fa27b1110f517f14e6b`
-- schema: manifest `3` / calibration run `2` / analyzer report `4` / benchmark report `3`
+| workload | p95 | gate | 判定 |
+|---|---:|---:|---|
+| process-fresh tone engine preview | 357.9901622 ms | ≤ 1,000 ms | 合格 |
+| warm exposure-perturbation engine proxy | 55.6492479 ms | ≤ 50 ms | 不合格 |
+| warm full-current-settings engine preview | 58.0226753 ms | ≤ 300 ms | 合格 |
+| full-resolution JPEG q0.92 | 225.92233125 ms | ≤ 3,000 ms | 合格 |
+
+現行runは`3 / 4`合格で、slider proxyだけが50ms gateを超えた。1 runだけなので安定性を証明しない。旧v3の連続3 runは`BENCHMARK.md`に履歴として保存するが、現行v4へ合格を継承しない。direct経路はpositive presentationも未確認で、UI p95やactual-screen parityの数値はまだない。
+
+### 7.5 証跡 ID
+
+- calibration run ID: `77c1c00b-2a1e-4e46-8713-99095ebda59c`
+- calibration release binary SHA-256: `89579b271f452f2f1273607b7ddd2464f50a432ff4718d99d9692959d2364fec`
+- benchmark run: `bbb5bc5b-7c12-4b29-b803-c863d6059d55`（3 / 4合格）
+- benchmark release binary SHA-256: `7563d61a41a66dd0a8762acf2374e1aa4aceff5fffb556405eaf619b739dcec0`
+- manifest v4 SHA-256: `87a9ea124bb8425a8efc8ef4fe79748c54b55097bfcfe503e96ef693304bb312`
+- source fingerprint: `1451c62b42e175814a316c1e7f8ffaaf44d17cd6ae9397ea8edd1e7eb74e3125`
+- schema: manifest `4` / calibration run `2` / analyzer report `5` / benchmark report `3`
 - 検証対象: 7 入力、24 source、122 / 122 artifact の構造・hash検証合格
 
-P1 前 calibration baseline の run ID は `d01a48c3-d87f-414a-adbd-8c944add796c` と記録されているが、run archive は保存されていない。benchmark baseline `d50876f0-9f32-4eed-b6d7-75ea51944ef9` は archive を保存している。現行 source の判断には上記 v3 calibration run と連続3 benchmark runを使い、過去の合格を継承しない。
+旧v3 run `ceea9eb4-b490-4a1f-9984-3d294e2f50bb` は `.photobench/calibration-archives/ceea9eb4-b490-4a1f-9984-3d294e2f50bb/`へ、run manifest記載の122 artifactとともに保存した。旧graphをv4閾値で後追い測定すると、P1524180はcomplete clip `2,972 → 4,013`、near clip `3,289 → 4,598`、新規plateau `0.00008444090509666081`、P1522877はcomplete clip `13 → 1,500`、near clip `2,927 → 4,927`、新規plateau `0.00008855997363796134`であり、両sceneともclip count非増加を満たさない。旧失敗を消さず、現行v4の改善証拠と対にして残す。
 
 ## 8. 現在の課題
 
@@ -264,12 +271,13 @@ P1 前 calibration baseline の run ID は `d01a48c3-d87f-414a-adbd-8c944add796c
 - WB は解析・保持までで、render へ未適用
 - Adobe Color / DCP、レンズ補正、ディテール、ノイズ低減は未対応または未校正
 - 実 UI の slider input-to-screen latency と drop frame をまだ測っていない
-- preview parity v3 で 3,072 / 3,840 px の両候補が各 3 / 6 比較不合格で、実 UI は安全のため full-resolution RAW decode 経路のまま
+- preview parity v4で3,072pxが2 / 6、3,840pxが4 / 6比較不合格で、実UIはfull-resolution RAW decode経路のまま
 - Metal 直接表示は GPU command completion までは到達したが、positive `presentedTime`を得られず、actual-screen 表示成功・実画面1 LSB parity・UI p95を確認できていない
 - 編集の再起動後復元、SQLite カタログ、評価・選別、検索が未実装
 - クロップ、回転、ブラシ部分補正が未実装
 - 原寸 JPEG 以外の主要 export 契約が不足
-- Lightroom 契約中にしか確保できない可能性がある教師画像、代表A/B比較出力、原本・評価・アルバム・編集メタデータの完全ローカル退避手順が未確定
+- 校正runnerは単一ユーザーの直列実行を前提としており、別processの同時起動を排他するcross-process lockがない
+- 教師画像、代表A/B比較出力、原本・評価・アルバム・編集メタデータの完全ローカル退避手順が未確定。ただしLightroomを当面継続するため、解約期限を想定した緊急作業ではない
 
 ### 8.2 品質上のリスク
 
@@ -286,12 +294,13 @@ P1 前 calibration baseline の run ID は `d01a48c3-d87f-414a-adbd-8c944add796c
 
 ### 8.3 現在つまずいている点と扱い
 
-1. **Metal drawable の実提示**: command buffer は completed になるため graph や GPU 実行の単純失敗ではない。初回の `presentedTime = 0` と再試行後の callback 欠落が残り、drawable lifecycle / presentation timing の境界で止まっている。10秒 watchdog と一方向 fallback により利用不能にはならないが、成功条件を満たしていない。
-2. **縮小 RAW preview の画質契約**: 3,072 / 3,840 px は平均色差・EV等を通っても、事前登録した spatial plateau gate を各3比較で超えた。結果を見て閾値を変えず不採用にした。別の draft / settle 仮説を試す場合は既存 v3 を変更せず、新契約として扱う。
+1. **Metal drawable の実提示と二段目の縮小**: command buffer は completed になるため graph や GPU 実行の単純失敗ではない。初回の `presentedTime = 0` と再試行後の callback 欠落が残り、drawable lifecycle / presentation timing の境界で止まっている。さらにopt-inの直接表示は、canonical settle済みの2,560px rasterをdrawableへaffine fitするため、より小さい画面では品質契約外の二段目縮小が入り得る。positive presentationと実画面品質が成立した後、drawable寸法へのLanczos生成またはfit filter契約を決めるまで製品採用しない。10秒 watchdog と一方向 fallback により利用不能にはならないが、成功条件を満たしていない。
+2. **縮小 RAW preview の画質契約**: 3,072 / 3,840 px は平均色差・EV等を通っても、事前登録した spatial plateau gate をそれぞれ2 / 6、4 / 6比較で超えた。結果を見て閾値を変えず不採用にした。別のdraft仮説を試す場合は既存証跡を変更せず、新契約として扱う。
 3. **画質の一般化**: 2シーンだけでは、P1524180のEV失敗が実装欠陥、camera profile差、シーン固有過学習のどれかを十分切り分けられない。Lightroom 契約中のデータ確保を先に行い、その後に独立 holdout 付きで再設計する。
-4. **製品ループの未成立**: 編集値が終了時に消え、17,000枚の選別・検索・再リンクができないため、現状は日常利用から改善情報を得られる段階にない。ここは性能研究より解約への寄与が大きい。
+4. **製品ループの未成立**: 編集値が終了時に消え、17,000枚の選別・検索・再リンク、クロップができないため、現状は日常利用から改善情報を得られる段階にない。
+5. **校正の同時実行**: 旧complete runの検証付きarchiveと不完全runの回復は実装したが、複数processを跨ぐlockは未実装である。同時runを避ける運用が必要で、将来の自動化前に排他契約を追加する。
 
-このため、Metal は「positive presentation を得るための短い切り分け」と「app lifecycle テスト境界の抽出」までで timebox する。それで閉じなければ既定 OFF のまま保留し、Lightroom 契約資産の退避、編集永続化、SQLiteカタログ、埋め込みJPEGを用いた選別へ優先度を移す。`cacheIntermediates = true`、linear RAW 土台、DCP、SSIMULACRA2、draft / settle 等の外部提案は有望な仮説だが、RSS、ライセンス、知覚相関、画質を未実測のため、現時点では採用済み事実にしない。
+このため、Metal は「positive presentation を得るための短い切り分け」と「app lifecycle テスト境界の抽出」まででtimeboxする。それで閉じなければ既定OFFのまま保留する。主軸はLightroom教師を用いたRAW WB・EV・camera profileの品質改善とscene拡張であり、並行して編集永続化、SQLiteカタログ、クロップ、埋め込みJPEGを用いた選別を進める。`cacheIntermediates = true`、linear RAW土台、DCP、SSIMULACRA2、draft表示等は有望な仮説だが、RSS、ライセンス、知覚相関、画質を未実測のため採用済み事実にしない。
 
 ## 9. 承認済みの P1 方針
 
@@ -309,7 +318,7 @@ P1 前 calibration baseline の run ID は `d01a48c3-d87f-414a-adbd-8c944add796c
 - 欠測、寸法不一致、hash 不一致は構造エラーとして不合格
 - 原寸 export の既存 hash / 画質 gate は非回帰
 
-実装と正式測定は完了した。122 artifact の構造・hash 検証は合格し、両候補とも平均 ΔE00、ぼかし後 ΔE00 p95、絶対 EV、plateau 純面積増加は全比較で合格したが、dilation 外面積が各3比較で不合格だった。`selectedCandidate = null` と失敗証跡を保存し、実 UI は full-resolution RAW decode を維持している。
+実装と正式測定は完了した。122 artifact の構造・hash 検証は合格し、両候補とも平均 ΔE00、ぼかし後 ΔE00 p95、絶対 EV、plateau 純面積増加は全比較で合格したが、dilation 外面積は3,072px候補で2 / 6比較、3,840px候補で4 / 6比較が不合格だった。`selectedCandidate = null` と失敗証跡を保存し、実 UI は full-resolution RAW decode を維持している。
 
 ### P1-1 preview / export intent を分離する
 
@@ -353,47 +362,47 @@ signpostとfallback診断は実装したが、positive presentationが得られ�
 
 deprecated CIKL の packaged Metal kernel 化は必要だが、現 baseline の第一ボトルネックではない。preview pipeline の profile 後に行い、CPU / software / Metal、色域 grid、全校正 artifact を非回帰にする。
 
-### P1 preview parity v3 の完了結果と次の判断
+### P1 preview parity / canonical settle v4 の完了結果と次の判断
 
-最終出力 `2,560 px`と RAW decode 寸法 `3,072 / 3,840 px`を分離した v3 実験は、再現可能な artifact、手順、morphology 合成 fixture を manifest v3 へ固定して正式実行済みである。最大値と採否は次のとおり。
+最終出力 `2,560 px`と RAW decode 寸法 `3,072 / 3,840 px`を分離した実験は、再現可能なartifact、手順、morphology合成fixtureをmanifest v4へ固定して正式実行済みである。最大値と採否は次のとおり。
 
 | decode → final | 最大平均 ΔE00 | 最大ぼかし ΔE00 p95 | 最大絶対 EV | 最大 plateau 純増 | 最大 1 px dilation 外面積 | 不合格比較 | 採否 |
 |---:|---:|---:|---:|---:|---:|---:|---|
-| 3,072 → 2,560 | 0.48950815200805664 | 1.5770659446716309 | 0.0057839141227304935 | 0.000016247437024018745 | 0.00012288554481546573 | 3 / 6 | 不採用 |
-| 3,840 → 2,560 | 0.41729527711868286 | 1.256845235824585 | 0.00444698566570878 | 0.00004622510251903925 | 0.0001519478617457528 | 3 / 6 | 不採用 |
+| 3,072 → 2,560 | 0.48846879601478577 | 1.5748517513275146 | 0.005485501606017351 | 0.000054920913884007027 | 0.00012105484768599882 | 2 / 6 | 不採用 |
+| 3,840 → 2,560 | 0.416765421628952 | 1.2567764520645142 | 0.00424525560811162 | 0.00009954415641476274 | 0.00021281854130052725 | 4 / 6 | 不採用 |
 
 両候補とも、参照 plateau の固定1 px拡張外にある spatially-distinct new area だけが上限 `0.0001`を超えた。旧 direct 2,560 px decode と exact-coordinate set-difference は履歴・診断値として残すが、現行採否には使わない。正式結果を見た後に閾値を緩めず、`selectedCandidate = null`、fallback は full-resolution RAW decode とする。
 
-この判断を受け、full-resolution decodeを保った Metal直接表示を実装した。offscreen fixtureは1 LSB以内を通ったが、実画面のpositive presentationは未確認で、UI p95も得られていない。次は presentation lifecycleの切り分けを短くtimeboxし、閉じなければ実験経路を既定OFFで保留する。縮小候補、staged render、draft / settle、detail windowを再検討する場合も、既存 v3を書き換えず、独立manifestと事前登録した知覚・settle・メモリ条件を持つ新しい仮説として扱う。
+現行productionのsettle順序はextended-linear編集→edge-clamped Lanczos→terminal sRGBへ固定し、2sceneのclip count `0 → 0`とplateau上限を通過した。一方、縮小RAW候補は不採用で、full-resolution decodeを保ったMetal直接表示も実画面のpositive presentationは未確認である。canonical settle合格をpreview速度やLightroom品質の合格へ読み替えない。
 
 ## 10. その後のロードマップ
 
-Lightroom解約から逆算し、次の順へ更新する。
+Lightroomは当面継続し、画質・機能性をLightroomと遜色ない水準へ近づけることから逆算して次の順へ更新する。
 
-1. **Lightroom契約資産の確保（最優先・時限）**
-   - 逆光、肌色、人工照明、高彩度、低照度、ISO違いを含む代表シーンと、各スライダー単独掃引・主要プリセットの16bit基準出力をローカルへ保存
-   - 解約後もA/B比較できる代表workflow出力を保存
-   - 17,000枚の原本、評価、フラグ、アルバム構造、編集値/XMPを何が欠けずに退避できるか確認し、hashと件数付きの移行manifestを作る
-   - 利用中のLightroomエディションと取得できるメタデータ範囲は未確認なので、クラウド版ともClassicとも決めつけず、`.lrcat`の存在を前提にせず実データで検証する
+1. **画質データを増やし、RAW現像差を分解**
+   - 逆光、肌色、人工照明、高彩度、低照度、ISO違いを含む5〜10以上の教師sceneと、最後まで調整に使わないsealed holdoutを作る
+   - As Shot / 色温度 / tint、各基本スライダー単独掃引、ColorChecker、主要プリセットを同条件の16bit基準出力として保存する
+   - P1524180のEV差をcurve、mixer、RAW WB、baseline exposure、camera profileへ分解し、Core Image RAWとDCP対応backend候補を同じ受け入れ契約で比較する
 2. **Metal実験の終了条件を確定**
    - positive presentationの取得とapp lifecycle test境界の抽出だけを短いtimeboxで試す
    - 未解決なら `metal-direct`を既定OFFの診断経路として保留し、legacy表示で製品機能を進める。`cacheIntermediates`は定常RSS、上限、evictionを測るまで有効化しない
-3. **編集永続化とSQLiteカタログ**
+3. **Lightroom相当の日常編集機能を埋める**
+   - RAW WB render、Undo / Redo、クロップ・回転、Before / After、export presetを優先する
+   - 実験的curve / mixerはholdout合格まで既定OFFを維持する
+4. **編集永続化とSQLiteカタログ**
    - 写真ID、編集値、評価、flag、原本参照を保存し、再起動後に復元
    - 原本と再生成可能cacheを分離し、SSD未接続を削除・破損ではなく復旧可能な状態として扱う
    - DB設定、バックアップ、部分hash、FSEvents、FTS5等は調査提案を候補にするが、採用前にmacOS実装と復旧試験で確認する
-4. **選別モードと多解像度cache**
+5. **選別モードと多解像度cache**
    - 埋め込みJPEGを一覧・fit表示へ使い、ズームや編集時だけRAWへ切り替える仮説を実装・実測
    - 評価、pick/reject、auto-advance、比較、サムネイル優先度制御を追加し、17,000枚で起動・送り・スクロールを測る
-5. **日常編集の不足を埋める**
-   - Undo / Redo、WB render、export preset、クロップ・回転、写真比較
-   - その後に非AIブラシ、部分補正、アルバム、検索、フィルター、バックアップと再リンクUX
-6. **画質土台の再設計**
-   - 手順1で確保した多様な教師シーンと、最初から分離した独立holdoutを使う
-   - P1524180 / RAWのEV driftをcurve、mixer、WB、camera profile、baseline exposure候補へ分解
-   - linear RAW土台、DCP、制約付きfit、SSIMULACRA2、フリッカー試験は「有望な調査仮説」であり、新manifest、ライセンス確認、感度検証、事前登録した合否条件を通ったものだけ採用
+6. **非AIの部分補正と整理を完成**
+   - ブラシ、部分補正、アルバム、検索、フィルター、バックアップと再リンクUX
+7. **将来のLightroom終了に備えた移行確認**
+   - 原本、評価、フラグ、アルバム構造、編集値/XMPを何が欠けずに退避できるか確認し、hashと件数付きmanifestを作る
+   - 利用中のLightroomエディションと取得できるメタデータ範囲は実データで確認する。現時点では期限付き作業にしない
 
-手順1は他作業と並行できるが、契約終了後に取り戻せない可能性があるため先送りしない。手順2は製品開発全体を止めない。まず「編集して閉じても残る」「多数写真を速く選べる」という日常ループを成立させ、その実利用から次の優先度を更新する。
+品質データの拡張と日常機能は並行できる。Metalの未解決だけで製品開発全体を止めない一方、Lightroom相当という最終目標に直結するRAW WB、EV、profile差を後回しにして「機能があるだけ」の完成扱いにもしない。
 
 ## 11. 再現方法
 
@@ -402,14 +411,15 @@ cd /Users/takuyatakahama/Documents/app/NIHO/others/photo
 swift test
 python3 scripts/test_analyze_calibration.py
 swift run -c release PhotoBenchCalibration /Users/takuyatakahama/Documents/app/NIHO/others/photo
-python3 scripts/analyze-calibration.py /Users/takuyatakahama/Documents/app/NIHO/others/photo --enforce-preview-parity
+python3 scripts/analyze-calibration.py /Users/takuyatakahama/Documents/app/NIHO/others/photo --enforce-canonical-settle
+python3 scripts/analyze-calibration.py /Users/takuyatakahama/Documents/app/NIHO/others/photo --enforce --enforce-preview-parity --enforce-canonical-settle
 swift run -c release PhotoBenchBenchmark /Users/takuyatakahama/Documents/app/NIHO/others/photo
 ./scripts/build-app.sh
 ```
 
-厳格モードでは、全合格を exit `0`、eligible run の数値 gate 不合格を exit `1`、構造・hash・runtime不整合およびineligible / `notEvaluated`を exit `2`とする。非enforceの正常な診断runは`notEvaluated`でもexit `0`だが、合格証跡には使わない。現校正は Lightroom 品質 1 件と preview parity v3 の 6 / 12 比較が不合格なので、現行 report を厳格評価すると exit `1`である。上記 `swift run -c release PhotoBenchCalibration` は新しい測定を開始するため、その結果の exit code は実行前に断定しない。
+厳格モードでは、全合格をexit `0`、eligible runの数値gate不合格をexit `1`、構造・hash・runtime不整合およびineligible / `notEvaluated`をexit `2`とする。現行runではcanonical settle単独は合格してexit `0`、Lightroom品質とpreview parityを含めると不合格でexit `1`になる。上記`swift run -c release PhotoBenchCalibration`は新しい測定を開始するため、その結果は新runの証跡で判断する。
 
-benchmark の現行 source 固定連続3正式runは、すべて `3 / 4`合格で、warm slider engine proxyだけが3 runとも不合格だった。これは同じ shell loop 内の直列反復で、統計的に独立な再現性試験ではない。engine proxyをUI応答として解釈せず、3 runとsystem-load診断を全件保存する。
+benchmarkの現行v4正式runは1件だけで`3 / 4`合格、warm slider engine proxyだけが不合格だった。engine proxyをUI応答や安定性として解釈せず、追加runは別IDで全件保存する。
 
 ## 12. 文書の読み分け
 
@@ -427,8 +437,8 @@ benchmark の現行 source 固定連続3正式runは、すべて `3 / 4`合格�
 ## 13. 新しいセッションへの引継ぎ手順
 
 1. この文書、`BENCHMARK.md`、`CALIBRATION.md`、`DESIGN.md` の順に読む。
-2. `.photobench/calibration/report.json`、`.photobench/benchmark/latest.json`、`BENCHMARK.md`記載の現行3 run archiveを確認し、文書やlatest単体の数値を盲信しない。
-3. `calibration/manifest-v3.json` と run manifest の hash、source fingerprint、run ID を照合する。旧 direct 2,560 px decode や P1前を調べる場合だけ過去manifestを明示指定し、現行採否へ混ぜない。
+2. `.photobench/calibration/report.json`、`.photobench/benchmark/latest.json`、現行v4 run `bbb5bc5b-7c12-4b29-b803-c863d6059d55`を確認する。旧v3 benchmark 3 runは履歴としてだけ参照する。
+3. `calibration/manifest-v4.json` と run manifest の hash、source fingerprint、run ID を照合する。旧v3は`.photobench/calibration-archives/`で明示的に参照し、現行採否へ混ぜない。
 4. 「Lightroom 相当」を単一の ΔE や処理式で断定せず、画質、操作感、非破壊性、整理、書き出しの不足を分けて評価する。
 5. 新しい改善案には、ユーザー価値、非回帰条件、測定方法、失敗時の rollback 境界を含める。
 6. source または manifest を変更したら、古い report / benchmark を現行証跡として扱わず、全 suite を再実行する。

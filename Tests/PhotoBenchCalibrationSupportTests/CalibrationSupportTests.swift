@@ -17,7 +17,9 @@ struct CalibrationSupportTests {
         let loaded = try CalibrationManifestLoader.load(root: projectRoot)
         let previewParity = try #require(loaded.manifest.previewParity)
 
-        #expect(loaded.manifest.schemaVersion == 3)
+        let settleGate = try #require(loaded.manifest.canonicalSettleGate)
+
+        #expect(loaded.manifest.schemaVersion == 4)
         #expect(loaded.manifest.scenes.count == 2)
         #expect(loaded.manifest.stageMatrix.count == 12)
         #expect(loaded.manifest.processing.sourceFiles.count == 24)
@@ -44,6 +46,23 @@ struct CalibrationSupportTests {
             previewParity.thresholds.spatiallyDistinctNewSharedPlateauMaximumArea
                 == 0.000_1
         )
+        #expect(settleGate.outputMaxDimension == 2_560)
+        #expect(settleGate.downsamplingFilter == "CILanczosScaleTransform")
+        #expect(settleGate.inputAspectRatio == 1)
+        #expect(settleGate.workingColorSpace == "extended-linear-sRGB")
+        #expect(settleGate.outputTransformPlacement == "after-downsampling")
+        #expect(settleGate.baselineStageID == "basic-legacy")
+        #expect(settleGate.candidateStageID == "full-current")
+        #expect(
+            abs(
+                settleGate.thresholds.completeClipNormalizedMinimum
+                    - (1 - 0.5 / 65_535)
+            ) < 0.000_000_000_001
+        )
+        #expect(settleGate.thresholds.nearClipNormalizedMinimum == 0.999)
+        #expect(settleGate.thresholds.completeClipMaximumPixelCountIncrease == 0)
+        #expect(settleGate.thresholds.nearClipMaximumPixelCountIncrease == 0)
+        #expect(settleGate.thresholds.newSharedPlateauMaximumArea == 0.0005)
         #expect(loaded.manifest.benchmark.warmupIterations == 5)
         #expect(loaded.manifest.benchmark.processFreshIterations == 40)
         #expect(
@@ -81,6 +100,7 @@ struct CalibrationSupportTests {
 
         #expect(loaded.manifest.schemaVersion == 1)
         #expect(loaded.manifest.previewParity == nil)
+        #expect(loaded.manifest.canonicalSettleGate == nil)
         #expect(
             loaded.manifest.processing.fingerprint.rawDecode
                 == PhotoCoreProcessingFingerprint.legacyRawDecodeIdentifier
@@ -99,6 +119,7 @@ struct CalibrationSupportTests {
         let previewParity = try #require(loaded.manifest.previewParity)
 
         #expect(loaded.manifest.schemaVersion == 2)
+        #expect(loaded.manifest.canonicalSettleGate == nil)
         #expect(previewParity.maxDimension == 2_560)
         #expect(previewParity.outputMaxDimension == nil)
         #expect(previewParity.candidateDecodeMaximumDimensions == nil)
@@ -109,6 +130,24 @@ struct CalibrationSupportTests {
         #expect(
             CalibrationManifestLoader.expectedArtifactRelativePaths(for: loaded.manifest).count
                 == 116
+        )
+    }
+
+    @Test func schemaV3ManifestRemainsHistoricalAndExplicitlyLoadable() throws {
+        let loaded = try CalibrationManifestLoader.load(
+            root: projectRoot,
+            manifestURL: projectRoot.appendingPathComponent("calibration/manifest-v3.json")
+        )
+
+        #expect(loaded.manifest.schemaVersion == 3)
+        #expect(loaded.manifest.canonicalSettleGate == nil)
+        #expect(
+            loaded.manifest.processing.fingerprint
+                == PhotoCoreProcessingFingerprint.legacyCurrentRawDecode
+        )
+        #expect(
+            CalibrationManifestLoader.expectedArtifactRelativePaths(for: loaded.manifest).count
+                == 122
         )
     }
 
@@ -306,7 +345,7 @@ struct CalibrationSupportTests {
         }
     }
 
-    @Test func schemaV3PreviewParityContractFailsClosed() throws {
+    @Test func schemaV4PreviewParityContractFailsClosed() throws {
         let missingPreviewParity = try mutatedManifest { object in
             object.removeValue(forKey: "previewParity")
         }
@@ -445,6 +484,90 @@ struct CalibrationSupportTests {
         }
         #expect(throws: CalibrationManifestError.self) {
             try CalibrationManifestLoader.validateStructure(wrongDecodeFingerprint)
+        }
+    }
+
+    @Test func schemaV4CanonicalSettleAndFingerprintFailClosed() throws {
+        let missingGate = try mutatedManifest { object in
+            object.removeValue(forKey: "canonicalSettleGate")
+        }
+        #expect(throws: CalibrationManifestError.self) {
+            try CalibrationManifestLoader.validateStructure(missingGate)
+        }
+
+        for (field, value) in [
+            ("outputMaxDimension", 2_048 as Any),
+            ("downsamplingFilter", "CIAffineTransform" as Any),
+            ("inputAspectRatio", 0.9 as Any),
+            ("workingColorSpace", "sRGB" as Any),
+            ("outputTransformPlacement", "before-downsampling" as Any),
+            ("baselineStageID", "neutral" as Any),
+            ("candidateStageID", "basic-legacy" as Any)
+        ] {
+            let wrongContract = try mutatedManifest { object in
+                var gate = object["canonicalSettleGate"] as! [String: Any]
+                gate[field] = value
+                object["canonicalSettleGate"] = gate
+            }
+            #expect(throws: CalibrationManifestError.self) {
+                try CalibrationManifestLoader.validateStructure(wrongContract)
+            }
+        }
+
+        for (field, value) in [
+            ("completeClipNormalizedMinimum", 0.999 as Any),
+            ("nearClipNormalizedMinimum", 0.998 as Any),
+            ("completeClipMaximumPixelCountIncrease", 1 as Any),
+            ("nearClipMaximumPixelCountIncrease", 1 as Any),
+            ("newSharedPlateauMaximumArea", 0.000_6 as Any)
+        ] {
+            let wrongThreshold = try mutatedManifest { object in
+                var gate = object["canonicalSettleGate"] as! [String: Any]
+                var thresholds = gate["thresholds"] as! [String: Any]
+                thresholds[field] = value
+                gate["thresholds"] = thresholds
+                object["canonicalSettleGate"] = gate
+            }
+            #expect(throws: CalibrationManifestError.self) {
+                try CalibrationManifestLoader.validateStructure(wrongThreshold)
+            }
+        }
+
+        let legacyPipelineInV4 = try mutatedManifest { object in
+            var processing = object["processing"] as! [String: Any]
+            var fingerprint = processing["fingerprint"] as! [String: Any]
+            fingerprint["renderPipeline"] = RenderEngine.legacyProcessingIdentifier
+            processing["fingerprint"] = fingerprint
+            object["processing"] = processing
+        }
+        #expect(throws: CalibrationManifestError.self) {
+            try CalibrationManifestLoader.validateStructure(legacyPipelineInV4)
+        }
+
+        let currentPipelineInV3 = try mutatedManifest(
+            relativePath: "calibration/manifest-v3.json"
+        ) { object in
+            var processing = object["processing"] as! [String: Any]
+            var fingerprint = processing["fingerprint"] as! [String: Any]
+            fingerprint["renderPipeline"] = RenderEngine.processingIdentifier
+            processing["fingerprint"] = fingerprint
+            object["processing"] = processing
+        }
+        #expect(throws: CalibrationManifestError.self) {
+            try CalibrationManifestLoader.validateStructure(currentPipelineInV3)
+        }
+
+        let v4GateInV3 = try mutatedManifest { v4 in
+            let gate = v4["canonicalSettleGate"]
+            let v3URL = projectRoot.appendingPathComponent("calibration/manifest-v3.json")
+            var v3 = try! JSONSerialization.jsonObject(
+                with: Data(contentsOf: v3URL)
+            ) as! [String: Any]
+            v3["canonicalSettleGate"] = gate
+            v4 = v3
+        }
+        #expect(throws: CalibrationManifestError.self) {
+            try CalibrationManifestLoader.validateStructure(v4GateInV3)
         }
     }
 

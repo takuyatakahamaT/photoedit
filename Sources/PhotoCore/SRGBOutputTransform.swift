@@ -2,8 +2,10 @@ import CoreImage
 import Foundation
 
 /// The only bounded stage in the Photo Bench pipeline. Working pixels remain
-/// extended-linear until this output transform: a ratio-preserving highlight
-/// shoulder first, then a fixed-lightness/fixed-hue OKLCh chroma compression.
+/// extended-linear through edits and any canonical resize. This terminal color
+/// stage applies a ratio-preserving highlight shoulder, then fixed-lightness /
+/// fixed-hue OKLCh chroma compression. Do not place a value-generating filter
+/// after it in the production graph.
 enum SRGBOutputTransform {
     static let identifier = "extended-linear-to-srgb-soft-output-v2"
     static let highlightKnee = 0.99

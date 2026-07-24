@@ -1,6 +1,6 @@
 # Photo Bench（仮称）設計書
 
-- 状態: Phase 0証跡基盤、P1 preview parity v3正式評価、原寸decode graphのMetal直接表示プロトタイプを実装。縮小decode候補は不採用、Metal経路は実画面のpresent未成立のためopt-in、既定は従来表示
+- 状態: Phase 0証跡基盤、preview parity、canonical settle v4、原寸decode graphのMetal直接表示プロトタイプを実装。v4縮小順序は2 development sceneで合格したが、Lightroom品質と縮小decode候補は不合格。Metal経路は実画面のpresent未成立のためopt-in、既定は従来表示
 - 対象: 自分専用のmacOSデスクトップアプリ
 - 作成日: 2026-07-23
 - 最終更新: 2026-07-24（JST）
@@ -12,24 +12,24 @@
 
 推奨するのは、**SwiftUI + AppKit + Core Image/Metal + SQLite**によるネイティブmacOSアプリ。写真は`hihirohub`上の実ファイルを参照し、元画像には手を加えず、編集内容だけをカタログに保存する「非破壊編集」にする。
 
-最初からLightroom全機能の再現を目指さず、契約終了のクリティカルパスに沿って次の順で作る。
+Lightroomは当面継続し、教師と退避手段に使う。解約を急いで機能数を増やさず、画質と日常機能を遜色ない水準へ近づけるため次の順で作る。
 
-1. Lightroom契約中に、機種・照明・補正を層別した教師書き出しと、原本・編集メタデータ・評価・アルバムの移行データを保全する
-2. 編集の自動保存、SQLiteカタログ、評価・選別、埋め込みJPEGによる高速表示で「日常で使える最小ループ」を成立させる
-3. WBレンダーとクロップを完成させ、不足する画質は追加教師で検証する
+1. 既知のLightroom差を分解し、RAW WB、camera profile / DCP、tone / colorを教師sweepとholdoutで校正する
+2. 編集の自動保存、SQLiteカタログ、評価・選別で「編集して閉じても残る」最小ループを成立させる
+3. クロップ・回転、100% detail、sharpening / noise reduction / lens correctionを品質契約付きで完成させる
 4. ブラシマスク、アルバム、検索、比較へ広げる
 
 最大の注意点はXMPである。XMPは完成画像の色を定義するLUTではなく、Adobe Camera Raw向けの現像パラメータ群である。ファイルを解析することはできるが、Adobeの現像エンジン、カメラプロファイル、レンズプロファイルまで同じではないため、**Lightroomとピクセル単位で完全一致は保証しない**。ただしプロ用途を前提に、手元の実画像とLightroom基準書き出しを使った差分検証を導入し、対応項目については「雰囲気が近い」ではなく、実用上できる限り見分けにくい水準を目標にする。
 
 ### 1.1 現在の到達点
 
-2026-07-24時点で、SwiftUIの3ペイン`.app`、JPEG/RW2読込、DC-S5機種限定RAW校正、8本の調整スライダー、4 XMPの解析、原寸sRGB JPEG出力、Lightroom TIFFとの差分測定まで実装済み。写真ルートはApp Sandbox内からユーザー選択し、security-scoped bookmarkで次回起動へ復元する。基本階調は`analytic-monotonic-hdr-basic-tone-v3`で、極端値でも有限・単調になるclean-room近似である。トーンカーブはencoded-sRGBの1D曲線とHDR端点外挿、カラーミキサーはOKLCh 8色バンドへ置き換えた。出力直前にmax-channel highlight shoulderと固定lightness / hueの色域圧縮を一度だけ適用し、途中のHDR値を0〜1へclampしない。HSL/curveは2基準画像だけでは業務品質を承認できないため初期OFFにしている。
+2026-07-24時点で、SwiftUIの3ペイン`.app`、JPEG/RW2読込、DC-S5機種限定RAW校正、8本の調整スライダー、4 XMPの解析、原寸sRGB JPEG出力、Lightroom TIFFとの差分測定まで実装済み。写真ルートはApp Sandbox内からユーザー選択し、security-scoped bookmarkで次回起動へ復元する。基本階調は`analytic-monotonic-hdr-basic-tone-v3`で、極端値でも有限・単調になるclean-room近似である。現行graphはextended-linear-sRGBで編集し、edge-clamped Lanczos縮小の後にmax-channel shoulderと固定lightness / hueの色域圧縮を含むterminal sRGB transformを一度だけ適用する。HSL/curveは2基準画像だけでは業務品質を承認できないため初期OFFにしている。
 
-P1では`interactive-preview`と`full-resolution`のdecode intent、原寸export guard、run archive、app-sideを含むsource fingerprint、強化したrelease benchmarkまで実装した。1つの`RenderEngine`内でもpreview / exportの`CIContext`を別instanceへ分離し、現スライスでは双方cache無効としている。manifest v2の直接2,560px RAW候補は履歴上不採用である。現行manifest v3では、原寸・3,072px・3,840px decodeへ同じ編集を施し、共通Lanczosで最終2,560pxへ揃えた2シーン×3段階の正式比較を行った。両縮小候補とも色差、EV、plateau純面積増加は全比較で合格したが、1px境界許容外の新規plateau面積が各3 / 6比較で上限を超えた。候補は選択せず、現表示は原寸decode経路を維持する。
+P1では`interactive-preview`と`full-resolution`のdecode intent、原寸export guard、run archive、app-sideを含むsource fingerprint、release benchmarkまで実装した。manifest v4のpreview parityでは、3,072px候補が2 / 6、3,840px候補が4 / 6比較で1px dilation外のspatial plateau上限を超えた。候補は選択せず、productionはfull-resolution RAW decodeを維持する。canonical settleは2 development sceneともcomplete / near clip `0 → 0`、新規plateau上限内で合格した。旧v3の縮小後clip増加はarchiveへ保存し、現行passだけを残す運用にはしていない。
 
 その後、productionの原寸decode graphをCPU bitmapへ戻さず、`CIRenderDestination`からsRGB / SDR `MTKView`へ直接描画するプロトタイプを追加した。`PHOTO_BENCH_PREVIEW_ROUTE=metal-direct`の完全一致でのみopt-inし、既定はlegacyとする。黒レターボック付きaspect fit、1 in-flight + latest pending、expected-ID claim、window-level可視性、上限付き再描画、可視状態の10秒deadline、signpost / counter、その起動中の一方向fallbackを持つ。preview cacheはRSS・回収契約がない間`cacheIntermediates = false`とする。
 
-性能証跡はbenchmark schema v3へ進み、現行source・binary固定の連続3正式runと、run / workload / process-fresh workerごとのsystem loadを保存する。source fingerprint `f8333be9f764af76b5d7e96d7a2967a44581405fca335fa27b1110f517f14e6b`の3 runでは、slider proxyが0 / 3、ほか3 workloadが3 / 3合格だった。負荷値でsampleを削除・再試行せず、単発passを製品採用の根拠にしない。
+現行v4のformal benchmark run `bbb5bc5b-7c12-4b29-b803-c863d6059d55`は3 / 4合格し、warm sliderだけが`55.649 ms`で50ms gateを超えた。現行sourceのrunは1回だけなので安定性を証明しない。旧v3の連続3 runは履歴として残すが、現行合否へ継承しない。
 
 Metal直接表示のnative rasterは従来経路と全channel 1 LSB以内で一致し、queue / aspect fitも自動テストを通過した。最終ハードニング直前の実UI smokeではGPU commandが2回`completed`になった後、1回目は`presentedTime == 0`、2回目はpresented callback不返却となり、10秒deadlineでlegacyへfallbackした。その後に`drawableSize > 0`のwatchdog条件と`allowsNextDrawableTimeout = true`を追加し、最終sourceではfallback後のlegacy写真と空表示がないことを再確認したが、同じ詳細traceは再取得していない。したがってpositive presentation、実画面parity・p95・drop率・RSSは未承認である。
 
@@ -37,13 +37,13 @@ Metal直接表示のnative rasterは従来経路と全channel 1 LSB以内で一�
 
 ### 1.2 画質ゲートの到達点
 
-C1 shoulder修正後の最終レポートでは、P1524180 / P1522877のRAW・Lightroom入力計4経路すべてで、`full`の平均ΔEが`basic`より改善した（`7.592 → 6.796`、`5.556 → 4.835`、`5.858 → 3.341`、`5.468 → 3.417`）。complete clipとnear clipはbasic / fullともに全経路0、新規共有plateauも`0.00036 / 0.00037 / 0.00007 / 0.00017`で上限`0.0005`以内だった。
+v4最終レポートでは、P1524180 / P1522877のRAW・Lightroom入力計4経路すべてで、`full`の平均ΔEが`basic`より改善した（`7.5927 → 6.7963`、`5.5557 → 4.8355`、`5.8595 → 3.3423`、`5.4686 → 3.4174`）。complete clipとnear clipはbasic / fullともに全経路0、新規共有plateauも上限`0.0005`以内だった。
 
-唯一の不合格はP1524180 / RAWの平均EV差である。basicの`+0.00376 EV`に対してfullが`+0.20779 EV`となり、許容上限`0.05376 EV`を超えた。他3経路のfull EV差は`+0.02628 / +0.00697 / -0.08396 EV`で各上限内に収まる。したがって安全性ゲートの大半は成立したが、全体判定は不合格であり、実験的HSL/curveの事業品質は未達とする。初期OFFを維持し、2シーンの結果を一般化しない。詳細は`CALIBRATION.md`と`.photobench/calibration/report.json`を正とする。
+唯一の不合格はP1524180 / RAWの平均EV差である。basicの`+0.003839 EV`に対してfullが`+0.207869 EV`となり、許容上限`0.05384 EV`を超えた。目視でもLightroom-afterより明るく、暖色・マゼンタと青の彩度が強い。したがって全体判定は不合格で、実験的HSL/curveの初期OFFを維持する。2sceneは両方development foldでholdoutがなく、結果を一般化しない。
 
 ### 1.3 性能ゲートの到達点
 
-manifest固定の24MP RAWをrelease build、warm各20回・process-fresh 40回で、同一source・binaryの正式runを直列に3回測定した。process-fresh p95は`960.77 / 369.03 / 575.27 ms`で3 / 3合格、warm exposure-perturbation engine proxyは`396.32 / 59.84 / 52.75 ms`で0 / 3合格、warm full-current-settings previewと原寸JPEGは3 / 3合格だった。これは画質不採用の直接2,560px実験engine経路であり、productionの原寸decode UIやinput-to-screenを測ったものではない。Metal直接表示プロトタイプもpositive presentationが成立しないため、実UI性能は依然として未評価である。測定契約と未計測範囲は`BENCHMARK.md`を正とする。
+manifest v4固定の24MP RAWをrelease buildで測った現行formal runは、process-fresh `357.990 ms`、warm high-quality `58.023 ms`、原寸JPEG `225.922 ms`が合格し、warm slider `55.649 ms`だけが50ms gateに不合格だった。1 runだけであり安定性を証明しない。これは実験2,560px engine経路で、production full-decode UIやinput-to-screenを測ったものでもない。
 
 ## 2. Goal
 
@@ -349,7 +349,7 @@ UIと画像処理を別ターゲットにし、スライダーの見た目を触
 - **Phase 1目標:** 編集値を写真ごとのversioned JSONとしてSQLiteへ自動保存する。
 - **Phase 1目標:** Undo/Redoはセッション内スタックに保持し、確定状態だけを永続化する。永続履歴テーブルは必要性を確認してから追加する。
 - プレビューと書き出しは同じ編集モデルから生成する。
-- プレビューの最終表示は表示解像度、書き出しは原寸で再レンダリングする。現行production RAWはfull-resolution decode後に表示寸法へrender / downscaleし、RAW自体を縮小decodeする`scaleFactor`候補はparity v3不合格のため未接続とする。
+- プレビューの最終表示は表示解像度、書き出しは原寸で再レンダリングする。現行production RAWはfull-resolution decode後に表示寸法へrender / downscaleし、RAW自体を縮小decodeする`scaleFactor`候補はparity v4不合格のため未接続とする。
 - RAW native寸法は正の有限整数として検証し、0・非有限・不明なら整数化前にfail closedとする。exportは実image extentも非有限・非正・原寸不一致なら拒否する。
 - 1つの`RenderEngine`はpreview / export用に別々の`CIContext`を保持し、現段階は双方`cacheIntermediates = false`とする。preview cache有効化は性能改善の仮説であり、メモリ上限・eviction・写真切替後の定常RSS gateと同じスライスでのみ評価する。
 - 既定の表示はCIImageをCPU bitmapへmaterializeするlegacy経路。実験的Metal直接経路は起動環境変数`PHOTO_BENCH_PREVIEW_ROUTE=metal-direct`の完全一致でのみ使い、通常起動へ影響させない。
@@ -369,17 +369,19 @@ flowchart LR
     F --> G["OKLCh 8-band mixer（任意）"]
     G --> H["自然な彩度 / 彩度"]
     H -. "Phase 2以降" .-> I["部分補正・クロップ"]
-    I --> J["max-channel shoulder"]
-    J --> K["固定L/h OKLCh色域圧縮"]
-    K --> L["sRGB表示 / export"]
+    I --> J["edge-clamped Lanczos downsample（必要時）"]
+    J --> K["terminal sRGB transform"]
+    K --> L["exact extent crop"]
+    L --> M["sRGB表示 / export"]
 ```
 
 - 現行`CIContext`の作業空間はextended linear sRGBで、0未満と1超の値を保持する。基本階調は輝度だけをencoded-sRGBへ写して操作し、トーンカーブもXMP点列の意味に合わせて各channelをencoded-sRGBへ往復するため、「全処理がscene-linear」ではない。
+- 現行順序は **extended-linear-sRGB edits → edge-clamped Lanczos downsample → terminal sRGB transform** である。有限extent外の透明黒をLanczosが拾わないようedgeをclampし、縮小後にexact extentへcropする。terminal transformを縮小前へ戻さないことをgraph識別と最終rasterで回帰する。
 - 現行の画面、JPEG、比較TIFFはsRGB。ディスプレイプロファイル尊重とDisplay P3出力は完成形の目標であり未検証。
 - トーンカーブは0〜1内部を区分線形補間し、その外側を有限な正の端点傾きで外挿する。OKLCh mixerもHDR・負値を途中でclampせず、色域への収容は最終output nodeへ一元化する。
 - XMP HSL LuminanceはOKLabの斉次性を使い、バンド中心かつ相対chroma `>= 0.08`で`+100 = +1 EV`となるRGB局所露光として定義する。near-neutralではguardが効果量を下げる。これはAdobe HSL Luminanceの再現ではない。HSL Luminance `+25`、Saturation `+100`、S字curveはそれぞれ独立CPU fixtureで寄与を固定し、画像レベルのEV gateをスライダー意味論で補正して緩めない。
 - 後段の自然な彩度`CIVibrance`と彩度`CIColorControls`はextended-linear作業空間で使うが、HDR域の内部数式はAppleの公開契約ではない。現sliceではブラックボックスとして明記し、暗黙clipの有無を追加実写と将来の独自Metal kernelで検証する。
-- 最終output nodeは最大channel比を保つhighlight shoulderの後、OKLChでlightnessとhueを固定してchromaだけをsRGB境界へ圧縮する。shoulderは`knee = 0.99`、`ceiling = 0.998`、`softness = 0.008`で値と一次微分が連続するC1接続とする。bounded sRGB rasterかつカラー編集がneutralならこのnodeをbypassし、読み込んだJPEG等を不要に再マッピングしない。
+- terminal output nodeは最大channel比を保つhighlight shoulderの後、OKLChでlightnessとhueを固定してchromaだけをsRGB境界へ圧縮する。shoulderは`knee = 0.99`、`ceiling = 0.998`、`softness = 0.008`で値と一次微分が連続するC1接続とする。bounded sRGB rasterかつカラー編集がneutralならこのnodeをbypassし、読み込んだJPEG等を不要に再マッピングしない。
 - 色域圧縮のCPU参照は倍精度で厳格な単調性を検証する。RGBAfの実レンダーは、LMSゼロ近傍で単精度条件が悪化するため、`C/Cmax <= 2`の運用域と`<= 4`のstress域を分け、67,368点のΔEOK・L・色相・最大彩度逆行・boundednessで検証する。閾値は編集controlの最大倍率と[W3C CSS Color 4のΔEOK](https://www.w3.org/TR/css-color-4/#deltaEOK)から導き、2実写へfitしない。
 - RAWはMake/ModelがPanasonic DC-S5に一致しRAW 8を使える場合だけ`panasonic-dc-s5-lightroom-9.3-edr1-v2`（boost 0.9 / EDR 1）を選ぶ。他機種はgeneric未校正profileで、DC-S5値を流用しない。
 - 初期の書き出し既定値はsRGB JPEG、品質92、元サイズ。
@@ -523,18 +525,18 @@ Mask
 
 ## 12. 性能目標
 
-完成形の目安とengine baseline、実験候補を分けて管理する。Mac16,10 / Apple M4 / macOS 26.3.1、manifest既定24MP RAW、release buildでの比較は次のとおり。baselineはwarm各20回、現行正式runはwarm各20回・process-fresh 40回で、同じsource / binaryを固定して直列に3回測定した。
+完成形の目安とengine実測、製品UXを分けて管理する。Mac16,10 / Apple M4 / macOS 26.3.1、manifest v4既定24MP RAW、release buildの現行formal runは次のとおり。
 
-| engine workload | baseline p95 | run 1 p95 | run 2 p95 | run 3 p95 | gate | 合格回数 |
-|---|---:|---:|---:|---:|---:|---:|
-| process-fresh tone engine preview | 940.75 ms | 960.77 ms | 369.03 ms | 575.27 ms | ≤ 1,000 ms | 3 / 3 |
-| warm exposure-perturbation engine proxy | 131.17 ms | 396.32 ms | 59.84 ms | 52.75 ms | ≤ 50 ms | 0 / 3 |
-| warm full-current-settings engine preview | 138.41 ms | 131.20 ms | 61.84 ms | 55.60 ms | ≤ 300 ms | 3 / 3 |
-| 原寸JPEG quality 0.92 | 208.86 ms | 1188.77 ms | 234.51 ms | 223.04 ms | ≤ 3,000 ms | 3 / 3 |
+| engine workload | current p95 | gate | 判定 |
+|---|---:|---:|---|
+| process-fresh tone engine preview | 357.990 ms | ≤ 1,000 ms | 合格 |
+| warm exposure-perturbation engine proxy | 55.649 ms | ≤ 50 ms | 不合格 |
+| warm full-current-settings engine preview | 58.023 ms | ≤ 300 ms | 合格 |
+| 原寸JPEG quality 0.92 | 225.922 ms | ≤ 3,000 ms | 合格 |
 
-benchmark schema v3はrun / workload境界と40個のprocess-fresh workerの開始・終了に、1 / 5 / 15分load average、1分load / active processor、thermal、Low Power Mode、process CPU time、Metal確保量を記録する。取得不能・非有限値はfail closedだが、loadは診断専用であり、値を理由にsampleを削除・再試行・gate除外しない。現行3 runは`44b4c41e-e18b-4cdd-9720-4c121a365fbd`、`9bd69010-e2e7-4a57-ac2c-bd0e3d04e18f`、`f9024302-f48c-4f62-bd84-589013696861`で、最新runもslider gateが不合格である。
+benchmark schema v3はrun / workload境界と40個のprocess-fresh workerの開始・終了にsystem loadを記録する。現行runは`bbb5bc5b-7c12-4b29-b803-c863d6059d55`で3 / 4合格だが、1回だけなので安定性を証明しない。旧v3の3 runは履歴として`BENCHMARK.md`に残し、現行合否へ混ぜない。
 
-manifest v3の3,072 / 3,840px候補も1px許容外plateau gateにより両方不採用である。原寸full-decode graphのMetal直接描画は実装したが、実画面のpresent成功を確認できず、既定はlegacyを維持する。Metal調査は「positive `presentedTime`の取得と実UI契約の成立可否」を次の1スライスで判定する時間制限付きの技術スパイクとする。未成立なら深掘りを一旦止め、編集永続化・SQLiteカタログ・選別・WB・クロップへ移る。`cacheIntermediates = true`、draft / settle二層化、100% detail windowはそれぞれ別の受入条件とRSS / 知覚契約が必要な仮説であり、現時点の採用仕様ではない。実行時CIKLのpackaged Metal化は保守課題として残るが、wall-clockだけで最初のボトルネックと断定しない。
+manifest v4の3,072px候補は2 / 6、3,840px候補は4 / 6比較でspatial plateau gateに失敗し、両方不採用である。原寸full-decode graphのMetal直接描画は実装したが、実画面のpresent成功を確認できず、既定はlegacyを維持する。`cacheIntermediates = true`、draft / settle二層化、100% detail windowはそれぞれ別の受入条件とRSS / 知覚契約が必要な仮説であり、現時点の採用仕様ではない。
 
 以下のproduct targetは、engine benchmarkではまだ証明していない。
 
@@ -561,7 +563,7 @@ manifest v3の3,072 / 3,840px候補も1px許容外plateau gateにより両方不
 
 **Go条件:** 5〜10枚のLightroom基準に対し、中央値ΔE00 ≤ 3.0、95 percentile ≤ 6.0、肌色領域≤ 2.5、ハイライトクリップ点差≤ 0.2EVを暫定基準とする。3枚以上で中央値ΔE00 > 5.0ならCIRAWFilter固定をNo-Goとし、LibRaw + DCP backendを比較する。
 
-**2026-07-23結果:** boost sweepに加えてEDR 0 / 1 / 2を比較し、Appleがdefault EDRと定義する1をDC-S5限定profile v2へ採用した。EDR 1は2シーンでEDR 2の約94〜96%の`>1.0`画素面積を保持し、EDR 2ほど最大channelだけを伸ばさない。最終output node導入後、4経路ともcomplete / near clipは0、ΔEと新規共有plateauのゲートは通過した。ただしP1524180 / RAWのfull平均EV差`+0.20779`が上限`0.05376`を超え、全体判定は不合格である。2シーンだけで画質合格とはせず、Make/ModelがDC-S5かつRAW 8を利用できる場合だけ適用する。最新の数値と判定は`CALIBRATION.md`と`report.json`を正とする。
+**2026-07-24結果:** boost / EDR検証に続き、manifest v4で縮小後terminal transformをproduction順序として固定した。2 development sceneのcanonical settleはcomplete / near clip `0 → 0`で合格した。一方、P1524180 / RAWのfull平均EV差`+0.207869`が上限`0.05384`を超え、Lightroom品質は不合格である。Make/ModelがDC-S5かつRAW 8を利用できる場合だけ暫定profileを適用し、未知sceneへ一般化しない。
 
 #### Spike B: XMPと最小補正
 
@@ -573,9 +575,9 @@ manifest v3の3,072 / 3,840px候補も1px許容外plateau gateにより両方不
 #### Spike C: 操作と書き出し
 
 - JPEGとRW2を同じUIで表示する
-- 露出摂動proxyの直接2,560px実験engine p95は現行source固定の連続3 runで`396.32 / 59.84 / 52.75ms`となり、50ms gateは0 / 3合格
-- 原寸sRGB JPEGは24MP・品質92のp95 `1188.77 / 234.51 / 223.04ms`となり、3 runすべで3秒gateを通過
-- oversample parity v3は3,072 / 3,840pxとも1px許容外plateau gateで不合格。実UIは原寸decodeを維持し、次のpreview案は別の受け入れ契約から始める
+- 露出摂動proxyの直接2,560px実験engine p95は現行v4 runで`55.649ms`となり、50ms gateに不合格
+- 原寸sRGB JPEGは24MP・品質92のp95 `225.922ms`で3秒gateを通過。ただし現行sourceは1 runだけ
+- oversample parity v4は3,072pxが2 / 6、3,840pxが4 / 6比較でspatial plateau gateに不合格。productionは原寸decodeを維持する
 - 原寸decode graphのMetal直接経路はopt-inで実装。offscreen / native rasterの1 LSB parityは通過したが、実UIでpositive presentationは未確認、10秒deadlineからlegacyへのfallbackは成立
 - EXIF Orientation、DateTimeOriginal、Make/ModelとICC profileを保持する
 
@@ -645,7 +647,7 @@ manifest v3の3,072 / 3,840px候補も1px許容外plateau gateにより両方不
 
 ### 自動テスト
 
-現行Swift Testing **93 tests / 7 suites**とPython **52 tests**で実施済み:
+現行Swift Testing **99 tests / 7 suites**とPython **61 tests**で実施済み:
 
 - 4 XMPの基本8項目、WB表現、HSL/curve、未対応項目の解析
 - 範囲外・NaN・Infinityの拒否/clampと旧設定JSON移行
@@ -669,7 +671,8 @@ manifest v3の3,072 / 3,840px候補も1px許容外plateau gateにより両方不
 - preview解像度や偽装した原寸intentをJPEG書き出しへ渡しても、native寸法・scale factor・image extentの照合でfail-closedに拒否すること
 - native寸法の0・非有限・不明、非有限image extentを整数化前に拒否し、同一`RenderEngine`内のpreview / export contextが別instanceであること
 - benchmarkのpass / performanceFailed / notEvaluatedをexit `0 / 1 / 2`へ対応づけ、空・未知gateもfail closedにすること
-- manifest v3のcanonical final 2,560px、3,072 / 3,840px候補、編集後の共通Lanczos縮小を固定すること
+- manifest v4のcanonical final 2,560px、3,072 / 3,840px候補、extended-linear編集 → edge-clamped Lanczos → terminal sRGB transformの順序を固定すること
+- canonical settleの整数complete / near clip count、新規plateau、欠落stage、旧graph識別をfail-closedで判定すること
 - 2シーン×neutral / basic / fullのpreview parityを平均ΔE・ぼかし後p95・EV・plateau純増・square-3x3の1px dilation外面積で独立判定し、欠落・hash不一致・shape不一致・ICC不一致をfail-closedにすること
 - 1px内の境界移動、2px以上の移動、遠方island、面積純増を合成morphology fixtureで区別し、合格した最小候補または候補なし時の原寸fallbackを決定的に選ぶこと
 - system-load snapshotの全値を有限・非負で取得してCodable round-tripし、欠測を黙って許容しないこと
@@ -721,12 +724,15 @@ Phase 1以降で追加:
 
 ## 17. 参考資料
 
-- Apple Core Image: https://developer.apple.com/documentation/coreimage
+- Apple Core Image working color space: https://developer.apple.com/documentation/coreimage/cicontext/workingcolorspace
+- Apple Core Image output color space: https://developer.apple.com/documentation/coreimage/cicontextoption/outputcolorspace?language=objc
+- Apple `CILanczosScaleTransform`: https://developer.apple.com/documentation/coreimage/cilanczosscaletransform?changes=l_7&language=objc
+- Apple `CIImage.clampedToExtent()`: https://developer.apple.com/documentation/coreimage/ciimage/clampedtoextent%28%29
 - Apple `CIRAWFilter`: https://developer.apple.com/documentation/coreimage/cirawfilter
-- Apple `CIContext`: https://developer.apple.com/documentation/coreimage/cicontext
 - Adobe XMP Camera Raw namespace: https://developer.adobe.com/xmp/docs/xmp-namespaces/crs/
 - Adobe Process Versions: https://helpx.adobe.com/ie/camera-raw/using/process-versions.html
 - Adobe Tone controls: https://helpx.adobe.com/lightroom-classic/desktop/help/tone-control-adjustment.html
+- Adobe profile / White Balance: https://helpx.adobe.com/lightroom-classic/desktop/process-and-develop-photos/image-tone-color.html
 - darktable tone equalizer: https://docs.darktable.org/usermanual/development/en/module-reference/processing-modules/tone-equalizer/
 - CIEDE2000: https://doi.org/10.1002/col.20070
 - 外部調査に基づく改善提案（参考資料）: `reviews/2026-07-24-claude-research-improvement-proposals.md`
@@ -758,19 +764,20 @@ Phase 1以降で追加:
 - 非同期フォルダ走査、遅延フィルムストリップ、レンダ同時実行制御
 - App Sandbox、security-scoped bookmark、初回の明示フォルダ選択、再起動時復元、SSD不在時のcapability保持
 - Lightroom参照と候補を同じ1500px経路へ通す対称校正と、RAW差を除くLightroom-TIFF入力比較
-- CPU/software/Metal階調一致、極端値単調性、curve HDR外挿、OKLCh無彩色保護、HSL/curve段別fixture、generic RAW Y>1出力経路、output shoulder / 67,368点の色域圧縮grid、bounded-sRGB bypass、EXIF正規化、全ライブラリ原本・既存フォルダへの上書き拒否、部分XMP、folder bookmark、不正native寸法、decode intent、export guard、context isolation、Metal直接表示のqueue / aspect / native parity、benchmark gateを含む93件のSwiftテストと52件のPythonテスト
-- manifest schema 3を正本に、7入力、24 source、実行binary、122 artifactを開始前後と解析時にSHA-256検証するfail-closed校正基盤。run manifestはschema 2、analyzer reportはschema 4
+- CPU/software/Metal階調一致、極端値単調性、curve HDR外挿、OKLCh無彩色保護、HSL/curve段別fixture、generic RAW Y>1出力経路、output shoulder / 67,368点の色域圧縮grid、bounded-sRGB bypass、EXIF正規化、全ライブラリ原本・既存フォルダへの上書き拒否、部分XMP、folder bookmark、不正native寸法、decode intent、export guard、context isolation、Metal直接表示のqueue / aspect / native parity、canonical settleを含む99件のSwiftテストと61件のPythonテスト
+- manifest schema 4を正本に、7入力、24 source、実行binary、122 artifactを開始前後と解析時にSHA-256検証するfail-closed校正基盤。run manifestはschema 2、analyzer reportはschema 5
 - `interactive-preview` / `full-resolution`の責務分離、RAW `scaleFactor`候補、共通Lanczos、1px morphologyを含む2シーン×2候補×3段階のpreview parity、run archive、app-side source fingerprint
-- release benchmark schema 3とsystem-load provenance。現行source・binaryの連続3正式runはslider proxyが0 / 3、他3 workloadが3 / 3合格で、最新単体もslider不合格
-- 正式parity v3で3,072 / 3,840px候補をともに不採用とし、実UIの原寸decode維持を決定
+- release benchmark schema 3とsystem-load provenance。現行v4正式runは3 / 4合格でslider proxyだけ不合格。1 runなので安定性は未証明
+- 正式parity v4で3,072pxを2 / 6、3,840pxを4 / 6比較不合格として不採用にし、productionの原寸decode維持を決定
+- canonical settle v4でextended-linear編集 → edge-clamped Lanczos → terminal sRGB変換を固定し、2 development sceneの縮小後clip非回帰を確認。旧v3失敗runはarchiveへ保持
 - `PHOTO_BENCH_PREVIEW_ROUTE=metal-direct`のopt-in原寸Metal直接表示、可視性・再試行・deadline・一方向fallback、signpost / counterを実装。native raster parityは通過、実画面presentは未成立
 
 ### 次にこちらで行うこと
 
-P1の受け入れ契約、preview / export intent分離、`CIRAWFilter.scaleFactor`候補、原寸export guard、preview parity v3、run archive、app-side source fingerprint、別`CIContext` instance化、system-load provenanceまでは実装済みである。3,072px / 3,840px RAW decodeの正式比較は完了し、両候補とも1px許容外plateau面積で不合格だった。従来のpixelwise set-difference、最大connected component、最悪128×128 window、境界距離histogramは診断として残すが、結果を見た後にhard gateは緩めない。productionは原寸decodeを維持する。
+P1の受け入れ契約、preview / export intent分離、`CIRAWFilter.scaleFactor`候補、原寸export guard、preview parity v4、canonical settle、run archive、source fingerprint、system-load provenanceまでは実装済みである。3,072px / 3,840px RAW decode候補はspatial plateauで不合格だった。結果を見た後にhard gateは緩めず、productionは原寸decodeを維持する。
 
 full-decode graphを`MTKView` / `CIRenderDestination`へ直接描画する経路はopt-inで実装し、queue、fallback、native raster parityをhardeningした。しかし実機ではGPU command completionの先でpositive presentationを確認できず、10秒後にlegacyへfallbackした。次のMetal作業は、lifecycleを純粋なreducerへ切り出すことと、`presentedTime > 0`を得て実UI測定へ進めるかの判定だけを1スライスにtimeboxする。成立しなければ既定OFFの診断経路として保留し、legacy表示で製品機能を進める。`cacheIntermediates = true`、draft / settle、100% detail windowは、定常RSS・知覚差・settle時間を事前登録した別仮説としてのみ扱う。
 
-製品側では、Lightroom契約中にしか得られない可能性がある教師出力と移行資産を最優先で退避する。次に、編集値の再起動後復元とSQLiteカタログ、埋め込みJPEGを使う評価・選別を実装し、「編集して閉じても残る」「17,000枚を送って選べる」という日常ループを先に成立させる。WBレンダー、Undo / Redo、export preset、クロップ・回転もこのループへ続ける。
+Lightroomは当面継続するため、解約前の一括退避を緊急作業にはしない。まずP1524180 / RAWの露出・色差を分解し、RAW WBをdecodeへ接続し、camera profile / DCP不在の残差を教師sweepとholdoutで評価する。並行して編集値の再起動後復元とSQLiteカタログを進め、「編集して閉じても残る」日常ループを成立させる。
 
-画質側は、実験的HSL/curveを初期OFFのまま保つ。退避した5〜10以上の独立シーンと各基本スライダー単独のLightroom基準、最後まで触らないsealed holdoutを用意してから、P1524180 / RAWのEVドリフト、WB、camera profile、linear土台、DCP等を分離して再評価する。packaged Metal Core Image kernelへの移行は、profileで必要性が示された場合だけ専用スライスで行う。非AIブラシは日常ループと構図編集が成立した後に進める。
+実験的HSL/curveは初期OFFのまま保つ。5〜10以上の探索sceneと各基本スライダー単独のLightroom基準、最後まで触らないsealed holdoutを用意してから、EV drift、WB、camera profile、linear土台、DCP等を分離して再評価する。crop / rotate、100% detail、sharpening、noise reduction、lens correction、export presetを画質契約と永続化の上へ積む。cross-process calibration lockも、複数run運用前に追加する。

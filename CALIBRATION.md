@@ -1,223 +1,145 @@
 # Photo Bench 校正記録
 
-更新日: 2026-07-24
+更新日: 2026-07-24（JST）
 対象プロファイル: `panasonic-dc-s5-lightroom-9.3-edr1-v2`
 
-状態: 現行sourceで122 / 122 artifactの構造・hash検証に成功。Lightroom品質は4経路中3経路合格だがP1524180 / RAWのEV gateが不合格、preview parityは3,072 / 3,840 px候補が各3 / 6不合格であり、いずれも総合判定は`false`
+状態: manifest v4 の正式 run で 122 / 122 artifact の構造・hash検証に成功した。canonical settle は既知の2 development sceneで合格したが、Lightroom品質は4経路中1経路が不合格であり、preview parityも3,072pxで2 / 6、3,840pxで4 / 6比較が不合格である。したがって総合画質は未合格であり、Lightroom相当を主張しない。
 
-日付はJST基準で記載する。機械可読なUTC時刻は`.photobench/calibration/run-manifest.json`と`.photobench/calibration/report.json`を正とする。
+機械可読な正本は`.photobench/calibration/run-manifest.json`と`.photobench/calibration/report.json`である。本書の丸め値と差がある場合はJSONを優先する。
 
-## 目的
+## 目的と適用範囲
 
-Photo Bench の校正は、Lightroom適用後の16bit sRGB参照TIFFと、同じシーンの RAW / Lightroom 書き出し前入力を比較し、次の2点を分けて検証する。
+Lightroom適用後の16bit sRGB参照TIFFと、同じシーンのRAW / Lightroom書き出し前入力を比較し、次を分けて検証する。
 
-1. 基本現像が、参照の明るさ・色へどこまで近づくか。
-2. カーブやカラーミキサーを有効にしても、ハイライト破綻や共有階調の平坦化を増やさないか。
+1. 基本現像と実験的curve / color mixerが、Lightroom参照の色・明るさへどこまで近づくか。
+2. 編集、縮小、最終出力までのproduction graphが、complete / near clipや共有階調のplateauを増やさないか。
+3. 縮小RAW decode候補がfull-resolution decodeに対して十分なpreview parityを持つか。
 
-現在の校正ペアは次の2組である。
+現時点の校正対象は`P1524180`と`P1522877`の2シーンだけで、両方とも開発中に見ながら調整したdevelopment foldである。独立holdoutはない。回帰検知には有効だが、別カメラ、露出、照明、肌、高彩度色、逆光、ノイズ、ディテール、未知シーンへの一般化を証明しない。
 
-- `P1524180`: 高輝度域を含むシーン
-- `P1522877`: 暗部から中間調の色差を含むシーン
+## 正式 v4 証跡
 
-2シーンは回帰検知には使えるが、機種・露出・照明・肌色・飽和色を網羅する事業品質の代表標本ではない。
+現行契約の正本は`calibration/manifest-v4.json`である。
 
-## 再現性とfail-closed契約
+- suite: `dc-s5-lightroom-9.3-canonical-settle-2026-07-24-v4`
+- calibration run ID: `77c1c00b-2a1e-4e46-8713-99095ebda59c`
+- manifest SHA-256: `87a9ea124bb8425a8efc8ef4fe79748c54b55097bfcfe503e96ef693304bb312`
+- source fingerprint: `1451c62b42e175814a316c1e7f8ffaaf44d17cd6ae9397ea8edd1e7eb74e3125`
+- calibration release executable SHA-256: `89579b271f452f2f1273607b7ddd2464f50a432ff4718d99d9692959d2364fec`
+- schema: manifest `4` / calibration run manifest `2` / analyzer report `5`
+- 検証対象: 7入力、24 source、122 / 122 artifact
 
-現行校正条件の正本は`calibration/manifest-v3.json`である。比較入力、source、処理profile、候補行列、共通Lanczosによる最終2,560 px化、出力stage、品質閾値に加え、preview / export decode intentの同等性契約を固定し、runnerとanalyzerが同じmanifestだけを読む。P1 preview parity v3正式runは次の同一性を持つ。
+runnerは開始前後の入力・source・binaryと、artifactのpath・stage・byte count・SHA-256を照合する。analyzerはrun manifest記載の122 artifactだけを正本として再検証する。path traversal、symlink、case-only alias、成果物名衝突、欠測、未知stage、hash・runtime・処理fingerprint不一致は品質評価前にexit `2`、正しく測れた数値不合格はexit `1`とし、欠測を合格へ倒さない。
 
-- suite: `dc-s5-lightroom-9.3-preview-parity-2026-07-24-v3`
-- calibration run ID: `ceea9eb4-b490-4a1f-9984-3d294e2f50bb`
-- archived run manifest: `.photobench/calibration/runs/ceea9eb4-b490-4a1f-9984-3d294e2f50bb.json`
-- manifest SHA-256: `2867219602b7abe89ddd8994ab243c1a9f1d020eed5710dac4bb1d475eab92a8`
-- source fingerprint: `f8333be9f764af76b5d7e96d7a2967a44581405fca335fa27b1110f517f14e6b`
-- release executable SHA-256: `11009c7fa63f9a76820238b4ba462734903c381e20b4488ca5a471e60ae51b98`
-- 実行環境: Mac16,10 / Apple M4 / arm64 / macOS 26.3.1 (`25D771280a`) / Core Image `1592.80.2` / RAW 8
-- schema: manifest `3` / calibration run manifest `2` / analyzer report `4`
-- 検証対象: 7入力、24 source、122 / 122生成artifactを検証済み
+最新runの置換前には、旧complete runをbyte countとSHA-256で検証して`.photobench/calibration-archives/<run-id>/`へ退避する。ただしこの退避・置換は単一プロセス内でatomicに実行されるだけで、複数のrunner / analyzerをまたぐcross-process lockはまだない。同じrootで校正を並行実行しないことが現行runbook上の制約である。
 
-現行24 sourceには画像処理engine、校正・benchmark evidence runner、`Sources/PhotoBenchApp`、`Sources/PhotoBenchAppSupport`を含める。したがってMetal直接表示やexport中のフォルダ切替防止を含むapp-side変更もfingerprintを無効化する。実画面へのMetal presentation経路はopt-in実装済みだが、この校正suiteは生成artifactを比較するもので、MTKViewへのactual presentationや画面captureを測定したものではない。
-
-`.photobench/calibration/run-manifest.json`は、開始前に照合した全入力、source、実行binary、decode intent / 寸法 / scale / backendと、各artifactのpath / stage / SHA-256を記録する。終了時にも入力とsourceを再照合し、実行途中の変更を拒否する。同じ内容をrun IDごとのarchiveへ保存し、失敗runも上書きで失わない。`.photobench/calibration/report.json`はこのrun manifestと122 artifactを検証してから作るschema 4の派生品質レポートである。path traversal、symlink、case-only alias、正規化後の出力名衝突、未知または欠落したstage / candidate / comparison、hash不一致、環境・binary契約不一致は品質評価へ進まずexit `2`とする。正しく検証できた品質不合格だけをexit `1`とし、欠測を合格へ倒さない。
-
-## 現在の処理系
+## 現行production graph
 
 ```text
-Core Image RAW 8 デコード（検証DC-S5原本は14bit）
-  → DC-S5 限定 RAW プロファイル（boost 0.9 / EDR 1）
-  → extended-linear sRGB
-  → 露出・コントラスト・ハイライト・シャドウ等の基本補正
-  → encoded-sRGB 1D カーブ（任意、端点外は端点傾きで外挿）
-  → OKLCh 8バンド・カラーミキサー（任意）
-  → 自然な彩度・彩度
-  → 最大チャンネル基準の比率保持 shoulder
-  → OKLCh の L / h を固定した gamut compression
-  → sRGB 出力
+Core Image RAW 8 decode（DC-S5 fixtureは14bit）
+  → DC-S5限定RAW profile（boost 0.9 / EDR 1）
+  → extended-linear sRGB working space
+  → exposure / tone / encoded-sRGB curve / OKLCh mixer / vibrance / saturation
+  → edge-clamped Lanczos downsample（previewまたは指定サイズ時）
+  → terminal sRGB output transform
+  → exact integer extentへcrop
+  → sRGB preview / export
 ```
 
-実装識別子は次のとおり。
+処理識別子は`extended-linear-srgb-edits-resize-before-final-srgb-v1`である。要点は **extended-linear-sRGB edits → edge-clamped Lanczos downsample → terminal sRGB transform** の順序である。
 
-- トーンカーブ: `encoded-srgb-endpoint-extrapolation-v1`
-- カラーミキサー: `oklch-eight-band-mixer-v1`
-- 最終出力変換: `extended-linear-to-srgb-soft-output-v2`
-- RAW decode intent: `core-image-raw8-intent-v2`
+Core Imageは遅延評価されるため、処理ノードの順序を共通graphとして組み、最終rasterで回帰検証する。[AppleのCIImage説明](https://developer.apple.com/documentation/coreimage/ciimage?changes=_3_1___9_2&language=objc)にあるとおり、有限extent外は透明黒として扱われる。Lanczos前に[`clampedToExtent()`](https://developer.apple.com/documentation/coreimage/ciimage/clampedtoextent%28%29)でedge pixelを延長し、[Lanczos scale transform](https://developer.apple.com/documentation/coreimage/cilanczosscaletransform?changes=l_7&language=objc)後に正確なextentへcropすることで、境界で透明黒を補間するhaloを避ける。`CIContext`は[working color space](https://developer.apple.com/documentation/coreimage/cicontext/workingcolorspace)と[output color space](https://developer.apple.com/documentation/coreimage/cicontextoption/outputcolorspace?language=objc)を明示する。
 
-最終 shoulder は `knee = 0.99`、`ceiling = 0.998`、`softness = 0.008` とし、接続点で値と一次微分が連続する C1 接続にしている。まず最大チャンネルだけから圧縮率を求め、RGB 比率を保ったまま全チャンネルへ適用する。その後も色域外なら、OKLCh の明度 L と色相 h を保ち、彩度 C だけを圧縮する。gamut compression は `knee = 0.90`、境界係数 `0.999`、境界探索 `12` 回である。
+terminal transformは最大channel基準の比率保持shoulderと、OKLChのL / hを固定してCだけを圧縮するgamut compressionからなる。bounded sRGBの中立画像は不要な再変換を避ける。curveとcolor mixerは品質未合格のため初期OFFを維持する。
 
-RAW、extended sRGB の範囲外入力、または色編集が有効な入力だけを最終出力変換へ通す。すでに bounded sRGB 内にあり、色編集もない通常画像は変換を迂回するため、中立操作での不要な再量子化や色変化を避けられる。
+## Lightroom品質ゲート
 
-カーブとカラーミキサーは初期状態では OFF である。後述のとおり、安全性ゲートは通過している一方、実験機能全体としての事業品質はまだ達成していない。
+`basic`は基本補正まで、`full`はcurveとOKLCh 8-band mixerを加えた候補、`reference`はLightroom適用後16bit sRGB TIFFである。RAW経路とLightroom-input経路を別々に測る。
 
-カラーミキサーのXMP `LuminanceAdjustment`は、OKLabのL/a/bを同率で拡大し、効果量100%ではlinear RGBで`2^(adjustment/100)`となる色域別の局所露光として定義する。したがってバンド中心かつ相対chroma `>= 0.08`では`+25 = +0.25 EV`、`+100 = +1 EV`である。near-neutralではguardが効果量を下げる。これはAdobe HSL Luminanceと同義ではなく、Lightroom一致の係数とはみなさない。Saturation `+100 = 2x chroma`、S字curveのencoded出力と併せて独立CPU fixtureで監視する。author curve pointは0〜1へ正規化し、重複xはXMP配列で後に書かれた点を採用する。
+- 平均ΔE00: `full <= basic + 0.25`
+- 平均EV絶対誤差: `abs(full) <= abs(basic) + 0.05 EV`
+- complete / near clip: `full <= basic`
+- 新規共有highlight plateau面積: `<= 0.0005`
 
-自然な彩度`CIVibrance`と全体彩度`CIColorControls`はextended-linear作業空間で適用するが、Appleは両フィルターのHDR域の内部応答を公開契約にしていない。現段階ではブラックボックスとして扱い、追加実写と将来の独自Metal kernelで暗黙clipを検証する。
+正式v4結果は次のとおりである。
 
-### 色域圧縮の数値ゲート
+| シーン / 経路 | 平均ΔE00 basic → full | 平均EV差 basic → full | 新規共有plateau | 判定 |
+|---|---:|---:|---:|---|
+| P1524180 / RAW | 7.592725 → 6.796299 | +0.003839 → +0.207869 | 0.000357333 | EV不合格 |
+| P1524180 / LR-input | 5.555688 → 4.835475 | -0.125767 → +0.026336 | 0.000371333 | 合格 |
+| P1522877 / RAW | 5.859457 → 3.342271 | -0.180143 → +0.007103 | 0.000072667 | 合格 |
+| P1522877 / LR-input | 5.468566 → 3.417358 | -0.268298 → -0.083922 | 0.000176667 | 合格 |
 
-最終色域圧縮は、`L = 0.05 / 0.10 / 0.25 / 0.50 / 0.75 / 0.90 / 0.95`、色相15度刻み、`C / Cmax = 0...4`を0.01刻みで走査した67,368点のRGBAf gridでも検証する。CPU参照と固定L/hの比較は、名目上の倍精度OKLCh値ではなく、Core Imageが実際に受け取るRGBAf量子化後の同一RGBから開始する。
+全4経路でΔE、clip、plateauの条件は通ったが、P1524180 / RAWのfull EVは上限`0.05384 EV`に対し`+0.20787 EV`である。目視でもこの出力はLightroom-afterより明るく、暖色・マゼンタ寄りで青の彩度が強い。P1522877はより近いが、やや暖色・高彩度に見える。これは「安全にsRGBへ収めた」ことと「Lightroomの画作りに一致した」ことが別問題である証拠である。
 
-| 領域 | 仕様からの根拠 | 観測max ΔEOK | 観測max彩度逆行 | 観測max L drift | 観測max色相差 | gate |
-|---|---|---:|---:|---:|---:|---|
-| 運用 `C/Cmax <= 2` | mixerのSaturation +100で到達する最大 | 0.000119426 | 0.000115946 | 0.000000224 | 0.001277° | ΔEOK < 0.001、逆行 < 0.0002、L < 0.00001、色相 < 0.05° |
-| stress `C/Cmax <= 4` | 上記へglobal Saturation +100を重ねる最悪組合せ | 0.002549949 | 0.002052134 | 0.000028018 | 0.431203° | ΔEOK < 0.005、逆行 < 0.003、L < 0.0001、色相 < 1° |
+## Canonical settle v4
 
-両領域とも非finite値とbounded sRGB違反は0件である。[W3C CSS Color 4のΔEOK定義](https://www.w3.org/TR/css-color-4/#deltaEOK)が示す1 JND約0.02に対し、gateは運用域0.05 JND、stress域0.25 JND相当である。CIKLの単精度OKLab変換は、LMS成分がゼロ近傍を横切る概ね2倍超の極端な色域外入力で条件が悪化するため、倍精度CPUの厳格な単調性テストを維持しつつ、実レンダーは知覚色差と最大逆行量でfail-closedに監視する。正則化で色相を歪める変更は採用せず、packaged Metal kernelへの移行時に精密演算を再評価する。
+canonical settleは、full-resolution RAWを同じv4 production graphで`basic-legacy`と`full-current`へ通し、最終2,560pxに縮小した後の整数clip countと共有plateauを比較する。
 
-## 測定方法
-
-### 比較候補
-
-- `basic`: RAW プロファイルと基本補正まで。カーブとカラーミキサーは無効。
-- `full`: `basic` に校正候補のカーブと OKLCh 8バンド・ミキサーを加えた実験候補。
-- `reference`: Lightroom適用後の16bit sRGB参照TIFF。
-
-各シーンについて次の2経路を測る。
-
-- `RAW`: RAW から Photo Bench の処理系で現像する経路。
-- `LR-input`: Lightroom 書き出し前入力を Photo Bench へ渡す経路。
-
-### 指標とゲート
-
-- 色差: 参照との平均 ΔE。`full <= basic + 0.25` を満たすこと。
-- 明るさ: 参照との平均 EV 差。`abs(full) <= abs(basic) + 0.05 EV` を満たすこと。
-- 完全クリップ / near clip: `full` で `basic` より増えないこと。
-- 新規共有 plateau: `full` によって新しく生じる共有階調の平坦化率が `0.0005` 以下であること。
-
-plateau は単一チャンネルの局所的な同値ではなく、RGB が同時に平坦化する領域を検出する。これにより、色変換に伴う通常の量子化と、ハイライト階調の実質的な消失を区別する。
-
-### P1 preview parity 契約と結果
-
-Lightroom品質ゲートとは独立に、full-resolution、3,072 px、3,840 pxのRAW decodeを各シーンの`neutral`、`basic-legacy`、`full-current`へ同じ順序で通し、編集後に共通Lanczosで最終2,560 pxへ揃えて比較する。full-resolutionを参照とし、2候補の計12比較を次の5条件で独立判定する。
-
-- 平均 ΔE00 `<= 1.0`
-- ぼかし後 ΔE00 p95 `<= 2.0`
-- 絶対平均 EV drift `<= 0.02`
-- `max(0, candidate plateau area - reference plateau area) <= 0.0001`
-- final 2,560 px上で参照plateauをsquare-3x3により固定1 px拡張した外側のspatially-distinct new area `<= 0.0001`
-- 2シーン×3段階×3 decode経路の欠測、shape、16bit、sRGB ICC、hash、provenance不一致はexit `2`
-- 数値だけが閾値を超えた正式runはexit `1`
-
-正式v3 runでは122 artifactの構造・hash検証を通過した。候補ごとの最大値は次のとおりである。
-
-| decode → final | 最大平均 ΔE00 | 最大ぼかし ΔE00 p95 | 最大絶対 EV | 最大 plateau 純増 | 最大 1 px dilation 外面積 | 不合格比較 | 採否 |
-|---:|---:|---:|---:|---:|---:|---:|---|
-| 3,072 → 2,560 | 0.48950815200805664 | 1.5770659446716309 | 0.0057839141227304935 | 0.000016247437024018745 | 0.00012288554481546573 | 3 / 6 | 不採用 |
-| 3,840 → 2,560 | 0.41729527711868286 | 1.256845235824585 | 0.00444698566570878 | 0.00004622510251903925 | 0.0001519478617457528 | 3 / 6 | 不採用 |
-
-12比較の値は次のとおりである。判定は上記5条件すべてを満たす場合だけ合格とする。
-
-| decode | シーン / 段階 | 平均 ΔE00 | ぼかし ΔE00 p95 | 絶対 EV | plateau 純増 | 1 px dilation 外面積 | 判定 |
-|---:|---|---:|---:|---:|---:|---:|---|
-| 3,072 | P1524180 / neutral | 0.33547478914260864 | 0.9453787207603455 | 0.004804658237844706 | 0.0 | 0.00008741578793204452 | 合格 |
-| 3,072 | P1524180 / basic-legacy | 0.41447943449020386 | 1.2090030908584595 | 0.004050333518534899 | 0.0 | 0.00003958882542472173 | 合格 |
-| 3,072 | P1524180 / full-current | 0.48950815200805664 | 1.5317068099975586 | 0.005034229718148708 | 0.000016247437024018745 | 0.000083296719390744 | 合格 |
-| 3,072 | P1522877 / neutral | 0.3468784987926483 | 1.3262600898742676 | 0.0057839141227304935 | 0.000008009299941417692 | 0.00012288554481546573 | 不合格 |
-| 3,072 | P1522877 / basic-legacy | 0.4118720591068268 | 1.5770659446716309 | 0.00427408330142498 | 0.000015103251318101933 | 0.00010206136496777974 | 不合格 |
-| 3,072 | P1522877 / full-current | 0.34059417247772217 | 1.3295499086380005 | 0.0046658567152917385 | 0.000013272554188635032 | 0.00011281671060339778 | 不合格 |
-| 3,840 | P1524180 / neutral | 0.28628039360046387 | 0.777256190776825 | 0.003557615913450718 | 0.000045309753954305797 | 0.00012174135910954891 | 不合格 |
-| 3,840 | P1524180 / basic-legacy | 0.3548063337802887 | 0.9928775429725647 | 0.0031291248742491007 | 0.0 | 0.00003546975688342121 | 合格 |
-| 3,840 | P1524180 / full-current | 0.41729527711868286 | 1.256845235824585 | 0.0037089409306645393 | 0.00001739162272993556 | 0.00006453207381370826 | 合格 |
-| 3,840 | P1522877 / neutral | 0.24590587615966797 | 0.8926499485969543 | 0.00444698566570878 | 0.00004622510251903925 | 0.0001519478617457528 | 不合格 |
-| 3,840 | P1522877 / basic-legacy | 0.29344820976257324 | 1.0677764415740967 | 0.0034729798790067434 | 0.00001807813415348565 | 0.00009107718219097832 | 合格 |
-| 3,840 | P1522877 / full-current | 0.244581401348114 | 0.913719117641449 | 0.003685911186039448 | 0.00002608743409490334 | 0.00011830880199179847 | 不合格 |
-
-両候補とも平均 ΔE00、ぼかし後 ΔE00 p95、絶対EV、正のplateau純面積増加は全比較で合格し、1 px dilation外面積だけが各3比較で上限を超えた。旧exact-coordinate set-difference、最大connected component、worst 128×128 window、距離histogramは原因分析の診断値であり、正式採否を置き換えない。旧direct 2,560 px decodeの不合格も履歴として保持するが、現行v3の候補行列には含めない。
-
-正式結果を見た後に閾値を緩めていない。全比較を通る候補がないため`selectedCandidate = null`、fallbackはfull-resolution RAW decodeであり、実UIもこの経路を維持する。縮小候補を再検討する場合は現行v3を書き換えず、別の処理変更と独立manifestで新たに評価する。
-
-### Direct Metal表示との境界
-
-実UIには`PHOTO_BENCH_PREVIEW_ROUTE=metal-direct`を正確に指定した場合だけ有効になるMTKView直接表示経路がある。未指定・別値では従来表示が既定であり、direct routeのpreview contextも現時点では`cacheIntermediates = false`である。
-
-native fixtureでは、同じprepared frameをdirect / legacyへmaterializeしたoffscreen出力について、各チャンネル最大差`<= 1 LSB`を回帰テストする。これはorientationを逆にした比較を合格へ倒さない厳格なfixtureである。一方、次はこの校正契約の対象外である。
-
-- drawableが実画面へpresentされた後のピクセル
-- SwiftUI / MTKViewのaspect-fit、display scaling、画面色管理を含むactual-screen差
-- input-to-present latency、drop frame、stale frame
-- occlusion / minimize / timeout / teardownを含むapp lifecycle
-
-最終ハードニング直前の実アプリsmokeでは可視draw後にGPU command completionを2回確認したが、1回目は`presentedTime = 0`、2回目はpresented callbackなしで、10秒後に従来表示へfallbackした。その後に`drawableSize > 0`のwatchdog条件と`allowsNextDrawableTimeout = true`を追加し、最終sourceではfallback画像と空表示がないことを再確認したが、同じ詳細traceは再取得していない。positive presentを確認できていないため、direct routeの画質をformal passとは判定しない。既定をlegacyのまま維持し、actual present成立後に画面契約を別suiteとして追加する。
-
-## EDR 選定
-
-Apple の `extendedDynamicRangeAmount` は `0` が EDR なし、`1` が既定の EDR、`2` が最大 EDR である。DC-S5 の2 RAW で A/B した結果は次のとおり。
-
-| シーン | EDR | 最大値 | `> 1` の画素率 |
-|---|---:|---:|---:|
-| P1524180 | 0 | 1.09082 | 3.51333% |
-| P1524180 | 1 | 2.75977 | 9.36917% |
-| P1524180 | 2 | 4.16016 | 9.73042% |
-| P1522877 | 0 | 1.10449 | 4.07792% |
-| P1522877 | 1 | 2.43164 | 30.98250% |
-| P1522877 | 2 | 3.58008 | 33.04500% |
-
-EDR 1 は EDR 2 が回収する `> 1` 領域の約 96.3% / 93.8% を確保しつつ、最大値の拡大を抑えられた。Apple が EDR 1 を既定値と定義していることも踏まえ、DC-S5 に限って `boost = 0.9`、`extendedDynamicRangeAmount = 1` を採用した。他機種へこの値を一般化せず、従来の汎用経路へフォールバックする。
-
-EDR 0 の boost sweep は診断用の旧ベースラインとして残している。`boost = 0.90` の平均 ΔE は P1524180 が `3.055`、P1522877 が `1.655` だったが、これは現在配備する EDR 1 v2 プロファイルの最終品質値ではない。
-
-## 最終レポート
-
-品質判定の正本は `.photobench/calibration/report.json` である。上記現行runでもLightroom品質の数値はP1前baselineから非回帰で、C1 shoulder修正後の結果は次のとおり。
-
-| シーン / 経路 | 平均 ΔE basic → full | 平均 EV差 basic → full | complete / near clip | 新規共有 plateau | 判定 |
+| scene | complete clip pixels basic → full | near clip pixels basic → full | 新規共有plateau面積 | 上限 | 判定 |
 |---|---:|---:|---:|---:|---|
-| P1524180 / RAW | 7.592 → 6.796 | +0.00376 → +0.20779 | 0 / 0 | 0.00036 | EVのみ不合格 |
-| P1524180 / LR-input | 5.556 → 4.835 | -0.12585 → +0.02628 | 0 / 0 | 0.00037 | 合格 |
-| P1522877 / RAW | 5.858 → 3.341 | -0.18034 → +0.00697 | 0 / 0 | 0.00007 | 合格 |
-| P1522877 / LR-input | 5.468 → 3.417 | -0.26834 → -0.08396 | 0 / 0 | 0.00017 | 合格 |
+| P1524180 | 0 → 0 | 0 → 0 | 0.00003592743116578793 | 0.0005 | 合格 |
+| P1522877 | 0 → 0 | 0 → 0 | 0.00009839997070884592 | 0.0005 | 合格 |
 
-4経路すべてで平均 ΔE は改善し、`full <= basic + 0.25` を満たした。complete clip と near clip は basic / full ともに全経路で 0、新規共有 plateau も上限 `0.0005` を下回った。
+正確なclaim scopeは「2つの既知development sceneにおいて、full-resolution RAWを最終2,560pxへ縮小するv4順序で、`basic-legacy`から`full-current`へのcomplete / near clip増加がなく、新規共有highlight plateauも事前登録上限内だった」である。
 
-唯一の不合格は P1524180 / RAW の平均 EV ドリフトである。許容上限は `abs(+0.00376) + 0.05 = 0.05376 EV` だが、full は `+0.20779 EV` だった。他3経路の EV は次の上限内に収まった。
+これはLightroom参照との色・露出一致、旧graphと新graphの同一run内比較、別シーンへの一般化、RAW WB、camera profile、ディテール、シャープ、ノイズ、全色域の妥当性を意味しない。
 
-| 経路 | full の絶対 EV差 | 許容上限 |
-|---|---:|---:|
-| P1524180 / LR-input | 0.02628 | 0.17585 |
-| P1522877 / RAW | 0.00697 | 0.23034 |
-| P1522877 / LR-input | 0.08396 | 0.31834 |
+### 旧 v3 証跡
 
-したがって、安全性に関する clip / plateau / ΔE ゲートはすべて通過したが、レポート全体の合否は `false` である。P1524180 / RAW では full が basic より `+0.20403 EV` 明るくなり、実験的なカーブとカラーミキサーを初期 ON にできる品質には達していない。段別CPU fixtureは各controlの実装意味を固定するものであり、2実写のfull差をAdobe相当として正当化するものではない。curveとmixerの寄与を期待EVとして差し引く補正は採用せず、現行の画像レベルEV gateをfail-closedで維持する。
+旧run `ceea9eb4-b490-4a1f-9984-3d294e2f50bb`は`.photobench/calibration-archives/ceea9eb4-b490-4a1f-9984-3d294e2f50bb/`へrun manifest記載122 artifactを保存している。旧graphの最終2,560px TIFFをv4と同じ定義で後追い集計すると次のとおりで、clip count非増加に失敗していた。
 
-## 品質判断
+| scene | complete clip pixels basic → full | near clip pixels basic → full | 新規共有plateau面積 |
+|---|---:|---:|---:|
+| P1524180 | 2,972 → 4,013 | 3,289 → 4,598 | 0.00008444090509666081 |
+| P1522877 | 13 → 1,500 | 2,927 → 4,927 | 0.00008855997363796134 |
 
-現時点で採用できる判断は次のとおり。
+この履歴とpipeline orderingのunit testをv4 passと併記することで、terminal transformを縮小後へ移した効果を示す。v4 canonical pass単体を旧新graphの直接比較と表現しない。
 
-- DC-S5 限定 EDR 1 v2 と最終出力変換は、拡張輝度を保持しながら bounded sRGB へ安全に収める基盤として採用する。
-- 最大チャンネル基準 shoulder と固定 L / h gamut compression により、完全クリップ、near clip、新規共有 plateau の回帰は検出されなかった。
-- `full` は全4経路で平均 ΔE を改善した。
-- ただし P1524180 / RAW の平均 EV ドリフトがゲートを超えるため、カーブと OKLCh 8バンド・ミキサーは実験扱いを維持し、既定 OFF とする。
-- preview parity v3 は3,072 / 3,840 px候補とも各3 / 6比較不合格で、採用候補はない。閾値を緩めず、実UIはfull-resolution RAW decodeを維持する。
-- 2シーンだけでは事業品質を主張できない。異なる露出、逆光、肌色、人工照明、高彩度色、複数カメラ機種のペアを増やして再評価する。
+## Preview parity
 
-## 回帰テスト
+full-resolution、3,072px、3,840px RAW decodeを`neutral`、`basic-legacy`、`full-current`へ通し、全経路を最終2,560pxへ揃える。full-resolutionを参照とし、候補ごとに2シーン×3段階を次で判定する。
 
-- Swift: `93 tests / 7 suites`
-- Python: `52 tests`
+- 平均ΔE00 `<= 1.0`
+- ぼかし後ΔE00 p95 `<= 2.0`
+- 絶対平均EV drift `<= 0.02`
+- 正のplateau純面積増加 `<= 0.0001`
+- 参照plateauのsquare-3x3、1px dilation外に生じる新規plateau面積 `<= 0.0001`
 
-Swift 側では 1D カーブの端点外挿、重複x規則、OKLCh 8バンド境界、Luminance / Saturation / curveの段別CPU fixture、RAW プロファイル選択、generic RAWのY>1合成出力経路、bounded-sRGB neutral bypass、shoulder の C1 連続性、固定 L / h gamut compression、67,368点の運用／stress色域gridを検証する。さらにpreview / full-resolution intent、RAW scale provenance、preview画像と偽装full-resolution画像の原寸export拒否、native寸法の0・非有限・不明と非有限extentの整数化前拒否、同一`RenderEngine`内のpreview / export contextの別instance性、候補なし時のfull-decode fallback、direct / legacy native fixtureの1 LSB parity、latest-only queueのwrong-ID非変更・resize・reentrant・out-of-order挙動、benchmarkのpass / performanceFailed / notEvaluatedとsystem-load snapshot、manifest v3の固定寸法・候補行列、入力・source・binary・122 artifactのhash、path traversal、symlink、case-only alias、正規化後の成果物名衝突を検証する。Python 側ではmanifest / run manifestを再検証したうえで、レポート生成、ΔE / EV、clip / near clip、新規共有 plateau、共通Lanczos preview parity、square-3x3のplateau morphologyと境界・離隔・collapse合成fixture、入力不変性、固定比較行列をfail-closedで検証する。window visibility、presented callback欠落、10秒deadline、fallback、teardownを含むapp lifecycle reducerはまだ抽出されておらず、この93 testsには含まれない。
+| decode → final | 最大平均ΔE00 | 最大ぼかしΔE00 p95 | 最大絶対EV | 最大plateau純増 | 最大dilation外面積 | 不合格 | 採否 |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| 3,072 → 2,560 | 0.4884687960 | 1.5748517513 | 0.0054855016 | 0.0000549209 | 0.0001210548 | 2 / 6 | 不採用 |
+| 3,840 → 2,560 | 0.4167654216 | 1.2567764521 | 0.0042452556 | 0.0000995442 | 0.0002128185 | 4 / 6 | 不採用 |
 
-校正画像は原本を上書きせず、生成物とレポートを `.photobench/` 配下へ分離する。結果を更新する場合はmanifestを明示更新し、run manifestの入力・source・binary・全artifact hashとruntimeを残して、同じ契約から再現できることを確認する。現runのpreview parity不合格を再現する厳格実行は次で、exit `1`が期待値である。
+6件の失敗理由はいずれもspatially-distinct plateauだけである。3,072pxは両sceneの`full-current`、3,840pxはP1524180の3段階とP1522877の`full-current`が不合格だった。正式結果を見て閾値を緩めていない。`selectedCandidate = null`で、productionはfull-resolution RAW decodeを維持する。
+
+## EDRと色域圧縮の補助検証
+
+DC-S5ではEDR 1がEDR 2の`> 1`領域の約96.3% / 93.8%を保持しつつ最大channelの拡大を抑えたため、DC-S5限定profileに`boost = 0.9`、`extendedDynamicRangeAmount = 1`を採用している。他機種へ一般化しない。
+
+色域圧縮は67,368点のRGBAf gridで、運用域`C/Cmax <= 2`とstress域`<= 4`をCPU参照と比較する。非finite値とbounded sRGB違反は0件で、最大ΔEOKはそれぞれ`0.000119426`と`0.002549949`だった。[W3C CSS Color 4のΔEOK](https://www.w3.org/TR/css-color-4/#deltaEOK)を知覚尺度の参考にするが、このsynthetic passを実写のLightroom一致へ読み替えない。
+
+## 未完了と次の品質作業
+
+- XMPのWhite Balance値は解析できるが、RAW decode / renderへ接続されていない。
+- Adobe / camera-specific profileやDCP相当のprofile処理がない。Adobeも現像時のprofileとwhite balanceを別の基本制御として扱っているため、両方を教師sweepで検証する。[Adobe Lightroom Classicの画像トーンとカラー](https://helpx.adobe.com/lightroom-classic/desktop/process-and-develop-photos/image-tone-color.html)
+- 2 development sceneのみで独立holdoutがない。5〜10 sceneの探索用集合と、最終候補選定後まで触らないsealed holdoutを追加する。
+- crop / rotate、local adjustment、sharpening、noise reduction、lens correction、永続catalogなどは未完成である。
+- cross-process calibration lockがないため、同一rootの並行runを禁止している。
+
+## 回帰テストと再現コマンド
+
+- Swift Testing: `99 tests / 7 suites`
+- Python: `61 tests`
+
+現行テストは、旧 / 新graphの識別、edge clamp + Lanczos + crop、terminal transformの順序、bounded neutral bypass、canonical settleの整数clip countと欠測時fail-closed、preview parity、manifest / hash / archive契約を含む。実画面のdisplay color management、window lifecycle、未知カメラ、holdout品質は含まない。
+
+formal evidenceを再生成する場合は並行校正がないことを確認し、release runnerを使う。Lightroom品質・preview parityの既知不合格を含むため、全gate enforceの期待exitは`1`である。
 
 ```sh
 swift run -c release PhotoBenchCalibration /Users/takuyatakahama/Documents/app/NIHO/others/photo
-python3 scripts/analyze-calibration.py /Users/takuyatakahama/Documents/app/NIHO/others/photo --enforce-preview-parity
+python3 scripts/analyze-calibration.py /Users/takuyatakahama/Documents/app/NIHO/others/photo \
+  --enforce \
+  --enforce-preview-parity \
+  --enforce-canonical-settle
 ```

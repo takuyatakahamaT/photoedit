@@ -54,6 +54,26 @@ private struct PreviewParityRenderPlan {
     let baselineArtifactSuffix: String
     let candidates: [PreviewParityCandidatePlan]
     let downsamplingFilter: TIFFDownsamplingFilter
+    let outputTransformPlacement: OutputTransformPlacement
+}
+
+private struct ExistingCalibrationRun: Decodable {
+    struct ManifestReference: Decodable {
+        let path: String
+        let sha256: String
+        let suiteID: String
+    }
+
+    struct ArtifactReference: Decodable {
+        let path: String
+        let sha256: String
+        let byteCount: UInt64
+    }
+
+    let status: String
+    let runID: String
+    let manifest: ManifestReference
+    let artifacts: [ArtifactReference]
 }
 
 @main
@@ -69,6 +89,18 @@ enum PhotoBenchCalibration {
         let preset = try XMPPresetParser.parse(url: presetURL)
         try validatePreset(preset, manifest: manifest)
         try validateRAWProfile(manifest.rawProfile)
+
+        try archivePreviousCalibrationIfNeeded(
+            root: loaded.root,
+            replacingManifestPath: relativePath(loaded.manifestURL, root: loaded.root),
+            replacingManifestSHA256: loaded.manifestSHA256,
+            replacingSuiteID: manifest.suiteID
+        )
+
+        let outputTransformPlacement: OutputTransformPlacement =
+            manifest.schemaVersion >= 4
+                ? .afterDownsampling
+                : .legacyBeforeDownsampling
 
         let outputRoot = try CalibrationManifestLoader.prepareOutputDirectory(
             ".photobench/calibration",
@@ -114,7 +146,7 @@ enum PhotoBenchCalibration {
             startedAtUTC: startedAt,
             manifest: manifestReference,
             runtime: runtime,
-            processing: .current,
+            processing: manifest.processing.fingerprint,
             sourceFingerprintSHA256: source.sha256,
             sourceFiles: source.files,
             verifiedInputs: loaded.verifiedInputs
@@ -147,7 +179,8 @@ enum PhotoBenchCalibration {
                     decoded: decoded,
                     settings: .neutral,
                     destination: destination,
-                    maxDimension: CGFloat(manifest.comparison.maxDimension)
+                    maxDimension: CGFloat(manifest.comparison.maxDimension),
+                    outputTransformPlacement: outputTransformPlacement
                 )
                 let artifact = try makeArtifact(
                     role: "normalized-reference-\(label)",
@@ -183,7 +216,8 @@ enum PhotoBenchCalibration {
                     decoded: decoded,
                     settings: .neutral,
                     destination: destination,
-                    maxDimension: CGFloat(manifest.comparison.maxDimension)
+                    maxDimension: CGFloat(manifest.comparison.maxDimension),
+                    outputTransformPlacement: outputTransformPlacement
                 )
                 let artifact = try makeArtifact(
                     role: "diagnostic-candidate",
@@ -256,7 +290,8 @@ enum PhotoBenchCalibration {
                         decoded: decoded,
                         settings: candidate.settings,
                         destination: destination,
-                        maxDimension: CGFloat(manifest.comparison.maxDimension)
+                        maxDimension: CGFloat(manifest.comparison.maxDimension),
+                        outputTransformPlacement: outputTransformPlacement
                     )
                     let artifact = try makeArtifact(
                         role: "diagnostic-candidate",
@@ -330,6 +365,7 @@ enum PhotoBenchCalibration {
                         settingsHash: stage.settingsHash,
                         outputMaxDimension: parityPlan.outputMaxDimension,
                         downsamplingFilter: parityPlan.downsamplingFilter,
+                        outputTransformPlacement: parityPlan.outputTransformPlacement,
                         renderer: renderer,
                         renderDirectory: renderDirectory,
                         root: loaded.root
@@ -374,6 +410,7 @@ enum PhotoBenchCalibration {
                                 settingsHash: stage.settingsHash,
                                 outputMaxDimension: parityPlan.outputMaxDimension,
                                 downsamplingFilter: parityPlan.downsamplingFilter,
+                                outputTransformPlacement: parityPlan.outputTransformPlacement,
                                 renderer: renderer,
                                 renderDirectory: renderDirectory,
                                 root: loaded.root
@@ -405,7 +442,8 @@ enum PhotoBenchCalibration {
                             decoded: decoded,
                             settings: settings,
                             destination: destination,
-                            maxDimension: CGFloat(manifest.comparison.maxDimension)
+                            maxDimension: CGFloat(manifest.comparison.maxDimension),
+                            outputTransformPlacement: outputTransformPlacement
                         )
                         let artifact = try makeArtifact(
                             role: "comparison-candidate",
@@ -458,7 +496,7 @@ enum PhotoBenchCalibration {
             completedAtUTC: ISO8601Timestamp.now(),
             manifest: manifestReference,
             runtime: runtime,
-            processing: .current,
+            processing: manifest.processing.fingerprint,
             sourceFingerprintSHA256: source.sha256,
             postflightSourceFingerprintSHA256: postflightSource.sha256,
             sourceFiles: source.files,
@@ -473,6 +511,326 @@ enum PhotoBenchCalibration {
         print("Calibration run complete: \(runID)")
         print("Run manifest: \(runManifestURL.path)")
         print("Archived run manifest: \(archivedRunManifestURL.path)")
+    }
+
+    /// A schema transition replaces the shared latest-artifact paths. Preserve
+    /// the complete previous evidence first using hard links. Calibration uses
+    /// atomic file replacement, so the archived inodes remain immutable while
+    /// avoiding an immediate multi-gigabyte duplicate on disk.
+    private static func archivePreviousCalibrationIfNeeded(
+        root: URL,
+        replacingManifestPath: String,
+        replacingManifestSHA256: String,
+        replacingSuiteID: String
+    ) throws {
+        let sourceRoot = root.appendingPathComponent(
+            ".photobench/calibration",
+            isDirectory: true
+        )
+        let runManifestURL = sourceRoot.appendingPathComponent("run-manifest.json")
+        guard FileManager.default.fileExists(atPath: runManifestURL.path) else {
+            return
+        }
+        let existing = try JSONDecoder().decode(
+            ExistingCalibrationRun.self,
+            from: Data(contentsOf: runManifestURL)
+        )
+        if existing.status == "running",
+           existing.manifest.path == replacingManifestPath,
+           existing.manifest.sha256 == replacingManifestSHA256,
+           existing.manifest.suiteID == replacingSuiteID {
+            // A terminated run leaves status=running. Re-running the same
+            // exact manifest is the only explicit recovery path; a partial
+            // run from a different manifest remains protected below.
+            print("Replacing incomplete calibration run: \(existing.runID)")
+            return
+        }
+        guard existing.status == "complete" else {
+            throw CalibrationManifestError.invalid(
+                "既存校正runがcompleteではなく、同一manifestのrunning recoveryでもないため上書きできません: \(existing.runID), status=\(existing.status)"
+            )
+        }
+        let allowed = CharacterSet(
+            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-"
+        )
+        guard !existing.runID.isEmpty,
+              existing.runID.unicodeScalars.allSatisfy(allowed.contains)
+        else {
+            throw CalibrationManifestError.invalid(
+                "既存校正run IDが安全な識別子ではありません"
+            )
+        }
+        let referencedManifest = try CalibrationManifestLoader.load(
+            root: root,
+            manifestURL: root.appendingPathComponent(existing.manifest.path)
+        )
+        guard referencedManifest.manifestSHA256 == existing.manifest.sha256,
+              referencedManifest.manifest.suiteID == existing.manifest.suiteID
+        else {
+            throw CalibrationManifestError.invalid(
+                "既存校正runが参照するmanifestのSHA-256またはsuiteIDが一致しません: \(existing.manifest.path)"
+            )
+        }
+        let expectedArtifactPaths = Set(
+            CalibrationManifestLoader.expectedArtifactRelativePaths(
+                for: referencedManifest.manifest
+            )
+        )
+        try verifyCalibrationEvidence(
+            existing,
+            at: sourceRoot,
+            expectedArtifactPaths: expectedArtifactPaths
+        )
+
+        let archiveRoot = try CalibrationManifestLoader.prepareOutputDirectory(
+            ".photobench/calibration-archives",
+            inside: root
+        )
+        let destination = archiveRoot.appendingPathComponent(
+            existing.runID,
+            isDirectory: true
+        )
+        let archivedManifest = destination.appendingPathComponent("run-manifest.json")
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try verifyOrdinaryDirectoryTree(destination)
+            try verifyOrdinaryFile(archivedManifest, inside: destination)
+            guard FileManager.default.fileExists(atPath: archivedManifest.path),
+                  try SHA256Digest.file(archivedManifest)
+                    == SHA256Digest.file(runManifestURL)
+            else {
+                throw CalibrationManifestError.invalid(
+                    "既存校正archiveが不完全または別内容です: \(destination.path)"
+                )
+            }
+            try verifyCalibrationEvidence(
+                existing,
+                at: destination,
+                expectedArtifactPaths: expectedArtifactPaths
+            )
+            print("Previous calibration already archived: \(destination.path)")
+            return
+        }
+
+        let staging = archiveRoot.appendingPathComponent(
+            ".\(existing.runID)-\(UUID().uuidString.lowercased()).tmp",
+            isDirectory: true
+        )
+        do {
+            try hardLinkTree(from: sourceRoot, to: staging)
+            let stagedManifest = staging.appendingPathComponent("run-manifest.json")
+            guard try SHA256Digest.file(stagedManifest)
+                    == SHA256Digest.file(runManifestURL)
+            else {
+                throw CalibrationManifestError.invalid(
+                    "staging校正archiveのrun manifestが元証拠と一致しません"
+                )
+            }
+            try verifyCalibrationEvidence(
+                existing,
+                at: staging,
+                expectedArtifactPaths: expectedArtifactPaths
+            )
+            try FileManager.default.moveItem(at: staging, to: destination)
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            throw CalibrationManifestError.invalid(
+                "既存校正証拠をarchiveできないため新runを中止します: \(error.localizedDescription)"
+            )
+        }
+        print("Previous calibration archived: \(destination.path)")
+    }
+
+    private static func verifyCalibrationEvidence(
+        _ run: ExistingCalibrationRun,
+        at evidenceRoot: URL,
+        expectedArtifactPaths: Set<String>
+    ) throws {
+        guard !run.artifacts.isEmpty else {
+            throw CalibrationManifestError.invalid(
+                "既存校正runにartifact記録がありません: \(run.runID)"
+            )
+        }
+        let prefix = ".photobench/calibration/"
+        let standardizedRoot = evidenceRoot.standardizedFileURL
+        let normalizedRoot = standardizedRoot.resolvingSymlinksInPath()
+        let rootValues = try evidenceRoot.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard rootValues.isDirectory == true,
+              rootValues.isSymbolicLink != true,
+              standardizedRoot.path == normalizedRoot.path
+        else {
+            throw CalibrationManifestError.invalid(
+                "既存校正証拠rootが通常directoryではないかsymlinkを含みます: \(evidenceRoot.path)"
+            )
+        }
+        let rootPrefix = normalizedRoot.path.hasSuffix("/")
+            ? normalizedRoot.path
+            : normalizedRoot.path + "/"
+        var seenPaths = Set<String>()
+        var recordedArtifactPaths = Set<String>()
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+            .fileSizeKey
+        ]
+
+        for artifact in run.artifacts {
+            guard artifact.path.hasPrefix(prefix) else {
+                throw CalibrationManifestError.invalid(
+                    "既存校正artifact pathが校正root外です: \(artifact.path)"
+                )
+            }
+            let relative = String(artifact.path.dropFirst(prefix.count))
+            let components = relative.split(
+                separator: "/",
+                omittingEmptySubsequences: false
+            )
+            guard !relative.isEmpty,
+                  !NSString(string: relative).isAbsolutePath,
+                  !relative.contains("\0"),
+                  components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+                  seenPaths.insert(relative).inserted,
+                  recordedArtifactPaths.insert(artifact.path).inserted
+            else {
+                throw CalibrationManifestError.invalid(
+                    "既存校正artifact pathが不正または重複しています: \(artifact.path)"
+                )
+            }
+
+            let candidate = evidenceRoot.appendingPathComponent(relative)
+            let standardizedCandidate = candidate.standardizedFileURL
+            let resolved = candidate.standardizedFileURL.resolvingSymlinksInPath()
+            guard standardizedCandidate.path == resolved.path,
+                  resolved.path.hasPrefix(rootPrefix)
+            else {
+                throw CalibrationManifestError.invalid(
+                    "既存校正artifactがsymlinkを含むか校正root外を指しています: \(artifact.path)"
+                )
+            }
+            let values = try candidate.resourceValues(forKeys: keys)
+            guard values.isRegularFile == true,
+                  values.isSymbolicLink != true,
+                  let fileSize = values.fileSize,
+                  fileSize >= 0,
+                  UInt64(fileSize) == artifact.byteCount,
+                  try SHA256Digest.file(candidate) == artifact.sha256
+            else {
+                throw CalibrationManifestError.invalid(
+                    "既存校正artifactの存在・size・SHA-256を検証できません: \(artifact.path)"
+                )
+            }
+        }
+        guard recordedArtifactPaths == expectedArtifactPaths else {
+            let missing = expectedArtifactPaths.subtracting(recordedArtifactPaths).sorted()
+            let unexpected = recordedArtifactPaths.subtracting(expectedArtifactPaths).sorted()
+            throw CalibrationManifestError.invalid(
+                "既存校正artifact集合がmanifest契約と一致しません: missing=\(Array(missing.prefix(3))), unexpected=\(Array(unexpected.prefix(3)))"
+            )
+        }
+    }
+
+    /// Existing archives must satisfy the same no-symlink, ordinary-files-only
+    /// invariant as a tree freshly created by `hardLinkTree`.
+    private static func verifyOrdinaryDirectoryTree(_ root: URL) throws {
+        let fileManager = FileManager.default
+        let keys: Set<URLResourceKey> = [
+            .isDirectoryKey,
+            .isRegularFileKey,
+            .isSymbolicLinkKey
+        ]
+        let standardizedRoot = root.standardizedFileURL
+        let rootValues = try root.resourceValues(forKeys: keys)
+        guard rootValues.isDirectory == true,
+              rootValues.isSymbolicLink != true,
+              standardizedRoot.resolvingSymlinksInPath().path == standardizedRoot.path
+        else {
+            throw CalibrationManifestError.invalid(
+                "既存校正archiveが通常directoryではないかsymlinkです: \(root.path)"
+            )
+        }
+        for item in try fileManager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: Array(keys),
+            options: []
+        ) {
+            let standardizedItem = item.standardizedFileURL
+            let values = try item.resourceValues(forKeys: keys)
+            guard values.isSymbolicLink != true,
+                  standardizedItem.resolvingSymlinksInPath().path == standardizedItem.path,
+                  values.isDirectory == true || values.isRegularFile == true
+            else {
+                throw CalibrationManifestError.invalid(
+                    "既存校正archiveにsymlinkまたは未対応file typeがあります: \(item.path)"
+                )
+            }
+            if values.isDirectory == true {
+                try verifyOrdinaryDirectoryTree(item)
+            }
+        }
+    }
+
+    private static func verifyOrdinaryFile(_ file: URL, inside root: URL) throws {
+        let standardizedRoot = root.standardizedFileURL
+        let rootPrefix = standardizedRoot.path.hasSuffix("/")
+            ? standardizedRoot.path
+            : standardizedRoot.path + "/"
+        let standardizedFile = file.standardizedFileURL
+        let values = try file.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        )
+        guard standardizedFile.path.hasPrefix(rootPrefix),
+              standardizedFile.resolvingSymlinksInPath().path == standardizedFile.path,
+              values.isRegularFile == true,
+              values.isSymbolicLink != true
+        else {
+            throw CalibrationManifestError.invalid(
+                "既存校正archiveのrun manifestが通常fileではないかsymlinkです: \(file.path)"
+            )
+        }
+    }
+
+    private static func hardLinkTree(from source: URL, to destination: URL) throws {
+        let fileManager = FileManager.default
+        let keys: Set<URLResourceKey> = [
+            .isDirectoryKey,
+            .isRegularFileKey,
+            .isSymbolicLinkKey
+        ]
+        let sourceValues = try source.resourceValues(forKeys: keys)
+        guard sourceValues.isDirectory == true,
+              sourceValues.isSymbolicLink != true
+        else {
+            throw CalibrationManifestError.invalid(
+                "校正出力rootが通常directoryではありません: \(source.path)"
+            )
+        }
+        try fileManager.createDirectory(
+            at: destination,
+            withIntermediateDirectories: false
+        )
+        for item in try fileManager.contentsOfDirectory(
+            at: source,
+            includingPropertiesForKeys: Array(keys),
+            options: []
+        ) {
+            let target = destination.appendingPathComponent(item.lastPathComponent)
+            let values = try item.resourceValues(forKeys: keys)
+            guard values.isSymbolicLink != true else {
+                throw CalibrationManifestError.invalid(
+                    "校正archive対象にsymlinkがあります: \(item.path)"
+                )
+            }
+            if values.isDirectory == true {
+                try hardLinkTree(from: item, to: target)
+            } else if values.isRegularFile == true {
+                try fileManager.linkItem(at: item, to: target)
+            } else {
+                throw CalibrationManifestError.invalid(
+                    "校正archive対象に未対応file typeがあります: \(item.path)"
+                )
+            }
+        }
     }
 
     private static func validatePreset(
@@ -532,14 +890,15 @@ enum PhotoBenchCalibration {
                         decodeRoute: "preview-parity-interactive-preview"
                     )
                 ],
-                downsamplingFilter: .affineTransform
+                downsamplingFilter: .affineTransform,
+                outputTransformPlacement: .legacyBeforeDownsampling
             )
-        case 3:
+        case 3, 4:
             guard let outputMaxDimension = specification.outputMaxDimension,
                   let candidateDimensions = specification.candidateDecodeMaximumDimensions
             else {
                 throw CalibrationManifestError.invalid(
-                    "schema v3 previewParityの出力またはdecode寸法がありません"
+                    "schema v3/v4 previewParityの出力またはdecode寸法がありません"
                 )
             }
             return PreviewParityRenderPlan(
@@ -552,11 +911,14 @@ enum PhotoBenchCalibration {
                         decodeRoute: "preview-parity-interactive-preview-\(dimension)"
                     )
                 },
-                downsamplingFilter: .lanczos
+                downsamplingFilter: .lanczos,
+                outputTransformPlacement: manifest.schemaVersion == 4
+                    ? .afterDownsampling
+                    : .legacyBeforeDownsampling
             )
         default:
             throw CalibrationManifestError.invalid(
-                "previewParity renderはschema v2/v3だけに対応します"
+                "previewParity renderはschema v2-v4だけに対応します"
             )
         }
     }
@@ -572,6 +934,7 @@ enum PhotoBenchCalibration {
         settingsHash: String,
         outputMaxDimension: Int,
         downsamplingFilter: TIFFDownsamplingFilter,
+        outputTransformPlacement: OutputTransformPlacement,
         renderer: RenderEngine,
         renderDirectory: URL,
         root: URL
@@ -587,7 +950,8 @@ enum PhotoBenchCalibration {
             settings: settings,
             destination: destination,
             maxDimension: CGFloat(outputMaxDimension),
-            downsamplingFilter: downsamplingFilter
+            downsamplingFilter: downsamplingFilter,
+            outputTransformPlacement: outputTransformPlacement
         )
         return try makeArtifact(
             role: role,

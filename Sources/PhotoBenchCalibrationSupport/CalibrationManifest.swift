@@ -16,6 +16,7 @@ public struct CalibrationManifest: Codable, Equatable, Sendable {
     public let stageMatrix: [CalibrationCandidateDefinition]
     public let qualityGate: QualityGateSpecification
     public let previewParity: PreviewParitySpecification?
+    public let canonicalSettleGate: CanonicalSettleGateSpecification?
     public let benchmark: BenchmarkSpecification
     public let scenes: [CalibrationScene]
 }
@@ -118,6 +119,27 @@ public struct PreviewParityThresholds: Codable, Equatable, Sendable {
     public let netSharedPlateauAreaIncreaseMaximum: Double?
     /// Schema v3 only: candidate plateau outside the dilated reference plateau.
     public let spatiallyDistinctNewSharedPlateauMaximumArea: Double?
+}
+
+/// Schema v4's production-preview settle contract. It reuses the full-decode
+/// preview-parity artifacts rather than creating a second render route.
+public struct CanonicalSettleGateSpecification: Codable, Equatable, Sendable {
+    public let outputMaxDimension: Int
+    public let downsamplingFilter: String
+    public let inputAspectRatio: Double
+    public let workingColorSpace: String
+    public let outputTransformPlacement: String
+    public let baselineStageID: String
+    public let candidateStageID: String
+    public let thresholds: CanonicalSettleThresholds
+}
+
+public struct CanonicalSettleThresholds: Codable, Equatable, Sendable {
+    public let completeClipNormalizedMinimum: Double
+    public let nearClipNormalizedMinimum: Double
+    public let completeClipMaximumPixelCountIncrease: Int
+    public let nearClipMaximumPixelCountIncrease: Int
+    public let newSharedPlateauMaximumArea: Double
 }
 
 public struct BenchmarkSpecification: Codable, Equatable, Sendable {
@@ -243,7 +265,7 @@ public enum CalibrationManifestError: LocalizedError, Equatable {
 }
 
 public enum CalibrationManifestLoader {
-    public static let defaultRelativePath = "calibration/manifest-v3.json"
+    public static let defaultRelativePath = "calibration/manifest-v4.json"
 
     private static let requiredLegacyCandidateIDs: Set<String> = [
         "exposure-only", "tone-base", "basic-legacy", "full-current"
@@ -316,7 +338,7 @@ public enum CalibrationManifestLoader {
     }
 
     public static func validateStructure(_ manifest: CalibrationManifest) throws {
-        guard [1, 2, 3].contains(manifest.schemaVersion) else {
+        guard [1, 2, 3, 4].contains(manifest.schemaVersion) else {
             throw CalibrationManifestError.unsupportedSchema(manifest.schemaVersion)
         }
         switch manifest.schemaVersion {
@@ -336,6 +358,19 @@ public enum CalibrationManifestLoader {
             guard manifest.previewParity != nil else {
                 throw CalibrationManifestError.invalid(
                     "schema v3にはpreviewParityが必要です"
+                )
+            }
+            guard manifest.canonicalSettleGate == nil else {
+                throw CalibrationManifestError.invalid(
+                    "schema v3にはcanonicalSettleGateを指定できません"
+                )
+            }
+        case 4:
+            guard manifest.previewParity != nil,
+                  manifest.canonicalSettleGate != nil
+            else {
+                throw CalibrationManifestError.invalid(
+                    "schema v4にはpreviewParityとcanonicalSettleGateが必要です"
                 )
             }
         default:
@@ -364,6 +399,11 @@ public enum CalibrationManifestLoader {
             fingerprintMatches = sharedFingerprintMatches
                 && fingerprint.rawDecode
                     == PhotoCoreProcessingFingerprint.legacyRawDecodeIdentifier
+                && fingerprint.renderPipeline
+                    == RenderEngine.legacyProcessingIdentifier
+        } else if manifest.schemaVersion <= 3 {
+            fingerprintMatches = fingerprint
+                == PhotoCoreProcessingFingerprint.legacyCurrentRawDecode
         } else {
             fingerprintMatches = fingerprint == currentFingerprint
         }
@@ -514,6 +554,7 @@ public enum CalibrationManifestLoader {
             throw CalibrationManifestError.invalid("benchmark設定が不正です")
         }
         try validatePreviewParity(manifest)
+        try validateCanonicalSettle(manifest)
         let artifactPaths = expectedArtifactRelativePaths(for: manifest)
         // The supported macOS deployment may use a case-insensitive volume.
         // Reject case-only aliases conservatively even on a case-sensitive one.
@@ -823,7 +864,7 @@ public enum CalibrationManifestLoader {
                             )
                         }
                     }
-                case 3:
+                case 3, 4:
                     guard let outputMaxDimension = previewParity.outputMaxDimension,
                           let candidateDimensions = previewParity.candidateDecodeMaximumDimensions
                     else {
@@ -897,7 +938,7 @@ public enum CalibrationManifestLoader {
                     "schema v2 previewParityが単一2560px decode契約と一致しません"
                 )
             }
-        case 3:
+        case 3, 4:
             guard previewParity.maxDimension == nil,
                   let outputMaxDimension = previewParity.outputMaxDimension,
                   outputMaxDimension == 2_560,
@@ -927,12 +968,52 @@ public enum CalibrationManifestLoader {
                   (0...0.000_1).contains(spatiallyDistinctMaximum)
             else {
                 throw CalibrationManifestError.invalid(
-                    "schema v3 previewParityが二段decode・Lanczos出力・plateau空間許容契約と一致しません"
+                    "schema v3/v4 previewParityが二段decode・Lanczos出力・plateau空間許容契約と一致しません"
                 )
             }
         default:
             throw CalibrationManifestError.invalid(
-                "previewParityを指定できるのはschema v2/v3だけです"
+                "previewParityを指定できるのはschema v2-v4だけです"
+            )
+        }
+    }
+
+    private static func validateCanonicalSettle(
+        _ manifest: CalibrationManifest
+    ) throws {
+        guard let gate = manifest.canonicalSettleGate else {
+            guard manifest.schemaVersion < 4 else {
+                throw CalibrationManifestError.invalid(
+                    "schema v4にはcanonicalSettleGateが必要です"
+                )
+            }
+            return
+        }
+        guard manifest.schemaVersion == 4 else {
+            throw CalibrationManifestError.invalid(
+                "canonicalSettleGateを指定できるのはschema v4だけです"
+            )
+        }
+        let exactCompleteClipThreshold = 1 - 0.5 / 65_535.0
+        guard gate.outputMaxDimension == 2_560,
+              gate.outputMaxDimension == manifest.previewParity?.outputMaxDimension,
+              gate.downsamplingFilter == "CILanczosScaleTransform",
+              gate.inputAspectRatio == 1,
+              gate.workingColorSpace == "extended-linear-sRGB",
+              gate.outputTransformPlacement == "after-downsampling",
+              gate.baselineStageID == "basic-legacy",
+              gate.candidateStageID == "full-current",
+              abs(
+                  gate.thresholds.completeClipNormalizedMinimum
+                      - exactCompleteClipThreshold
+              ) < 0.000_000_000_001,
+              gate.thresholds.nearClipNormalizedMinimum == 0.999,
+              gate.thresholds.completeClipMaximumPixelCountIncrease == 0,
+              gate.thresholds.nearClipMaximumPixelCountIncrease == 0,
+              gate.thresholds.newSharedPlateauMaximumArea == 0.0005
+        else {
+            throw CalibrationManifestError.invalid(
+                "schema v4 canonicalSettleGateが固定production契約と一致しません"
             )
         }
     }

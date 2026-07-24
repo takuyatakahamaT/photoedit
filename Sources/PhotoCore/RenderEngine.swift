@@ -304,16 +304,31 @@ public enum RenderEngineError: LocalizedError {
     }
 }
 
-/// Controls the explicit final resize used by comparison TIFF exports.
-/// The default preserves the historical v1/v2 calibration byte path; v3
-/// preview parity opts into Lanczos so every decode route shares one
-/// preregistered high-quality downsampling operation.
+/// Controls the explicit final resize used by previews and comparison TIFFs.
 public enum TIFFDownsamplingFilter: Sendable {
     case affineTransform
     case lanczos
 }
 
+/// Locates the bounded sRGB output transform relative to an optional resize.
+/// Production rendering uses `afterDownsampling`: all edits and Lanczos run in
+/// extended-linear sRGB, then the bounded transform is the terminal color
+/// operation. The legacy case exists only to reproduce schema v1-v3 evidence.
+public enum OutputTransformPlacement: Equatable, Sendable {
+    case legacyBeforeDownsampling
+    case afterDownsampling
+}
+
+struct PreparedOutputGraph: @unchecked Sendable {
+    let image: CIImage
+    let extent: CGRect
+}
+
 public final class RenderEngine: @unchecked Sendable {
+    public static let processingIdentifier =
+        "extended-linear-srgb-edits-resize-before-final-srgb-v1"
+    public static let legacyProcessingIdentifier =
+        "extended-linear-srgb-edits-final-srgb-then-resize-v1"
     private static let performanceLog = OSLog(
         subsystem: "life.niho.photobench",
         category: "render"
@@ -403,13 +418,15 @@ public final class RenderEngine: @unchecked Sendable {
         }
         os_signpost(.begin, log: Self.performanceLog, name: "PreviewGraph")
         let graphStarted = ContinuousClock.now
-        var image = applyForOutput(decoded: decoded, settings: settings)
-        let longest = max(image.extent.width, image.extent.height)
-        if longest > maxDimension {
-            let scale = maxDimension / longest
-            image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        }
-        let extent = image.extent.integral
+        let output = try makeOutputGraph(
+            decoded: decoded,
+            settings: settings,
+            maxDimension: maxDimension,
+            downsamplingFilter: .lanczos,
+            outputTransformPlacement: .afterDownsampling
+        )
+        let image = output.image
+        let extent = output.extent
         let graphMilliseconds = Self.milliseconds(graphStarted.duration(to: .now))
         os_signpost(.end, log: Self.performanceLog, name: "PreviewGraph")
 
@@ -518,7 +535,14 @@ public final class RenderEngine: @unchecked Sendable {
 
         os_signpost(.begin, log: Self.performanceLog, name: "JPEGGraph")
         let graphStarted = ContinuousClock.now
-        let image = applyForOutput(decoded: decoded, settings: settings)
+        let output = try makeOutputGraph(
+            decoded: decoded,
+            settings: settings,
+            maxDimension: nil,
+            downsamplingFilter: .lanczos,
+            outputTransformPlacement: .afterDownsampling
+        )
+        let image = output.image
         let graphMilliseconds = Self.milliseconds(graphStarted.duration(to: .now))
         os_signpost(.end, log: Self.performanceLog, name: "JPEGGraph")
 
@@ -608,6 +632,7 @@ public final class RenderEngine: @unchecked Sendable {
         destination: URL,
         maxDimension: CGFloat? = nil,
         downsamplingFilter: TIFFDownsamplingFilter = .affineTransform,
+        outputTransformPlacement: OutputTransformPlacement = .afterDownsampling,
         protectedSourceURLs: [URL] = []
     ) throws -> Double {
         if maxDimension == nil {
@@ -624,28 +649,14 @@ public final class RenderEngine: @unchecked Sendable {
             throw RenderEngineError.sourceOverwriteForbidden(destination)
         }
         let started = ContinuousClock.now
-        var image = applyForOutput(decoded: decoded, settings: settings)
-        if let maxDimension {
-            let longest = max(image.extent.width, image.extent.height)
-            if longest > maxDimension {
-                let scale = maxDimension / longest
-                switch downsamplingFilter {
-                case .affineTransform:
-                    image = image.transformed(
-                        by: CGAffineTransform(scaleX: scale, y: scale)
-                    )
-                case .lanczos:
-                    image = image.applyingFilter(
-                        "CILanczosScaleTransform",
-                        parameters: [
-                            kCIInputScaleKey: scale,
-                            kCIInputAspectRatioKey: 1
-                        ]
-                    )
-                }
-            }
-        }
-        image = image.cropped(to: image.extent.integral)
+        let output = try makeOutputGraph(
+            decoded: decoded,
+            settings: settings,
+            maxDimension: maxDimension,
+            downsamplingFilter: downsamplingFilter,
+            outputTransformPlacement: outputTransformPlacement
+        )
+        let image = output.image
 
         try FileManager.default.createDirectory(
             at: destination.deletingLastPathComponent(),
@@ -885,11 +896,112 @@ public final class RenderEngine: @unchecked Sendable {
     /// together with the final shoulder and gamut transform.
     func applyForOutput(decoded: DecodedPhoto, settings: EditSettings) -> CIImage {
         let working = apply(settings: settings, to: decoded.image)
-        let requiresTransform = Self.requiresOutputTransform(
+        return applyOutputTransformIfRequired(
+            to: working,
             info: decoded.info,
             settings: settings
         )
-        return requiresTransform ? SRGBOutputTransform.apply(to: working) : working
+    }
+
+    /// Builds the sole production output graph. Core Image remains lazy, but
+    /// the dependency graph fixes the semantic order and preserves float HDR
+    /// headroom without an intermediate bitmap materialization.
+    func makeOutputGraph(
+        decoded: DecodedPhoto,
+        settings: EditSettings,
+        maxDimension: CGFloat?,
+        downsamplingFilter: TIFFDownsamplingFilter,
+        outputTransformPlacement: OutputTransformPlacement
+    ) throws -> PreparedOutputGraph {
+        if let maxDimension {
+            guard maxDimension.isFinite, maxDimension > 0 else {
+                throw RenderEngineError.renderFailed(decoded.sourceURL)
+            }
+        }
+
+        var image = apply(settings: settings, to: decoded.image)
+        if outputTransformPlacement == .legacyBeforeDownsampling {
+            image = applyOutputTransformIfRequired(
+                to: image,
+                info: decoded.info,
+                settings: settings
+            )
+        }
+        image = resize(
+            image,
+            maxDimension: maxDimension,
+            downsamplingFilter: downsamplingFilter,
+            outputTransformPlacement: outputTransformPlacement
+        )
+        let extent = image.extent.integral
+        guard extent.width.isFinite, extent.height.isFinite,
+              extent.width > 0, extent.height > 0
+        else {
+            throw RenderEngineError.renderFailed(decoded.sourceURL)
+        }
+        image = image.cropped(to: extent)
+        if outputTransformPlacement == .afterDownsampling {
+            image = applyOutputTransformIfRequired(
+                to: image,
+                info: decoded.info,
+                settings: settings
+            ).cropped(to: extent)
+        }
+        return PreparedOutputGraph(image: image, extent: extent)
+    }
+
+    private func resize(
+        _ image: CIImage,
+        maxDimension: CGFloat?,
+        downsamplingFilter: TIFFDownsamplingFilter,
+        outputTransformPlacement: OutputTransformPlacement
+    ) -> CIImage {
+        guard let maxDimension else { return image }
+        let longest = max(image.extent.width, image.extent.height)
+        guard longest > maxDimension else { return image }
+        let scale = maxDimension / longest
+        switch downsamplingFilter {
+        case .affineTransform:
+            return image.transformed(
+                by: CGAffineTransform(scaleX: scale, y: scale)
+            )
+        case .lanczos:
+            if outputTransformPlacement == .legacyBeforeDownsampling {
+                // Preserve schema v1-v3 byte semantics. Historical evidence
+                // sampled transparent black outside the finite image extent.
+                return image.applyingFilter(
+                    "CILanczosScaleTransform",
+                    parameters: [
+                        kCIInputScaleKey: scale,
+                        kCIInputAspectRatioKey: 1
+                    ]
+                )
+            }
+            // Lanczos reads beyond the finite image extent. Extend the edge
+            // pixels before filtering so an opaque photo is not mixed with
+            // transparent black at its boundary, then restore the exact
+            // finite scaled extent for the remainder of the graph.
+            let scaledExtent = image.extent.applying(
+                CGAffineTransform(scaleX: scale, y: scale)
+            ).integral
+            return image.clampedToExtent().applyingFilter(
+                "CILanczosScaleTransform",
+                parameters: [
+                    kCIInputScaleKey: scale,
+                    kCIInputAspectRatioKey: 1
+                ]
+            ).cropped(to: scaledExtent)
+        }
+    }
+
+    private func applyOutputTransformIfRequired(
+        to image: CIImage,
+        info: DecodeInfo,
+        settings: EditSettings
+    ) -> CIImage {
+        Self.requiresOutputTransform(info: info, settings: settings)
+            ? SRGBOutputTransform.apply(to: image)
+            : image
     }
 
     /// Separates the branch contract from rendering so the RAW disjunct can be

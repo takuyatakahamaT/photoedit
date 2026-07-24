@@ -125,11 +125,33 @@ DEFAULT_PREVIEW_PARITY_V3_THRESHOLDS = {
     "net_shared_plateau_area_increase_maximum": 0.0001,
     "spatially_distinct_new_shared_plateau_maximum_area": 0.0001,
 }
-SUPPORTED_MANIFEST_SCHEMA_VERSIONS = (2, 3)
-CURRENT_MANIFEST_SCHEMA_VERSION = 3
+CANONICAL_SETTLE_CONTRACT = {
+    "outputMaxDimension": 2_560,
+    "downsamplingFilter": "CILanczosScaleTransform",
+    "inputAspectRatio": 1.0,
+    "workingColorSpace": "extended-linear-sRGB",
+    "outputTransformPlacement": "after-downsampling",
+    "baselineStageID": "basic-legacy",
+    "candidateStageID": "full-current",
+}
+CANONICAL_SETTLE_THRESHOLD_CONTRACT = {
+    "completeClipNormalizedMinimum": 1 - 0.5 / 65_535,
+    "nearClipNormalizedMinimum": 0.999,
+    "completeClipMaximumPixelCountIncrease": 0,
+    "nearClipMaximumPixelCountIncrease": 0,
+    "newSharedPlateauMaximumArea": 0.0005,
+}
+LEGACY_RENDER_PIPELINE_IDENTIFIER = (
+    "extended-linear-srgb-edits-final-srgb-then-resize-v1"
+)
+CURRENT_RENDER_PIPELINE_IDENTIFIER = (
+    "extended-linear-srgb-edits-resize-before-final-srgb-v1"
+)
+SUPPORTED_MANIFEST_SCHEMA_VERSIONS = (2, 3, 4)
+CURRENT_MANIFEST_SCHEMA_VERSION = 4
 RUN_SCHEMA_VERSION = 2
-REPORT_SCHEMA_VERSION = 4
-DEFAULT_MANIFEST_PATH = "calibration/manifest-v3.json"
+REPORT_SCHEMA_VERSION = 5
+DEFAULT_MANIFEST_PATH = "calibration/manifest-v4.json"
 DEFAULT_RUN_MANIFEST_PATH = ".photobench/calibration/run-manifest.json"
 PLATEAU_LUMINANCE_QUANTILE = 0.999
 PLATEAU_CODE_VALUE_TOLERANCE = 2 / 65_535
@@ -1228,6 +1250,361 @@ def _safe_identifier(value: Any, field: str) -> str:
     return text
 
 
+def _validate_canonical_settle_contract(
+    manifest: dict[str, Any],
+    *,
+    schema_version: int,
+) -> None:
+    field_name = "canonicalSettleGate"
+    if schema_version in (2, 3):
+        if field_name in manifest:
+            raise StructuralValidationError(
+                f"manifest schema v{schema_version}に{field_name}を指定できません"
+            )
+        return
+
+    gate = _require_dict(manifest.get(field_name), f"manifest.{field_name}")
+    expected_keys = {*CANONICAL_SETTLE_CONTRACT, "thresholds"}
+    if set(gate) != expected_keys:
+        raise StructuralValidationError(
+            f"{field_name}のkeyがschema v4固定契約と一致しません"
+        )
+    for field, expected in CANONICAL_SETTLE_CONTRACT.items():
+        actual = gate.get(field)
+        if field == "inputAspectRatio":
+            actual = _require_number(actual, f"{field_name}.{field}", minimum=0)
+        if actual != expected:
+            raise StructuralValidationError(
+                f"{field_name}.{field}がschema v4固定契約と一致しません: "
+                f"expected={expected!r} actual={actual!r}"
+            )
+
+    thresholds = _require_dict(
+        gate.get("thresholds"), f"{field_name}.thresholds"
+    )
+    if set(thresholds) != set(CANONICAL_SETTLE_THRESHOLD_CONTRACT):
+        raise StructuralValidationError(
+            f"{field_name}.thresholdsのkeyがschema v4固定契約と一致しません"
+        )
+    for field, expected in CANONICAL_SETTLE_THRESHOLD_CONTRACT.items():
+        value_field = f"{field_name}.thresholds.{field}"
+        if field.endswith("PixelCountIncrease"):
+            actual = _require_integer(thresholds.get(field), value_field)
+        else:
+            actual = _require_number(thresholds.get(field), value_field, minimum=0)
+        if actual != expected:
+            raise StructuralValidationError(
+                f"{value_field}がschema v4固定契約と一致しません: "
+                f"expected={expected!r} actual={actual!r}"
+            )
+
+
+def _normalized_processing_fingerprint(
+    value: Any,
+    *,
+    schema_version: int,
+    field: str,
+) -> dict[str, Any]:
+    """Mirror Swift's legacy decode default before comparing run provenance."""
+    fingerprint = dict(_require_dict(value, field))
+    if schema_version <= 3:
+        fingerprint.setdefault(
+            "renderPipeline",
+            LEGACY_RENDER_PIPELINE_IDENTIFIER,
+        )
+    return fingerprint
+
+
+def canonical_settle_metrics(
+    baseline: np.ndarray,
+    candidate: np.ndarray,
+    *,
+    thresholds: dict[str, Any],
+) -> dict[str, Any]:
+    """Measure clipping and plateau growth on the canonical final raster."""
+    if baseline.shape != candidate.shape:
+        raise StructuralValidationError(
+            "canonical settle画像のshapeが一致しません: "
+            f"baseline={baseline.shape} candidate={candidate.shape}"
+        )
+    if baseline.ndim != 3 or baseline.shape[2] != 3 or baseline.size == 0:
+        raise StructuralValidationError(
+            f"canonical settle画像shapeが不正です: {baseline.shape}"
+        )
+    if not np.all(np.isfinite(baseline)) or not np.all(np.isfinite(candidate)):
+        raise StructuralValidationError("canonical settle画像に非finite値があります")
+    if set(thresholds) != set(CANONICAL_SETTLE_THRESHOLD_CONTRACT):
+        raise StructuralValidationError(
+            "canonical settle threshold keyが固定契約と一致しません"
+        )
+    complete_threshold = _require_number(
+        thresholds.get("completeClipNormalizedMinimum"),
+        "canonicalSettleGate.thresholds.completeClipNormalizedMinimum",
+        minimum=0,
+    )
+    near_threshold = _require_number(
+        thresholds.get("nearClipNormalizedMinimum"),
+        "canonicalSettleGate.thresholds.nearClipNormalizedMinimum",
+        minimum=0,
+    )
+    if complete_threshold > 1 or near_threshold > 1:
+        raise StructuralValidationError(
+            "canonical settle clip thresholdは1以下である必要があります"
+        )
+
+    pixel_count = baseline.shape[0] * baseline.shape[1]
+
+    def clipped_pixel_count(image: np.ndarray, threshold: float) -> int:
+        return int(np.count_nonzero(np.any(image >= threshold, axis=2)))
+
+    baseline_complete = clipped_pixel_count(baseline, complete_threshold)
+    candidate_complete = clipped_pixel_count(candidate, complete_threshold)
+    baseline_near = clipped_pixel_count(baseline, near_threshold)
+    candidate_near = clipped_pixel_count(candidate, near_threshold)
+    baseline_plateau, candidate_plateau, new_plateau = (
+        shared_highlight_plateau_fractions(baseline, candidate)
+    )
+    return {
+        "pixel_count": pixel_count,
+        "complete_clip_normalized_minimum": complete_threshold,
+        "near_clip_normalized_minimum": near_threshold,
+        "baseline_complete_clip_pixel_count": baseline_complete,
+        "candidate_complete_clip_pixel_count": candidate_complete,
+        "complete_clip_pixel_count_increase": (
+            candidate_complete - baseline_complete
+        ),
+        "baseline_complete_clip_fraction": baseline_complete / pixel_count,
+        "candidate_complete_clip_fraction": candidate_complete / pixel_count,
+        "baseline_near_clip_pixel_count": baseline_near,
+        "candidate_near_clip_pixel_count": candidate_near,
+        "near_clip_pixel_count_increase": candidate_near - baseline_near,
+        "baseline_near_clip_fraction": baseline_near / pixel_count,
+        "candidate_near_clip_fraction": candidate_near / pixel_count,
+        "baseline_shared_highlight_plateau_fraction": baseline_plateau,
+        "candidate_shared_highlight_plateau_fraction": candidate_plateau,
+        "new_shared_highlight_plateau_fraction": new_plateau,
+    }
+
+
+def evaluate_canonical_settle_gates(
+    measurements: dict[str, dict[str, Any]],
+    *,
+    scene_ids: tuple[str, ...],
+    thresholds: dict[str, Any],
+) -> dict[str, Any]:
+    """Evaluate v4 final-raster clipping regression gates fail closed."""
+    if set(thresholds) != set(CANONICAL_SETTLE_THRESHOLD_CONTRACT):
+        raise StructuralValidationError(
+            "canonical settle threshold keyが固定契約と一致しません"
+        )
+    normalized_thresholds = {
+        "complete_clip_normalized_minimum": _require_number(
+            thresholds.get("completeClipNormalizedMinimum"),
+            "canonicalSettleGate.thresholds.completeClipNormalizedMinimum",
+            minimum=0,
+        ),
+        "near_clip_normalized_minimum": _require_number(
+            thresholds.get("nearClipNormalizedMinimum"),
+            "canonicalSettleGate.thresholds.nearClipNormalizedMinimum",
+            minimum=0,
+        ),
+        "complete_clip_maximum_pixel_count_increase": _require_integer(
+            thresholds.get("completeClipMaximumPixelCountIncrease"),
+            "canonicalSettleGate.thresholds.completeClipMaximumPixelCountIncrease",
+        ),
+        "near_clip_maximum_pixel_count_increase": _require_integer(
+            thresholds.get("nearClipMaximumPixelCountIncrease"),
+            "canonicalSettleGate.thresholds.nearClipMaximumPixelCountIncrease",
+        ),
+        "new_shared_plateau_maximum_area": _require_number(
+            thresholds.get("newSharedPlateauMaximumArea"),
+            "canonicalSettleGate.thresholds.newSharedPlateauMaximumArea",
+            minimum=0,
+        ),
+    }
+    if set(measurements) != set(scene_ids):
+        raise StructuralValidationError(
+            "canonical settle測定sceneがmanifestと一致しません"
+        )
+
+    required_metrics = {
+        "pixel_count",
+        "complete_clip_normalized_minimum",
+        "near_clip_normalized_minimum",
+        "baseline_complete_clip_pixel_count",
+        "candidate_complete_clip_pixel_count",
+        "complete_clip_pixel_count_increase",
+        "baseline_complete_clip_fraction",
+        "candidate_complete_clip_fraction",
+        "baseline_near_clip_pixel_count",
+        "candidate_near_clip_pixel_count",
+        "near_clip_pixel_count_increase",
+        "baseline_near_clip_fraction",
+        "candidate_near_clip_fraction",
+        "baseline_shared_highlight_plateau_fraction",
+        "candidate_shared_highlight_plateau_fraction",
+        "new_shared_highlight_plateau_fraction",
+    }
+    scenes: dict[str, Any] = {}
+    scene_results: list[bool] = []
+    for scene_id in scene_ids:
+        entry = _require_dict(
+            measurements[scene_id], f"canonicalSettle.{scene_id}"
+        )
+        metrics = _require_dict(
+            entry.get("metrics"), f"canonicalSettle.{scene_id}.metrics"
+        )
+        if set(metrics) != required_metrics:
+            raise StructuralValidationError(
+                f"canonical settle metric keyが固定契約と一致しません: {scene_id}"
+            )
+        pixel_count = _require_integer(
+            metrics.get("pixel_count"),
+            f"canonicalSettle.{scene_id}.pixel_count",
+            minimum=1,
+        )
+        integer_fields = (
+            "baseline_complete_clip_pixel_count",
+            "candidate_complete_clip_pixel_count",
+            "baseline_near_clip_pixel_count",
+            "candidate_near_clip_pixel_count",
+        )
+        counts = {
+            field: _require_integer(
+                metrics.get(field), f"canonicalSettle.{scene_id}.{field}"
+            )
+            for field in integer_fields
+        }
+        if any(value > pixel_count for value in counts.values()):
+            raise StructuralValidationError(
+                f"canonical settle clip pixel countが総pixel数を超えています: {scene_id}"
+            )
+        complete_increase = _require_integer(
+            metrics.get("complete_clip_pixel_count_increase"),
+            f"canonicalSettle.{scene_id}.complete_clip_pixel_count_increase",
+            minimum=-pixel_count,
+        )
+        near_increase = _require_integer(
+            metrics.get("near_clip_pixel_count_increase"),
+            f"canonicalSettle.{scene_id}.near_clip_pixel_count_increase",
+            minimum=-pixel_count,
+        )
+        if complete_increase != (
+            counts["candidate_complete_clip_pixel_count"]
+            - counts["baseline_complete_clip_pixel_count"]
+        ) or near_increase != (
+            counts["candidate_near_clip_pixel_count"]
+            - counts["baseline_near_clip_pixel_count"]
+        ):
+            raise StructuralValidationError(
+                f"canonical settle clip pixel increaseがcountと一致しません: {scene_id}"
+            )
+        complete_metric_threshold = _require_number(
+            metrics.get("complete_clip_normalized_minimum"),
+            f"canonicalSettle.{scene_id}.complete_clip_normalized_minimum",
+            minimum=0,
+        )
+        near_metric_threshold = _require_number(
+            metrics.get("near_clip_normalized_minimum"),
+            f"canonicalSettle.{scene_id}.near_clip_normalized_minimum",
+            minimum=0,
+        )
+        if (
+            complete_metric_threshold
+            != normalized_thresholds["complete_clip_normalized_minimum"]
+            or near_metric_threshold
+            != normalized_thresholds["near_clip_normalized_minimum"]
+        ):
+            raise StructuralValidationError(
+                f"canonical settle測定thresholdがmanifestと一致しません: {scene_id}"
+            )
+
+        fraction_fields = (
+            "baseline_complete_clip_fraction",
+            "candidate_complete_clip_fraction",
+            "baseline_near_clip_fraction",
+            "candidate_near_clip_fraction",
+            "baseline_shared_highlight_plateau_fraction",
+            "candidate_shared_highlight_plateau_fraction",
+            "new_shared_highlight_plateau_fraction",
+        )
+        fractions = {
+            field: _require_number(
+                metrics.get(field), f"canonicalSettle.{scene_id}.{field}", minimum=0
+            )
+            for field in fraction_fields
+        }
+        if any(value > 1 for value in fractions.values()):
+            raise StructuralValidationError(
+                f"canonical settle fractionが1を超えています: {scene_id}"
+            )
+        count_fraction_pairs = (
+            ("baseline_complete_clip_pixel_count", "baseline_complete_clip_fraction"),
+            ("candidate_complete_clip_pixel_count", "candidate_complete_clip_fraction"),
+            ("baseline_near_clip_pixel_count", "baseline_near_clip_fraction"),
+            ("candidate_near_clip_pixel_count", "candidate_near_clip_fraction"),
+        )
+        for count_field, fraction_field in count_fraction_pairs:
+            if not math.isclose(
+                fractions[fraction_field],
+                counts[count_field] / pixel_count,
+                rel_tol=0,
+                abs_tol=1e-15,
+            ):
+                raise StructuralValidationError(
+                    f"canonical settle fractionがpixel countと一致しません: "
+                    f"{scene_id}/{fraction_field}"
+                )
+
+        complete_maximum = normalized_thresholds[
+            "complete_clip_maximum_pixel_count_increase"
+        ]
+        near_maximum = normalized_thresholds[
+            "near_clip_maximum_pixel_count_increase"
+        ]
+        plateau_maximum = normalized_thresholds[
+            "new_shared_plateau_maximum_area"
+        ]
+        checks = {
+            "complete_clip_pixel_count_non_regression": {
+                "baseline": counts["baseline_complete_clip_pixel_count"],
+                "candidate": counts["candidate_complete_clip_pixel_count"],
+                "observed_increase": complete_increase,
+                "maximum_increase": complete_maximum,
+                "passed": complete_increase <= complete_maximum,
+            },
+            "near_clip_pixel_count_non_regression": {
+                "baseline": counts["baseline_near_clip_pixel_count"],
+                "candidate": counts["candidate_near_clip_pixel_count"],
+                "observed_increase": near_increase,
+                "maximum_increase": near_maximum,
+                "passed": near_increase <= near_maximum,
+            },
+            "new_shared_highlight_plateau_area": {
+                "baseline": fractions[
+                    "baseline_shared_highlight_plateau_fraction"
+                ],
+                "candidate": fractions[
+                    "candidate_shared_highlight_plateau_fraction"
+                ],
+                "new": fractions["new_shared_highlight_plateau_fraction"],
+                "maximum_new": plateau_maximum,
+                "passed": fractions["new_shared_highlight_plateau_fraction"]
+                <= plateau_maximum,
+            },
+        }
+        passed = all(check["passed"] for check in checks.values())
+        scenes[scene_id] = {"passed": passed, "checks": checks}
+        scene_results.append(passed)
+    return {
+        "thresholds": normalized_thresholds,
+        "expected_scene_count": len(scene_ids),
+        "evaluated_scene_count": len(scene_results),
+        "scenes": scenes,
+        "passed": bool(scene_results) and all(scene_results),
+    }
+
+
 def validate_manifest(manifest: dict[str, Any], root: Path) -> dict[str, Any]:
     schema_version = manifest.get("schemaVersion")
     if schema_version not in SUPPORTED_MANIFEST_SCHEMA_VERSIONS:
@@ -1251,6 +1628,19 @@ def validate_manifest(manifest: dict[str, Any], root: Path) -> dict[str, Any]:
         "rawDecode", "basicTone", "toneCurve", "colorMixer", "outputTransform"
     ):
         _require_text(fingerprint.get(field), f"processing.fingerprint.{field}")
+    if schema_version <= 3:
+        render_pipeline = fingerprint.get(
+            "renderPipeline",
+            LEGACY_RENDER_PIPELINE_IDENTIFIER,
+        )
+        if render_pipeline != LEGACY_RENDER_PIPELINE_IDENTIFIER:
+            raise StructuralValidationError(
+                "processing.fingerprint.renderPipelineがlegacy契約と一致しません"
+            )
+    elif fingerprint.get("renderPipeline") != CURRENT_RENDER_PIPELINE_IDENTIFIER:
+        raise StructuralValidationError(
+            "processing.fingerprint.renderPipelineがschema v4契約と一致しません"
+        )
     source_files = _require_list(processing.get("sourceFiles"), "processing.sourceFiles")
     if not source_files:
         raise StructuralValidationError("processing.sourceFilesが空です")
@@ -1433,7 +1823,7 @@ def validate_manifest(manifest: dict[str, Any], root: Path) -> dict[str, Any]:
     else:
         if "maxDimension" in preview_parity:
             raise StructuralValidationError(
-                "schema v3 previewParityに旧maxDimensionを指定できません"
+                "schema v3/v4 previewParityに旧maxDimensionを指定できません"
             )
         output_max_dimension = _require_integer(
             preview_parity.get("outputMaxDimension"),
@@ -1446,7 +1836,7 @@ def validate_manifest(manifest: dict[str, Any], root: Path) -> dict[str, Any]:
             )
         if output_max_dimension != 2_560:
             raise StructuralValidationError(
-                "schema v3 previewParity.outputMaxDimensionは2560固定です"
+                "schema v3/v4 previewParity.outputMaxDimensionは2560固定です"
             )
         candidate_dimensions = [
             _require_integer(
@@ -1461,7 +1851,7 @@ def validate_manifest(manifest: dict[str, Any], root: Path) -> dict[str, Any]:
         ]
         if candidate_dimensions != [3_072, 3_840] or len(set(candidate_dimensions)) != 2:
             raise StructuralValidationError(
-                "schema v3 candidate decode dimensionは3072/3840の固定順が必要です"
+                "schema v3/v4 candidate decode dimensionは3072/3840の固定順が必要です"
             )
         tolerance = _require_dict(
             preview_parity.get("plateauSpatialTolerance"),
@@ -1476,7 +1866,7 @@ def validate_manifest(manifest: dict[str, Any], root: Path) -> dict[str, Any]:
             or tolerance.get("structuringElement") != "square-3x3"
         ):
             raise StructuralValidationError(
-                "schema v3 plateau spatial toleranceはsquare-3x3/Chebyshev半径1固定です"
+                "schema v3/v4 plateau spatial toleranceはsquare-3x3/Chebyshev半径1固定です"
             )
         threshold_contract = {
             "meanDeltaEMaximum": DEFAULT_PREVIEW_PARITY_V3_THRESHOLDS[
@@ -1513,6 +1903,18 @@ def validate_manifest(manifest: dict[str, Any], root: Path) -> dict[str, Any]:
             raise StructuralValidationError(
                 f"previewParity.thresholds.{field}が固定上限を超えています: "
                 f"actual={value} maximum={maximum}"
+            )
+    _validate_canonical_settle_contract(
+        manifest,
+        schema_version=schema_version,
+    )
+    if schema_version == 4:
+        canonical_settle = manifest["canonicalSettleGate"]
+        if canonical_settle["outputMaxDimension"] != preview_parity[
+            "outputMaxDimension"
+        ]:
+            raise StructuralValidationError(
+                "canonicalSettleGate.outputMaxDimensionがpreviewParityと一致しません"
             )
     return {"suite_id": suite_id, "scene_ids": tuple(scene_ids)}
 
@@ -1814,7 +2216,17 @@ def validate_run_manifest(
         raise StructuralValidationError(
             f"run.manifestが現在のmanifestと一致しません: expected={expected_reference} actual={manifest_reference}"
         )
-    if run.get("processing") != manifest["processing"]["fingerprint"]:
+    normalized_run_processing = _normalized_processing_fingerprint(
+        run.get("processing"),
+        schema_version=manifest["schemaVersion"],
+        field="run.processing",
+    )
+    normalized_manifest_processing = _normalized_processing_fingerprint(
+        manifest["processing"]["fingerprint"],
+        schema_version=manifest["schemaVersion"],
+        field="manifest.processing.fingerprint",
+    )
+    if normalized_run_processing != normalized_manifest_processing:
         raise StructuralValidationError("run.processingがmanifest.processing.fingerprintと一致しません")
 
     current_inputs = _fixture_records(manifest, root)
@@ -2049,6 +2461,7 @@ def _methodology(
     *,
     preview_schema_version: int = 2,
     preview_spatial_tolerance: dict[str, Any] | None = None,
+    canonical_settle_specification: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     methodology: dict[str, Any] = {
         "delta_e_blur_sigma": 1.2,
@@ -2096,7 +2509,7 @@ def _methodology(
             preview_thresholds["new_shared_plateau_maximum_area"]
         )
         return methodology
-    if preview_schema_version != 3:
+    if preview_schema_version not in (3, 4):
         raise StructuralValidationError(
             f"methodologyのpreview schemaが未対応です: {preview_schema_version}"
         )
@@ -2136,7 +2549,7 @@ def _methodology(
                 ]
             ),
             "preview_parity_legacy_exact_coordinate_plateau_difference": (
-                "diagnostic only; excluded from v3 pass/fail"
+                "diagnostic only; excluded from v3/v4 pass/fail"
             ),
             "preview_parity_plateau_localization_diagnostics": (
                 "largest 8-connected component and densest 128x128 window, plus "
@@ -2148,6 +2561,57 @@ def _methodology(
             ),
         }
     )
+    if preview_schema_version == 4:
+        canonical = _require_dict(
+            canonical_settle_specification,
+            "canonicalSettleGate",
+        )
+        canonical_thresholds = _require_dict(
+            canonical.get("thresholds"),
+            "canonicalSettleGate.thresholds",
+        )
+        methodology.update(
+            {
+                "canonical_settle_scope": (
+                    "same-scene basic-legacy versus full-current, both reused from "
+                    "the full-resolution RAW decode preview-parity artifacts on the "
+                    "common final-output raster"
+                ),
+                "canonical_settle_pipeline": (
+                    f"{canonical['workingColorSpace']} working edits -> "
+                    f"{canonical['downsamplingFilter']} "
+                    f"(inputAspectRatio={canonical['inputAspectRatio']}) -> "
+                    "SDR output transform"
+                ),
+                "canonical_settle_output_transform_placement": canonical[
+                    "outputTransformPlacement"
+                ],
+                "canonical_settle_output_maximum_dimension": canonical[
+                    "outputMaxDimension"
+                ],
+                "canonical_settle_complete_clip_normalized_minimum": (
+                    canonical_thresholds["completeClipNormalizedMinimum"]
+                ),
+                "canonical_settle_near_clip_normalized_minimum": (
+                    canonical_thresholds["nearClipNormalizedMinimum"]
+                ),
+                "canonical_settle_complete_clip_maximum_pixel_count_increase": (
+                    canonical_thresholds[
+                        "completeClipMaximumPixelCountIncrease"
+                    ]
+                ),
+                "canonical_settle_near_clip_maximum_pixel_count_increase": (
+                    canonical_thresholds["nearClipMaximumPixelCountIncrease"]
+                ),
+                "canonical_settle_new_shared_highlight_plateau_maximum_area": (
+                    canonical_thresholds["newSharedPlateauMaximumArea"]
+                ),
+                "canonical_settle_clip_measurement": (
+                    "exact integer pixel counts on unblurred normalized 16-bit TIFF; "
+                    "a pixel is clipped when any RGB channel meets the threshold"
+                ),
+            }
+        )
     return methodology
 
 
@@ -2208,7 +2672,7 @@ def analyze_preview_parity(
     manifest: dict[str, Any],
 ) -> dict[str, dict[str, dict[str, Any]]]:
     specification = manifest["previewParity"]
-    if manifest["schemaVersion"] == 3:
+    if manifest["schemaVersion"] >= 3:
         return analyze_preview_parity_v3(root, artifacts, manifest)
 
     max_dimension = specification["maxDimension"]
@@ -2392,6 +2856,119 @@ def analyze_preview_parity_v3(
     return result
 
 
+def analyze_canonical_settle(
+    root: Path,
+    artifacts: dict[str, dict[str, Any]],
+    manifest: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Compare basic/full stages on v4's full-decode canonical 2560 raster."""
+    if manifest["schemaVersion"] != 4:
+        return {}
+    specification = manifest["canonicalSettleGate"]
+    preview_specification = manifest["previewParity"]
+    output_dimension = specification["outputMaxDimension"]
+    baseline_stage_id = specification["baselineStageID"]
+    candidate_stage_id = specification["candidateStageID"]
+    thresholds = specification["thresholds"]
+    result: dict[str, dict[str, Any]] = {}
+    for scene in manifest["scenes"]:
+        scene_id = scene["id"]
+        baseline_path, baseline_artifact = _preview_parity_v3_artifact_path(
+            root,
+            artifacts,
+            scene_id,
+            baseline_stage_id,
+            output_dimension=output_dimension,
+            candidate_decode_dimension=None,
+        )
+        candidate_path, candidate_artifact = _preview_parity_v3_artifact_path(
+            root,
+            artifacts,
+            scene_id,
+            candidate_stage_id,
+            output_dimension=output_dimension,
+            candidate_decode_dimension=None,
+        )
+
+        # Each selected full-decode stage must carry the same settings as every
+        # corresponding preview-parity route. This binds the reused artifact to
+        # its preregistered stage without requiring an analyzer-side rerender.
+        for stage_id, full_artifact in (
+            (baseline_stage_id, baseline_artifact),
+            (candidate_stage_id, candidate_artifact),
+        ):
+            for decode_dimension in preview_specification[
+                "candidateDecodeMaximumDimensions"
+            ]:
+                _, witness_artifact = _preview_parity_v3_artifact_path(
+                    root,
+                    artifacts,
+                    scene_id,
+                    stage_id,
+                    output_dimension=output_dimension,
+                    candidate_decode_dimension=decode_dimension,
+                )
+                if (
+                    full_artifact["settingsSHA256"]
+                    != witness_artifact["settingsSHA256"]
+                    or full_artifact["settings"] != witness_artifact["settings"]
+                ):
+                    raise StructuralValidationError(
+                        "canonical settle settings不一致: "
+                        f"{scene_id}/{stage_id}/{decode_dimension}"
+                    )
+
+        baseline = read_srgb(baseline_path)
+        candidate = read_srgb(candidate_path)
+        if baseline.shape != candidate.shape:
+            raise StructuralValidationError(
+                "canonical settle画像のshapeが一致しません: "
+                f"{scene_id} baseline={baseline.shape} candidate={candidate.shape}"
+            )
+        expected_longest = min(
+            output_dimension,
+            max(scene["capture"]["width"], scene["capture"]["height"]),
+        )
+        if abs(max(baseline.shape[:2]) - expected_longest) > 1:
+            raise StructuralValidationError(
+                "canonical settle画像の最大辺がmanifestと一致しません: "
+                f"{scene_id} shape={baseline.shape[:2]} expected={expected_longest}"
+            )
+        result[scene_id] = {
+            "contract": {
+                "output_maximum_dimension": output_dimension,
+                "downsampling_filter": specification["downsamplingFilter"],
+                "input_aspect_ratio": specification["inputAspectRatio"],
+                "working_color_space": specification["workingColorSpace"],
+                "output_transform_placement": specification[
+                    "outputTransformPlacement"
+                ],
+            },
+            "baseline": {
+                "stage_id": baseline_stage_id,
+                "path": baseline_artifact["path"],
+                "sha256": baseline_artifact["sha256"],
+                "width": baseline_artifact["width"],
+                "height": baseline_artifact["height"],
+                "settings_sha256": baseline_artifact["settingsSHA256"],
+            },
+            "candidate": {
+                "stage_id": candidate_stage_id,
+                "path": candidate_artifact["path"],
+                "sha256": candidate_artifact["sha256"],
+                "width": candidate_artifact["width"],
+                "height": candidate_artifact["height"],
+                "settings_sha256": candidate_artifact["settingsSHA256"],
+            },
+            "metrics": canonical_settle_metrics(
+                baseline,
+                candidate,
+                thresholds=thresholds,
+            ),
+        }
+    return result
+
+
 def _metric_delta(metrics: dict[str, float], baseline: dict[str, float]) -> dict[str, float]:
     return {
         key: round(value - baseline[key], 5)
@@ -2498,12 +3075,14 @@ def analyze_calibration(
             preview_spatial_tolerance=preview_parity.get(
                 "plateauSpatialTolerance"
             ),
+            canonical_settle_specification=manifest.get("canonicalSettleGate"),
         ),
         "raw_baseline": {},
         "preset": {},
         "stage_matrix": {},
         "edr_diagnostics": {},
         "preview_parity": {},
+        "canonical_settle": {},
         "runtime": run["runtime"],
         "provenance": {
             "suite_id": manifest["suiteID"],
@@ -2680,6 +3259,26 @@ def analyze_calibration(
                 "radiusPixels"
             ],
         )
+    if manifest["schemaVersion"] == 4:
+        canonical_settle = manifest["canonicalSettleGate"]
+        report["canonical_settle"] = analyze_canonical_settle(
+            root,
+            artifacts,
+            manifest,
+        )
+        report["canonical_settle_gates"] = evaluate_canonical_settle_gates(
+            report["canonical_settle"],
+            scene_ids=scene_ids,
+            thresholds=canonical_settle["thresholds"],
+        )
+        report["canonical_settle_gates"]["applicable"] = True
+    else:
+        report["canonical_settle_gates"] = {
+            "applicable": False,
+            "passed": True,
+            "scenes": {},
+            "not_evaluated_reason": "manifest schema v4 only",
+        }
     render_times = [float(artifact["renderAndEncodeMilliseconds"]) for artifact in run["artifacts"]]
     performance_by_group: dict[str, Any] = {}
     for group in sorted({artifact.get("candidateGroup") or artifact["role"] for artifact in run["artifacts"]}):
@@ -2743,6 +3342,7 @@ def _failure_report(message: str) -> dict[str, Any]:
         "raw_baseline": {},
         "preset": {},
         "preview_parity": {},
+        "canonical_settle": {},
         "quality_gates": {
             "passed": False,
             "all_expected_candidates_present": False,
@@ -2751,6 +3351,12 @@ def _failure_report(message: str) -> dict[str, Any]:
             "not_evaluated_reason": "structural validation failed",
         },
         "preview_parity_gates": {
+            "passed": False,
+            "scenes": {},
+            "not_evaluated_reason": "structural validation failed",
+        },
+        "canonical_settle_gates": {
+            "applicable": False,
             "passed": False,
             "scenes": {},
             "not_evaluated_reason": "structural validation failed",
@@ -2772,6 +3378,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "preview parity gate不合格時にexit 1で終了する"
+            "（構造検証失敗は常にexit 2）"
+        ),
+    )
+    parser.add_argument(
+        "--enforce-canonical-settle",
+        action="store_true",
+        help=(
+            "schema v4 canonical settle gate不合格時にexit 1で終了する"
             "（構造検証失敗は常にexit 2）"
         ),
     )
@@ -2797,6 +3411,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Saved: {report_path}")
     quality_passed = report["quality_gates"]["passed"]
     preview_parity_passed = report["preview_parity_gates"]["passed"]
+    canonical_settle_gate = report.get(
+        "canonical_settle_gates",
+        {"applicable": False, "passed": True},
+    )
+    canonical_settle_passed = canonical_settle_gate["passed"]
     print(
         f"Quality gates: {'PASSED' if quality_passed else 'FAILED'}",
         file=sys.stdout if quality_passed else sys.stderr,
@@ -2806,9 +3425,16 @@ def main(argv: list[str] | None = None) -> int:
         + ("PASSED" if preview_parity_passed else "FAILED"),
         file=sys.stdout if preview_parity_passed else sys.stderr,
     )
+    if canonical_settle_gate.get("applicable", False):
+        print(
+            "Canonical settle gates: "
+            + ("PASSED" if canonical_settle_passed else "FAILED"),
+            file=sys.stdout if canonical_settle_passed else sys.stderr,
+        )
     enforced_failure = (
         (args.enforce and not quality_passed)
         or (args.enforce_preview_parity and not preview_parity_passed)
+        or (args.enforce_canonical_settle and not canonical_settle_passed)
     )
     return 1 if enforced_failure else 0
 

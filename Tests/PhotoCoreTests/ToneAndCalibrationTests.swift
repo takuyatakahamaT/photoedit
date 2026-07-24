@@ -703,6 +703,296 @@ struct ToneAndCalibrationTests {
         }
     }
 
+    @Test func canonicalOutputGraphDownsamplesWorkingHDRBeforeTerminalTransform() throws {
+        struct Fixture {
+            let width: Int
+            let height: Int
+            let maxDimension: CGFloat
+        }
+
+        // Cover an exact 1/2 reduction, a non-integral landscape reduction,
+        // and a non-integral portrait reduction with odd source dimensions.
+        let fixtures = [
+            Fixture(width: 40, height: 24, maxDimension: 20),
+            Fixture(width: 37, height: 23, maxDimension: 19),
+            Fixture(width: 23, height: 37, maxDimension: 19)
+        ]
+        let renderer = RenderEngine()
+        let settings = EditSettings(exposure: 0.15, contrast: 7)
+        var maximumLegacyOrderDifference: Float = 0
+
+        for fixture in fixtures {
+            let source = rectangularImage(width: fixture.width, height: fixture.height) { x, y in
+                // Mixing values on opposite sides of the shoulder makes the
+                // two graph orders observably different without depending on
+                // a single Lanczos edge pixel.
+                switch ((x / 2) + (y / 3)) % 3 {
+                case 0:
+                    SIMD4<Float>(4, 0.08, 0.03, 1)
+                case 1:
+                    SIMD4<Float>(0.03, 2.4, 0.12, 1)
+                default:
+                    SIMD4<Float>(0.08, 0.15, 3.2, 1)
+                }
+            }
+            let decoded = syntheticDecodedPhoto(
+                image: source,
+                width: fixture.width,
+                height: fixture.height,
+                isRAW: true,
+                isBoundedSRGBRaster: false
+            )
+
+            let current = try renderer.makeOutputGraph(
+                decoded: decoded,
+                settings: settings,
+                maxDimension: fixture.maxDimension,
+                downsamplingFilter: .lanczos,
+                outputTransformPlacement: .afterDownsampling
+            )
+            let working = renderer.apply(settings: settings, to: source)
+            let manualResize = lanczosDownsample(
+                working,
+                maxDimension: fixture.maxDimension
+            )
+            let manual = SRGBOutputTransform.apply(
+                to: manualResize.image.cropped(to: manualResize.extent)
+            ).cropped(to: manualResize.extent)
+
+            #expect(current.extent == manualResize.extent)
+            let expectedScale = fixture.maxDimension
+                / CGFloat(max(fixture.width, fixture.height))
+            let expectedExtent = CGRect(
+                x: 0,
+                y: 0,
+                width: CGFloat(fixture.width) * expectedScale,
+                height: CGFloat(fixture.height) * expectedScale
+            ).integral
+            #expect(current.extent == expectedExtent)
+
+            let actualPixels = try renderRGBA(current.image)
+            let manualPixels = try renderRGBA(manual)
+            #expect(actualPixels.count == manualPixels.count)
+            #expect(maximumAbsoluteDifference(actualPixels, manualPixels) < 0.000_05)
+            #expect(actualPixels.allSatisfy { pixel in
+                return pixel.x.isFinite && pixel.y.isFinite
+                    && pixel.z.isFinite && pixel.w.isFinite
+                    && pixel.x >= -0.000_01 && pixel.x <= 1.000_01
+                    && pixel.y >= -0.000_01 && pixel.y <= 1.000_01
+                    && pixel.z >= -0.000_01 && pixel.z <= 1.000_01
+            })
+            let alphaMinimum = try #require(actualPixels.map(\.w).min())
+            let alphaMaximum = try #require(actualPixels.map(\.w).max())
+            // Core Image's Lanczos normalization can move opaque alpha by
+            // about 5e-4 even with an infinitely extended opaque input. This
+            // still rejects transparent padding and the prior >1.03 ringing.
+            #expect(alphaMinimum >= 0.999)
+            #expect(alphaMaximum <= 1.001)
+
+            let legacy = try renderer.makeOutputGraph(
+                decoded: decoded,
+                settings: settings,
+                maxDimension: fixture.maxDimension,
+                downsamplingFilter: .lanczos,
+                outputTransformPlacement: .legacyBeforeDownsampling
+            )
+            #expect(legacy.extent == current.extent)
+            let legacyManualResize = legacyLanczosDownsample(
+                SRGBOutputTransform.apply(to: working),
+                maxDimension: fixture.maxDimension
+            )
+            #expect(
+                maximumAbsoluteDifference(
+                    try renderRGBA(legacy.image),
+                    try renderRGBA(legacyManualResize.image)
+                ) < 0.000_05
+            )
+            maximumLegacyOrderDifference = max(
+                maximumLegacyOrderDifference,
+                maximumAbsoluteDifference(actualPixels, try renderRGBA(legacy.image))
+            )
+        }
+
+        #expect(maximumLegacyOrderDifference > 0.05)
+    }
+
+    @Test func canonicalLanczosKeepsOpaqueBoundaryPixelsOpaque() throws {
+        let width = 17
+        let height = 11
+        let maxDimension: CGFloat = 7
+        let opaquePixel = SIMD4<Float>(0.25, 0.5, 0.75, 1)
+        let source = rectangularImage(width: width, height: height) { _, _ in opaquePixel }
+        let decoded = syntheticDecodedPhoto(
+            image: source,
+            width: width,
+            height: height,
+            isRAW: false,
+            isBoundedSRGBRaster: true
+        )
+
+        let production = try RenderEngine().makeOutputGraph(
+            decoded: decoded,
+            settings: .neutral,
+            maxDimension: maxDimension,
+            downsamplingFilter: .lanczos,
+            outputTransformPlacement: .afterDownsampling
+        )
+        let productionPixels = try renderRGBA(production.image)
+        let outputWidth = Int(production.extent.width)
+        let outputHeight = Int(production.extent.height)
+        let boundaryIndices = (0..<productionPixels.count).filter { index in
+            let x = index % outputWidth
+            let y = index / outputWidth
+            return x == 0 || x == outputWidth - 1 || y == 0 || y == outputHeight - 1
+        }
+        func pixelDifference(_ left: SIMD4<Float>, _ right: SIMD4<Float>) -> Float {
+            max(
+                abs(left.x - right.x),
+                abs(left.y - right.y),
+                abs(left.z - right.z),
+                abs(left.w - right.w)
+            )
+        }
+
+        // This deliberately constructs the historical finite-extent Lanczos
+        // graph inline rather than sharing production's resize helper. It is a
+        // negative control: pixels outside `source.extent` are transparent
+        // black and therefore contaminate at least one output boundary.
+        let scale = maxDimension / CGFloat(max(width, height))
+        let scaledExtent = source.extent.applying(
+            CGAffineTransform(scaleX: scale, y: scale)
+        ).integral
+        let unclamped = source.applyingFilter(
+            "CILanczosScaleTransform",
+            parameters: [
+                kCIInputScaleKey: scale,
+                kCIInputAspectRatioKey: 1
+            ]
+        ).cropped(to: scaledExtent)
+        let unclampedPixels = try renderRGBA(unclamped)
+
+        #expect(production.extent == scaledExtent)
+        #expect(productionPixels.count == unclampedPixels.count)
+        #expect(!boundaryIndices.isEmpty)
+        #expect(boundaryIndices.allSatisfy { index in
+            pixelDifference(productionPixels[index], opaquePixel) < 0.001
+                && productionPixels[index].w >= 0.999
+                && productionPixels[index].w <= 1.001
+        })
+
+        // Pin an actual output corner rather than comparing against a helper
+        // that repeats production's clamp implementation. With finite input,
+        // the same pixel loses over 10% alpha to transparent-black sampling;
+        // the canonical graph must retain the source's opaque edge value.
+        let cornerIndex = 0
+        #expect(boundaryIndices.contains(cornerIndex))
+        #expect(productionPixels[cornerIndex].w >= 0.999)
+        #expect(unclampedPixels[cornerIndex].w < 0.9)
+        #expect(productionPixels[cornerIndex].w - unclampedPixels[cornerIndex].w > 0.1)
+        #expect(pixelDifference(productionPixels[cornerIndex], unclampedPixels[cornerIndex]) > 0.1)
+    }
+
+    @Test func boundedNeutralRasterStillBypassesTerminalOutputTransform() throws {
+        let width = 31
+        let height = 17
+        let maxDimension: CGFloat = 15
+        let source = rectangularImage(width: width, height: height) { x, y in
+            let palette: [SIMD4<Float>] = [
+                SIMD4(1, 0, 0, 1),
+                SIMD4(0, 1, 0, 1),
+                SIMD4(0, 0, 1, 1),
+                SIMD4(0.2, 0.4, 0.7, 1)
+            ]
+            return palette[((x / 4) + (y / 3)) % palette.count]
+        }
+        let decoded = syntheticDecodedPhoto(
+            image: source,
+            width: width,
+            height: height,
+            isRAW: false,
+            isBoundedSRGBRaster: true
+        )
+        let renderer = RenderEngine()
+        let manual = lanczosDownsample(source, maxDimension: maxDimension)
+        let legacyManual = legacyLanczosDownsample(source, maxDimension: maxDimension)
+        let current = try renderer.makeOutputGraph(
+            decoded: decoded,
+            settings: .neutral,
+            maxDimension: maxDimension,
+            downsamplingFilter: .lanczos,
+            outputTransformPlacement: .afterDownsampling
+        )
+        let legacy = try renderer.makeOutputGraph(
+            decoded: decoded,
+            settings: .neutral,
+            maxDimension: maxDimension,
+            downsamplingFilter: .lanczos,
+            outputTransformPlacement: .legacyBeforeDownsampling
+        )
+
+        let expectedPixels = try renderRGBA(manual.image.cropped(to: manual.extent))
+        let legacyExpectedPixels = try renderRGBA(
+            legacyManual.image.cropped(to: legacyManual.extent)
+        )
+        let currentPixels = try renderRGBA(current.image)
+        let legacyPixels = try renderRGBA(legacy.image)
+        #expect(current.extent == manual.extent)
+        #expect(legacy.extent == legacyManual.extent)
+        #expect(maximumAbsoluteDifference(currentPixels, expectedPixels) < 0.000_05)
+        #expect(maximumAbsoluteDifference(legacyPixels, legacyExpectedPixels) < 0.000_05)
+
+        // Pure primaries are changed by the gamut-compression kernel. This
+        // control proves equality above is a real bypass, not an accidental
+        // identity of the terminal transform for this fixture.
+        let transformedPixels = try renderRGBA(
+            SRGBOutputTransform.apply(to: manual.image.cropped(to: manual.extent))
+        )
+        #expect(maximumAbsoluteDifference(currentPixels, transformedPixels) > 0.001)
+    }
+
+    @Test func outputTransformPlacementDoesNotChangeFullSizeOutput() throws {
+        let width = 17
+        let height = 11
+        let source = rectangularImage(width: width, height: height) { x, y in
+            ((x + y) % 2 == 0)
+                ? SIMD4<Float>(2.5, 0.1, 0.05, 1)
+                : SIMD4<Float>(0.05, 0.2, 1.8, 1)
+        }
+        let decoded = syntheticDecodedPhoto(
+            image: source,
+            width: width,
+            height: height,
+            isRAW: true,
+            isBoundedSRGBRaster: false
+        )
+        let renderer = RenderEngine()
+        let settings = EditSettings(highlights: -23, shadows: 11)
+        let current = try renderer.makeOutputGraph(
+            decoded: decoded,
+            settings: settings,
+            maxDimension: nil,
+            downsamplingFilter: .lanczos,
+            outputTransformPlacement: .afterDownsampling
+        )
+        let legacy = try renderer.makeOutputGraph(
+            decoded: decoded,
+            settings: settings,
+            maxDimension: nil,
+            downsamplingFilter: .lanczos,
+            outputTransformPlacement: .legacyBeforeDownsampling
+        )
+        let establishedFullSize = renderer.applyForOutput(decoded: decoded, settings: settings)
+
+        #expect(current.extent == source.extent.integral)
+        #expect(legacy.extent == current.extent)
+        let currentPixels = try renderRGBA(current.image)
+        #expect(maximumAbsoluteDifference(currentPixels, try renderRGBA(legacy.image)) < 0.000_05)
+        #expect(maximumAbsoluteDifference(
+            currentPixels,
+            try renderRGBA(establishedFullSize.cropped(to: current.extent))
+        ) < 0.000_05)
+    }
+
     @Test func editActivityGateUsesToleranceAndStructuralEdits() {
         #expect(!EditSettings.neutral.hasActiveColorEdits())
         #expect(!EditSettings(exposure: 1e-12).hasActiveColorEdits())
@@ -747,6 +1037,84 @@ struct ToneAndCalibrationTests {
         )
     }
 
+    private func rectangularImage(
+        width: Int,
+        height: Int,
+        pixel: (Int, Int) -> SIMD4<Float>
+    ) -> CIImage {
+        var pixels: [SIMD4<Float>] = []
+        pixels.reserveCapacity(width * height)
+        for y in 0..<height {
+            for x in 0..<width {
+                pixels.append(pixel(x, y))
+            }
+        }
+        let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+        return CIImage(
+            bitmapData: pixels.withUnsafeBytes { Data($0) },
+            bytesPerRow: width * MemoryLayout<SIMD4<Float>>.stride,
+            size: CGSize(width: width, height: height),
+            format: .RGBAf,
+            colorSpace: colorSpace
+        )
+    }
+
+    private func syntheticDecodedPhoto(
+        image: CIImage,
+        width: Int,
+        height: Int,
+        isRAW: Bool,
+        isBoundedSRGBRaster: Bool
+    ) -> DecodedPhoto {
+        DecodedPhoto(
+            sourceURL: URL(fileURLWithPath: "/virtual/output-order-fixture"),
+            image: image,
+            metadata: [:],
+            info: DecodeInfo(
+                backend: "synthetic-output-order",
+                width: width,
+                height: height,
+                durationMilliseconds: 0,
+                isRAW: isRAW,
+                isBoundedSRGBRaster: isBoundedSRGBRaster
+            )
+        )
+    }
+
+    private func lanczosDownsample(
+        _ image: CIImage,
+        maxDimension: CGFloat
+    ) -> (image: CIImage, extent: CGRect) {
+        let scale = maxDimension / max(image.extent.width, image.extent.height)
+        let scaledExtent = image.extent.applying(
+            CGAffineTransform(scaleX: scale, y: scale)
+        ).integral
+        let resized = image.clampedToExtent().applyingFilter(
+            "CILanczosScaleTransform",
+            parameters: [
+                kCIInputScaleKey: scale,
+                kCIInputAspectRatioKey: 1
+            ]
+        ).cropped(to: scaledExtent)
+        return (resized, scaledExtent)
+    }
+
+    private func legacyLanczosDownsample(
+        _ image: CIImage,
+        maxDimension: CGFloat
+    ) -> (image: CIImage, extent: CGRect) {
+        let scale = maxDimension / max(image.extent.width, image.extent.height)
+        let resized = image.applyingFilter(
+            "CILanczosScaleTransform",
+            parameters: [
+                kCIInputScaleKey: scale,
+                kCIInputAspectRatioKey: 1
+            ]
+        )
+        let extent = resized.extent.integral
+        return (resized.cropped(to: extent), extent)
+    }
+
     private func render(_ image: CIImage) throws -> [SIMD3<Double>] {
         try renderRGBA(image).map { SIMD3(Double($0.x), Double($0.y), Double($0.z)) }
     }
@@ -770,6 +1138,22 @@ struct ToneAndCalibrationTests {
             colorSpace: colorSpace
         )
         return rendered
+    }
+
+    private func maximumAbsoluteDifference(
+        _ left: [SIMD4<Float>],
+        _ right: [SIMD4<Float>]
+    ) -> Float {
+        guard left.count == right.count else { return .infinity }
+        return zip(left, right).reduce(into: Float.zero) { maximum, pair in
+            maximum = max(
+                maximum,
+                abs(pair.0.x - pair.1.x),
+                abs(pair.0.y - pair.1.y),
+                abs(pair.0.z - pair.1.z),
+                abs(pair.0.w - pair.1.w)
+            )
+        }
     }
 
     private func maximumAbsoluteDifference(_ left: SIMD3<Double>, _ right: SIMD3<Double>) -> Double {
