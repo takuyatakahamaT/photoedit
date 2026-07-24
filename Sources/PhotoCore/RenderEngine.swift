@@ -162,6 +162,7 @@ public struct LatestPreviewQueueState: Equatable, Sendable {
 public enum MetalPreviewRendererError: LocalizedError {
     case commandQueueUnavailable
     case commandBufferUnavailable
+    case renderCommandEncoderUnavailable
     case incompatibleTexture
     case invalidGeometry
     case renderTaskCreationFailed
@@ -172,6 +173,8 @@ public enum MetalPreviewRendererError: LocalizedError {
             "Metalの描画キューを作成できません。"
         case .commandBufferUnavailable:
             "Metalの描画コマンドを作成できません。"
+        case .renderCommandEncoderUnavailable:
+            "Metalの描画エンコーダーを作成できません。"
         case .incompatibleTexture:
             "表示先のMetalテクスチャ形式がプレビュー契約と一致しません。"
         case .invalidGeometry:
@@ -233,12 +236,7 @@ public final class MetalPreviewRenderer: @unchecked Sendable {
         to texture: any MTLTexture,
         commandBuffer: any MTLCommandBuffer
     ) throws -> CIRenderTask {
-        guard texture.textureType == .type2D,
-              texture.pixelFormat == Self.pixelFormat,
-              texture.width > 0, texture.height > 0
-        else {
-            throw MetalPreviewRendererError.incompatibleTexture
-        }
+        try validateDestinationTexture(texture)
         let destinationSize = CGSize(width: texture.width, height: texture.height)
         guard let geometry = PreviewAspectFitGeometry.fitting(
             source: frame.extent,
@@ -257,6 +255,85 @@ public final class MetalPreviewRenderer: @unchecked Sendable {
         let scaled = normalized.transformed(
             by: CGAffineTransform(scaleX: geometry.scale, y: geometry.scale)
         )
+        let destination = makeRenderDestination(
+            texture: texture,
+            commandBuffer: commandBuffer
+        )
+        _ = try context.startTask(toClear: destination)
+        let task = try context.startTask(
+            toRender: scaled,
+            from: scaled.extent,
+            to: destination,
+            at: geometry.origin
+        )
+        return task
+    }
+
+    /// Encodes the smallest native Metal presentation probe: one opaque
+    /// magenta clear and no Core Image work. The caller owns commit/present
+    /// and the drawable lifecycle, just as it does for production previews.
+    public func encodeDiagnosticMetalClear(
+        to texture: any MTLTexture,
+        commandBuffer: any MTLCommandBuffer
+    ) throws {
+        try validateDestinationTexture(texture)
+
+        let descriptor = MTLRenderPassDescriptor()
+        guard let attachment = descriptor.colorAttachments[0] else {
+            throw MetalPreviewRendererError.renderCommandEncoderUnavailable
+        }
+        attachment.texture = texture
+        attachment.loadAction = .clear
+        attachment.storeAction = .store
+        attachment.clearColor = MTLClearColor(red: 1, green: 0, blue: 1, alpha: 1)
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+            throw MetalPreviewRendererError.renderCommandEncoderUnavailable
+        }
+        encoder.label = "PhotoBench.DiagnosticMetalClear"
+        encoder.endEncoding()
+    }
+
+    /// Encodes an opaque full-frame magenta Core Image probe while retaining
+    /// the exact destination contract used by the production aspect-fit path.
+    /// This isolates CI-to-Metal encoding from image graph and geometry work.
+    @discardableResult
+    public func encodeDiagnosticCISolid(
+        to texture: any MTLTexture,
+        commandBuffer: any MTLCommandBuffer
+    ) throws -> CIRenderTask {
+        try validateDestinationTexture(texture)
+
+        let extent = CGRect(x: 0, y: 0, width: texture.width, height: texture.height)
+        let image = CIImage(
+            color: CIColor(red: 1, green: 0, blue: 1, alpha: 1)
+        ).cropped(to: extent)
+        let destination = makeRenderDestination(
+            texture: texture,
+            commandBuffer: commandBuffer
+        )
+        _ = try context.startTask(toClear: destination)
+        return try context.startTask(
+            toRender: image,
+            from: extent,
+            to: destination,
+            at: .zero
+        )
+    }
+
+    private func validateDestinationTexture(_ texture: any MTLTexture) throws {
+        guard texture.textureType == .type2D,
+              texture.pixelFormat == Self.pixelFormat,
+              texture.width > 0, texture.height > 0
+        else {
+            throw MetalPreviewRendererError.incompatibleTexture
+        }
+    }
+
+    private func makeRenderDestination(
+        texture: any MTLTexture,
+        commandBuffer: any MTLCommandBuffer
+    ) -> CIRenderDestination {
         let destination = CIRenderDestination(
             mtlTexture: texture,
             commandBuffer: commandBuffer
@@ -266,14 +343,7 @@ public final class MetalPreviewRenderer: @unchecked Sendable {
         destination.isFlipped = false
         destination.isDithered = false
         destination.isClamped = true
-        _ = try context.startTask(toClear: destination)
-        let task = try context.startTask(
-            toRender: scaled,
-            from: scaled.extent,
-            to: destination,
-            at: geometry.origin
-        )
-        return task
+        return destination
     }
 
     public func clearCaches() {

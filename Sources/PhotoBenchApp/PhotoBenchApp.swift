@@ -7,11 +7,13 @@ struct PhotoBenchApp: App {
     @StateObject private var model: EditorModel
 
     init() {
-        let defaultPath = "/Users/takuyatakahama/Documents/app/NIHO/others/photo"
-        let initialPath = CommandLine.arguments.dropFirst().first ?? defaultPath
+        let initialDirectoryHint = CommandLine.arguments.dropFirst().first
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
         _model = StateObject(
             wrappedValue: EditorModel(
-                initialDirectoryHint: URL(fileURLWithPath: initialPath, isDirectory: true)
+                initialDirectoryHint: initialDirectoryHint
             )
         )
     }

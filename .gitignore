@@ -47,35 +47,48 @@ xcuserdata/
 *.log
 *.trace
 
-# Private source photos and Lightroom reference exports live beside the app
-# locally, but must never be committed to this public repository. Synthetic,
-# redistributable fixtures may be added under Tests/Fixtures in the future.
-/*.RW2
-/*.rw2
-/*.[Aa][Rr][Ww]
-/*.[Nn][Ee][Ff]
-/*.[Cc][Rr]2
-/*.[Cc][Rr]3
-/*.[Dd][Nn][Gg]
-/*.[Rr][Aa][Ff]
-/*.[Oo][Rr][Ff]
-/*.TIF
-/*.tif
-/*.TIFF
-/*.tiff
-/*.JPG
-/*.jpg
-/*.JPEG
-/*.jpeg
-/*.HEIC
-/*.heic
-/*.PNG
-/*.png
+# Private source photos and Lightroom reference exports must never be
+# committed anywhere in this public repository. Synthetic, redistributable
+# fixtures need an explicit allowlist entry below before they are added.
+*.[Rr][Ww]2
+*.[Aa][Rr][Ww]
+*.[Nn][Ee][Ff]
+*.[Cc][Rr]2
+*.[Cc][Rr]3
+*.[Cc][Rr][Ww]
+*.[Dd][Nn][Gg]
+*.[Dd][Cc][Rr]
+*.[Ee][Rr][Ff]
+*.[Ff][Ff][Ff]
+*.3[Ff][Rr]
+*.[Ii][Ii][Qq]
+*.[Kk][Dd][Cc]
+*.[Mm][Ee][Ff]
+*.[Mm][Oo][Ss]
+*.[Mm][Rr][Ww]
+*.[Nn][Rr][Ww]
+*.[Pp][Ee][Ff]
+*.[Rr][Aa][Ff]
+*.[Oo][Rr][Ff]
+*.[Rr][Ww][Ll]
+*.[Ss][Rr][Ww]
+*.[Xx]3[Ff]
+*.[Tt][Ii][Ff]
+*.[Tt][Ii][Ff][Ff]
+*.[Jj][Pp][Gg]
+*.[Jj][Pp][Ee][Gg]
+*.[Hh][Ee][Ii][Cc]
+*.[Hh][Ee][Ii][Ff]
+*.[Pp][Nn][Gg]
+*.[Ww][Ee][Bb][Pp]
+*.[Aa][Vv][Ii][Ff]
+*.[Jj][Xx][Ll]
+*.[Gg][Ii][Ff]
+*.[Bb][Mm][Pp]
 
 # Root-level Lightroom sidecars are private by default. These four reviewed,
 # owner-authored project presets are explicit source fixtures.
-/*.xmp
-/*.XMP
+*.[Xx][Mm][Pp]
 !/niho-priset_colorful.xmp
 !/niho-preset bluesky2.xmp
 !/niho-preset night.xmp
@@ -83,8 +96,20 @@ xcuserdata/
 
 # Future local catalog stores. Checked-in schema files belong under Sources or
 # a dedicated migrations directory, never as a live database at repo root.
-/*.sqlite
-/*.sqlite3
-/*.db
-/*.db-shm
-/*.db-wal
+*.[Ss][Qq][Ll][Ii][Tt][Ee]
+*.[Ss][Qq][Ll][Ii][Tt][Ee]3
+*.[Ss][Qq][Ll][Ii][Tt][Ee]-[Ss][Hh][Mm]
+*.[Ss][Qq][Ll][Ii][Tt][Ee]-[Ww][Aa][Ll]
+*.[Ss][Qq][Ll][Ii][Tt][Ee]3-[Ss][Hh][Mm]
+*.[Ss][Qq][Ll][Ii][Tt][Ee]3-[Ww][Aa][Ll]
+*.[Dd][Bb]
+*.[Dd][Bb]-[Ss][Hh][Mm]
+*.[Dd][Bb]-[Ww][Aa][Ll]
+
+# Lightroom catalogs, helper data, previews, backups, and cloud libraries are
+# private migration assets. Keep them local even when copied below the repo.
+*.[Ll][Rr][Cc][Aa][Tt]
+*.[Ll][Rr][Cc][Aa][Tt]-[Dd][Aa][Tt][Aa]
+*.[Ll][Rr][Cc][Aa][Tt].[Zz][Ii][Pp]
+*.[Ll][Rr][Dd][Aa][Tt][Aa]
+*.[Ll][Rr][Ll][Ii][Bb][Rr][Aa][Rr][Yy]

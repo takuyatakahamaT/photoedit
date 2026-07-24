@@ -326,6 +326,11 @@ struct ContentView: View {
 /// Opt-in presentation surface used while the direct route is under formal
 /// acceptance. It is event-driven, keeps at most one GPU frame in flight and
 /// one pending frame, and never waits for the GPU on the main thread.
+private let directPreviewProbeLog = Logger(
+    subsystem: "life.niho.photobench",
+    category: "metal-probe"
+)
+
 private struct DirectMetalPreviewView: NSViewRepresentable {
     let request: DirectPreviewRequest
     let onPresented: (UInt64, CFTimeInterval) -> Void
@@ -371,18 +376,17 @@ private struct DirectMetalPreviewView: NSViewRepresentable {
             category: "presentation"
         )
         private let renderer: MetalPreviewRenderer?
-        private var latestRequest: DirectPreviewRequest?
-        private var pendingRequest: DirectPreviewRequest?
-        private var inFlightRequest: DirectPreviewRequest?
-        private var inFlightCompletion: SubmissionCompletion?
-        private var queueState = LatestPreviewQueueState()
-        private var lastReportedPresentedID: UInt64 = 0
+        private let probeConfiguration: MetalPresentationProbeConfiguration
+        private let probeRunID = UUID().uuidString
+        private var lifecycle = DirectPreviewLifecycle()
+        private var requests: [UInt64: DirectPreviewRequest] = [:]
+        private var probeAttempt: UInt64 = 0
+        private var inFlightCompletion: DirectPreviewSubmissionArbiter?
+        private var inFlightCompletionRequestID: UInt64?
         private var deliveryWatchdogTask: Task<Void, Never>?
-        private var deliveryWatchdogID: UInt64?
+        private var deliveryWatchdogToken: DirectPreviewLifecycle.Token?
         private var redrawRetryTask: Task<Void, Never>?
-        private var retryStep = 0
-        private var retryRequestID: UInt64?
-        private var failingRequestID: UInt64?
+        private var redrawRetryToken: DirectPreviewLifecycle.Token?
         private weak var view: MTKView?
         private weak var observedWindow: NSWindow?
 
@@ -392,14 +396,6 @@ private struct DirectMetalPreviewView: NSViewRepresentable {
         private var onDropped: (UInt64) -> Void
         private var onFailure: (UInt64, String) -> Void
 
-        private static let retryDelays: [Duration] = [
-            .milliseconds(16),
-            .milliseconds(33),
-            .milliseconds(67),
-            .milliseconds(133)
-        ]
-        private static let visibleDeliveryDeadline: Duration = .seconds(10)
-
         init(
             onPresented: @escaping (UInt64, CFTimeInterval) -> Void,
             onCoalesced: @escaping (UInt64) -> Void,
@@ -408,11 +404,26 @@ private struct DirectMetalPreviewView: NSViewRepresentable {
             onFailure: @escaping (UInt64, String) -> Void
         ) {
             renderer = MetalPreviewRenderer()
+            probeConfiguration = MetalPresentationProbeConfiguration()
             self.onPresented = onPresented
             self.onCoalesced = onCoalesced
             self.onDrawableUnavailable = onDrawableUnavailable
             self.onDropped = onDropped
             self.onFailure = onFailure
+            super.init()
+
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(applicationDidBecomeActive(_:)),
+                name: NSApplication.didBecomeActiveNotification,
+                object: NSApplication.shared
+            )
+
+            if let invalidValue = probeConfiguration.invalidValue {
+                directPreviewProbeLog.error(
+                    "invalid configuration value=\(invalidValue, privacy: .public); using production/on-demand"
+                )
+            }
         }
 
         func makeView() -> MTKView {
@@ -421,7 +432,26 @@ private struct DirectMetalPreviewView: NSViewRepresentable {
             metalView.didMoveToWindowHandler = { [weak self, weak metalView] in
                 guard let self, let metalView else { return }
                 self.observeWindowIfNeeded(for: metalView)
-                self.resumePendingIfVisible(in: metalView)
+                self.updateSurface(for: metalView)
+                // Moving between windows recreates the presentation surface
+                // even when its visibility and pixel size are unchanged.
+                self.send(.drawableSizeChanged(
+                    isValid: metalView.drawableSize.width > 0
+                        && metalView.drawableSize.height > 0
+                ))
+                // SwiftUI can attach the view before AppKit has published the
+                // initial occlusion state. Reconcile once after one compositor
+                // tick so a newly opened visible window cannot remain idle
+                // until the user minimizes or moves it.
+                Task { @MainActor [weak self, weak metalView] in
+                    do {
+                        try await Task.sleep(for: .milliseconds(16))
+                    } catch {
+                        return
+                    }
+                    guard let self, let metalView else { return }
+                    self.updateSurface(for: metalView)
+                }
             }
             metalView.delegate = self
             metalView.framebufferOnly = false
@@ -429,13 +459,24 @@ private struct DirectMetalPreviewView: NSViewRepresentable {
             metalView.colorspace = MetalPreviewRenderer.outputColorSpace
             metalView.sampleCount = 1
             metalView.clearColor = MTLClearColorMake(0, 0, 0, 1)
-            metalView.isPaused = true
-            metalView.enableSetNeedsDisplay = true
+            switch probeConfiguration.mode.drawingMode {
+            case .onDemand:
+                metalView.isPaused = true
+                metalView.enableSetNeedsDisplay = true
+            case .continuous:
+                metalView.enableSetNeedsDisplay = false
+                metalView.isPaused = false
+            }
             metalView.autoResizeDrawable = true
             metalView.layer?.isOpaque = true
             if let metalLayer = metalView.layer as? CAMetalLayer {
                 metalLayer.wantsExtendedDynamicRangeContent = false
                 metalLayer.allowsNextDrawableTimeout = true
+            }
+            if probeConfiguration.isExplicit {
+                directPreviewProbeLog.notice(
+                    "configured run=\(self.probeRunID, privacy: .public) mode=\(self.probeConfiguration.mode.rawValue, privacy: .public) paused=\(metalView.isPaused, privacy: .public) setNeedsDisplay=\(metalView.enableSetNeedsDisplay, privacy: .public) fps=\(metalView.preferredFramesPerSecond, privacy: .public)"
+                )
             }
             return metalView
         }
@@ -455,206 +496,115 @@ private struct DirectMetalPreviewView: NSViewRepresentable {
         }
 
         func submit(_ request: DirectPreviewRequest, to view: MTKView) {
-            if let latestID = queueState.latestID, request.id <= latestID { return }
-            cancelRedrawRetry()
-            cancelDeliveryWatchdog()
-            retryRequestID = request.id
-            retryStep = 0
-            failingRequestID = nil
-            latestRequest = request
-            if let supersededID = queueState.submit(request.id) {
-                onCoalesced(supersededID)
-            }
-            pendingRequest = request
-            guard renderer != nil else {
-                failRoute(
-                    request: request,
-                    message: MetalPreviewRendererError.commandQueueUnavailable.localizedDescription
-                )
-                return
-            }
+            if let latestID = lifecycle.queue.latestID, request.id <= latestID { return }
             observeWindowIfNeeded(for: view)
-            resumePendingIfVisible(in: view)
+            updateSurface(for: view)
+            requests[request.id] = request
+            send(.submit(request.id))
+            if renderer == nil {
+                send(.failLatest(
+                    requestID: request.id,
+                    failure: .rendererUnavailable(
+                        MetalPreviewRendererError.commandQueueUnavailable
+                            .localizedDescription
+                    )
+                ))
+            }
         }
 
         func draw(in view: MTKView) {
             autoreleasepool {
                 observeWindowIfNeeded(for: view)
-                guard queueState.inFlightID == nil,
-                      let request = pendingRequest,
-                      let renderer
+                updateSurface(for: view)
+                guard lifecycle.queue.inFlightID == nil,
+                      let requestID = lifecycle.queue.pendingID
                 else { return }
+                probeAttempt &+= 1
+                if probeConfiguration.isExplicit {
+                    directPreviewProbeLog.debug(
+                        "draw run=\(self.probeRunID, privacy: .public) mode=\(self.probeConfiguration.mode.rawValue, privacy: .public) request=\(requestID, privacy: .public) attempt=\(self.probeAttempt, privacy: .public) visible=\(self.isVisible(view), privacy: .public) width=\(view.drawableSize.width, privacy: .public) height=\(view.drawableSize.height, privacy: .public)"
+                    )
+                }
                 os_signpost(
                     .event,
                     log: Self.presentationLog,
                     name: "PreviewDrawStarted",
                     "request=%{public}llu visible=%{public}d width=%{public}.0f height=%{public}.0f",
-                    request.id,
+                    requestID,
                     isVisible(view) ? 1 : 0,
                     view.drawableSize.width,
                     view.drawableSize.height
                 )
-                guard isVisible(view) else {
-                    suspendDeliveryWhileHidden()
+                guard lifecycle.surface.isReady else { return }
+                guard requests[requestID] != nil else {
+                    send(.failLatest(
+                        requestID: requestID,
+                        failure: .submission("Metal表示用フレームが失われました。")
+                    ))
                     return
                 }
-                guard view.drawableSize.width > 0, view.drawableSize.height > 0 else {
-                    return
-                }
-                armDeliveryWatchdog(for: request, in: view)
                 guard let drawable = view.currentDrawable else {
-                    // Drawable pool pressure is recoverable. The on-demand
-                    // invalidation has already been consumed, so explicitly
-                    // schedule one bounded retry while the window is visible.
-                    onDrawableUnavailable(request.id)
-                    scheduleRedrawRetry(for: request, in: view)
+                    send(.drawAttempted(
+                        requestID: requestID,
+                        drawableAvailable: false
+                    ))
                     return
                 }
-
-                do {
-                    let commandBuffer = try renderer.makeCommandBuffer()
-                    guard queueState.beginPending(request.id) else { return }
-                    pendingRequest = nil
-                    inFlightRequest = request
-                    _ = try renderer.encodeAspectFit(
-                        frame: request.frame,
-                        to: drawable.texture,
-                        commandBuffer: commandBuffer
-                    )
-                    let completion = SubmissionCompletion()
-                    inFlightCompletion = completion
-                    drawable.addPresentedHandler { [weak self] presentedDrawable in
-                        guard completion.claim() else { return }
-                        let presentedTime = presentedDrawable.presentedTime
-                        Task { @MainActor [weak self] in
-                            self?.finishPresented(
-                                request: request,
-                                presentedTime: presentedTime
-                            )
-                        }
-                    }
-                    commandBuffer.addCompletedHandler { [weak self] completed in
-                        let statusRawValue = Int(completed.status.rawValue)
-                        let message = completed.error?.localizedDescription
-                        Task { @MainActor [weak self] in
-                            self?.commandBufferCompleted(
-                                request: request,
-                                statusRawValue: statusRawValue,
-                                message: message,
-                                completion: completion
-                            )
-                        }
-                    }
-                    commandBuffer.present(drawable)
-                    commandBuffer.commit()
-                } catch {
-                    _ = queueState.finish(request.id)
-                    inFlightRequest = nil
-                    inFlightCompletion = nil
-                    if latestRequest?.id == request.id {
-                        failRoute(request: request, message: error.localizedDescription)
-                    } else {
-                        resumePendingIfVisible(in: view)
-                    }
-                }
+                send(
+                    .drawAttempted(
+                        requestID: requestID,
+                        drawableAvailable: true
+                    ),
+                    drawable: drawable
+                )
             }
         }
 
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-            guard size.width > 0, size.height > 0,
-                  let latestRequest
-            else { return }
-            // A resize needs a fresh aspect-fit render even when the image
-            // revision did not change. A newer pending edit still wins.
-            if pendingRequest == nil
-                || (pendingRequest?.id ?? 0) <= latestRequest.id {
-                queueState.resubmitLatest()
-                pendingRequest = latestRequest
+            let visible = isVisible(view)
+            if lifecycle.surface.isVisible != visible {
+                send(.surfaceChanged(
+                    isVisible: visible,
+                    hasDrawableSize: lifecycle.surface.hasDrawableSize
+                ))
             }
-            resumePendingIfVisible(in: view)
+            send(.drawableSizeChanged(
+                isValid: size.width > 0 && size.height > 0
+            ))
         }
 
         func tearDown() {
-            cancelRedrawRetry()
-            cancelDeliveryWatchdog()
             NotificationCenter.default.removeObserver(self)
             observedWindow = nil
             (view as? DirectPreviewMTKView)?.didMoveToWindowHandler = nil
-            pendingRequest = nil
-            latestRequest = nil
-            _ = inFlightCompletion?.claim()
-            inFlightCompletion = nil
-            inFlightRequest = nil
-            queueState = LatestPreviewQueueState()
-            renderer?.clearCaches()
-        }
-
-        private func finishPresented(
-            request: DirectPreviewRequest,
-            presentedTime: CFTimeInterval
-        ) {
-            guard inFlightRequest?.id == request.id,
-                  queueState.finish(request.id)
-            else { return }
-            inFlightCompletion = nil
-            inFlightRequest = nil
-            if presentedTime > 0 {
-                if latestRequest?.id == request.id {
-                    cancelRedrawRetry()
-                    cancelDeliveryWatchdog()
-                    retryRequestID = nil
-                    retryStep = 0
-                }
-                if latestRequest?.id == request.id,
-                   request.id > lastReportedPresentedID {
-                    lastReportedPresentedID = request.id
-                    onPresented(request.id, presentedTime)
-                }
-            } else {
-                onDropped(request.id)
-                if latestRequest?.id == request.id {
-                    queueState.resubmitLatest()
-                    pendingRequest = request
-                    if let view, isVisible(view) {
-                        scheduleRedrawRetry(for: request, in: view)
-                    } else {
-                        suspendDeliveryWhileHidden()
-                    }
-                }
-            }
-            if pendingRequest != nil, let view, redrawRetryTask == nil {
-                resumePendingIfVisible(in: view)
-            }
-        }
-
-        private func finishFailed(
-            request: DirectPreviewRequest,
-            message: String
-        ) {
-            guard inFlightRequest?.id == request.id,
-                  queueState.finish(request.id)
-            else { return }
-            inFlightCompletion = nil
-            inFlightRequest = nil
-            if latestRequest?.id == request.id {
-                failRoute(request: request, message: message)
-            } else if pendingRequest != nil, let view {
-                resumePendingIfVisible(in: view)
-            }
+            send(.tearDown)
+            view = nil
         }
 
         private func observeWindowIfNeeded(for view: MTKView) {
             guard observedWindow !== view.window else { return }
-            NotificationCenter.default.removeObserver(
-                self,
-                name: NSWindow.didChangeOcclusionStateNotification,
-                object: observedWindow
-            )
-            NotificationCenter.default.removeObserver(
-                self,
-                name: NSWindow.didDeminiaturizeNotification,
-                object: observedWindow
-            )
+            if let previousWindow = observedWindow {
+                NotificationCenter.default.removeObserver(
+                    self,
+                    name: NSWindow.didChangeOcclusionStateNotification,
+                    object: previousWindow
+                )
+                NotificationCenter.default.removeObserver(
+                    self,
+                    name: NSWindow.didBecomeKeyNotification,
+                    object: previousWindow
+                )
+                NotificationCenter.default.removeObserver(
+                    self,
+                    name: NSWindow.didMiniaturizeNotification,
+                    object: previousWindow
+                )
+                NotificationCenter.default.removeObserver(
+                    self,
+                    name: NSWindow.didDeminiaturizeNotification,
+                    object: previousWindow
+                )
+            }
             observedWindow = view.window
             guard let observedWindow else { return }
             NotificationCenter.default.addObserver(
@@ -666,41 +616,66 @@ private struct DirectMetalPreviewView: NSViewRepresentable {
             NotificationCenter.default.addObserver(
                 self,
                 selector: #selector(windowVisibilityChanged(_:)),
+                name: NSWindow.didBecomeKeyNotification,
+                object: observedWindow
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowVisibilityChanged(_:)),
+                name: NSWindow.didMiniaturizeNotification,
+                object: observedWindow
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowVisibilityChanged(_:)),
                 name: NSWindow.didDeminiaturizeNotification,
                 object: observedWindow
             )
         }
 
         private func commandBufferCompleted(
-            request: DirectPreviewRequest,
+            requestID: UInt64,
             statusRawValue: Int,
-            message: String?,
-            completion: SubmissionCompletion
+            resolution: DirectPreviewSubmissionArbiter.Resolution?
         ) {
             os_signpost(
                 .event,
                 log: Self.presentationLog,
                 name: "PreviewGPUCompleted",
                 "request=%{public}llu status=%{public}d",
-                request.id,
+                requestID,
                 statusRawValue
             )
-            guard statusRawValue == Int(MTLCommandBufferStatus.error.rawValue),
-                  completion.claim()
-            else { return }
-            finishFailed(
-                request: request,
-                message: message ?? "Metal command buffer error"
-            )
+            guard let resolution else { return }
+            submissionResolved(requestID: requestID, resolution: resolution)
+        }
+
+        private func submissionResolved(
+            requestID: UInt64,
+            resolution: DirectPreviewSubmissionArbiter.Resolution
+        ) {
+            switch resolution {
+            case .presentation(let presentedTime):
+                send(.presentationClaimed(
+                    requestID: requestID,
+                    presentedTime: presentedTime
+                ))
+            case .gpuFailure(let message):
+                send(.gpuFailureClaimed(
+                    requestID: requestID,
+                    message: message ?? "Metal command buffer error"
+                ))
+            }
         }
 
         @objc private func windowVisibilityChanged(_ notification: Notification) {
             guard let view else { return }
-            if isVisible(view) {
-                resumePendingIfVisible(in: view)
-            } else {
-                suspendDeliveryWhileHidden()
-            }
+            updateSurface(for: view)
+        }
+
+        @objc private func applicationDidBecomeActive(_ notification: Notification) {
+            guard let view else { return }
+            updateSurface(for: view)
         }
 
         private func isVisible(_ view: MTKView) -> Bool {
@@ -712,16 +687,39 @@ private struct DirectMetalPreviewView: NSViewRepresentable {
             return true
         }
 
-        private func resumePendingIfVisible(in view: MTKView) {
-            guard isVisible(view) else {
-                suspendDeliveryWhileHidden()
-                return
+        private func updateSurface(for view: MTKView) {
+            let surface = DirectPreviewLifecycle.Surface(
+                isVisible: isVisible(view),
+                hasDrawableSize: view.drawableSize.width > 0
+                    && view.drawableSize.height > 0
+            )
+            if probeConfiguration.isExplicit, lifecycle.surface != surface {
+                directPreviewProbeLog.info(
+                    "surface run=\(self.probeRunID, privacy: .public) mode=\(self.probeConfiguration.mode.rawValue, privacy: .public) visible=\(surface.isVisible, privacy: .public) drawable=\(surface.hasDrawableSize, privacy: .public) windowVisible=\(view.window?.isVisible ?? false, privacy: .public) miniaturized=\(view.window?.isMiniaturized ?? false, privacy: .public) occlusion=\(view.window?.occlusionState.rawValue ?? 0, privacy: .public)"
+                )
             }
-            if let latestRequest {
-                armDeliveryWatchdog(for: latestRequest, in: view)
-            }
-            if queueState.inFlightID == nil, pendingRequest != nil {
-                if let requestID = pendingRequest?.id {
+            guard lifecycle.surface != surface else { return }
+            send(.surfaceChanged(
+                isVisible: surface.isVisible,
+                hasDrawableSize: surface.hasDrawableSize
+            ))
+        }
+
+        private func send(
+            _ event: DirectPreviewLifecycle.Event,
+            drawable: CAMetalDrawable? = nil
+        ) {
+            let effects = lifecycle.reduce(event)
+            handle(effects, drawable: drawable)
+        }
+
+        private func handle(
+            _ effects: [DirectPreviewLifecycle.Effect],
+            drawable: CAMetalDrawable?
+        ) {
+            for effect in effects {
+                switch effect {
+                case .requestDisplay(let requestID):
                     os_signpost(
                         .event,
                         log: Self.presentationLog,
@@ -729,115 +727,248 @@ private struct DirectMetalPreviewView: NSViewRepresentable {
                         "request=%{public}llu",
                         requestID
                     )
+                    view?.setNeedsDisplay(view?.bounds ?? .zero)
+
+                case .beginSubmission(let requestID):
+                    guard let drawable else {
+                        send(.submissionFailed(
+                            requestID: requestID,
+                            failure: .submission("Metal drawableが失われました。")
+                        ))
+                        continue
+                    }
+                    beginSubmission(requestID: requestID, drawable: drawable)
+
+                case .scheduleRetry(let token, let milliseconds):
+                    scheduleRetry(token: token, milliseconds: milliseconds)
+
+                case .cancelRetry(let token):
+                    cancelRetry(token: token)
+
+                case .scheduleDeadline(let token, let milliseconds):
+                    scheduleDeadline(token: token, milliseconds: milliseconds)
+
+                case .cancelDeadline(let token):
+                    cancelDeadline(token: token)
+
+                case .claimSubmissionForDeadline(let requestID, let token):
+                    let won: Bool
+                    if inFlightCompletionRequestID == requestID,
+                       let inFlightCompletion {
+                        won = inFlightCompletion.claimDeadline()
+                        if won {
+                            self.inFlightCompletion = nil
+                            inFlightCompletionRequestID = nil
+                        }
+                    } else {
+                        // The reducer believes this request is in flight. If
+                        // its completion owner is missing, fail closed instead
+                        // of leaving the direct route permanently pending.
+                        let actualID = inFlightCompletionRequestID
+                            .map(String.init) ?? "nil"
+                        directPreviewProbeLog.fault(
+                            "in-flight/completion desync expectedRequest=\(requestID, privacy: .public) actualRequest=\(actualID, privacy: .public) hasCompletion=\(self.inFlightCompletion != nil, privacy: .public)"
+                        )
+                        assertionFailure("in-flight/completion desync")
+                        won = true
+                    }
+                    if probeConfiguration.isExplicit {
+                        directPreviewProbeLog.error(
+                            "deadline run=\(self.probeRunID, privacy: .public) mode=\(self.probeConfiguration.mode.rawValue, privacy: .public) request=\(requestID, privacy: .public) completionClaimWon=\(won, privacy: .public)"
+                        )
+                    }
+                    send(.deadlineClaimResolved(token, won: won))
+
+                case .invalidateSubmission(let requestID):
+                    guard inFlightCompletionRequestID == requestID else { continue }
+                    inFlightCompletion?.invalidate()
+                    inFlightCompletion = nil
+                    inFlightCompletionRequestID = nil
+
+                case .reportCoalesced(let requestID):
+                    onCoalesced(requestID)
+
+                case .reportDrawableUnavailable(let requestID):
+                    onDrawableUnavailable(requestID)
+
+                case .reportDropped(let requestID):
+                    if probeConfiguration.isExplicit {
+                        directPreviewProbeLog.warning(
+                            "dropped run=\(self.probeRunID, privacy: .public) mode=\(self.probeConfiguration.mode.rawValue, privacy: .public) request=\(requestID, privacy: .public)"
+                        )
+                    }
+                    onDropped(requestID)
+
+                case .reportPresented(let requestID, let presentedTime):
+                    if probeConfiguration.isExplicit {
+                        directPreviewProbeLog.notice(
+                            "result=positive run=\(self.probeRunID, privacy: .public) mode=\(self.probeConfiguration.mode.rawValue, privacy: .public) request=\(requestID, privacy: .public) presentedTime=\(presentedTime, privacy: .public)"
+                        )
+                    }
+                    onPresented(requestID, presentedTime)
+
+                case .reportFailure(let requestID, let failure):
+                    if probeConfiguration.isExplicit {
+                        directPreviewProbeLog.error(
+                            "result=fallback run=\(self.probeRunID, privacy: .public) mode=\(self.probeConfiguration.mode.rawValue, privacy: .public) request=\(requestID, privacy: .public) reason=\(failure.message, privacy: .public)"
+                        )
+                    }
+                    onFailure(requestID, failure.message)
+
+                case .discardPayload(let requestID):
+                    requests[requestID] = nil
+
+                case .discardAllPayloads:
+                    requests.removeAll(keepingCapacity: false)
+
+                case .clearRendererCaches:
+                    renderer?.clearCaches()
                 }
-                view.setNeedsDisplay(view.bounds)
             }
         }
 
-        private func suspendDeliveryWhileHidden() {
-            cancelRedrawRetry()
-            cancelDeliveryWatchdog()
-        }
-
-        private func scheduleRedrawRetry(
-            for request: DirectPreviewRequest,
-            in view: MTKView
+        private func beginSubmission(
+            requestID: UInt64,
+            drawable: CAMetalDrawable
         ) {
-            guard redrawRetryTask == nil,
-                  latestRequest?.id == request.id
-            else { return }
-            if retryRequestID != request.id {
-                retryRequestID = request.id
-                retryStep = 0
+            guard let request = requests[requestID], let renderer else {
+                send(.submissionFailed(
+                    requestID: requestID,
+                    failure: .submission("Metal表示用フレームを開始できません。")
+                ))
+                return
             }
-            let delay = Self.retryDelays[min(retryStep, Self.retryDelays.count - 1)]
-            retryStep += 1
-            redrawRetryTask = Task { @MainActor [weak self, weak view] in
+
+            do {
+                let commandBuffer = try renderer.makeCommandBuffer()
+                switch probeConfiguration.mode.payload {
+                case .metalClear:
+                    try renderer.encodeDiagnosticMetalClear(
+                        to: drawable.texture,
+                        commandBuffer: commandBuffer
+                    )
+                case .ciSolid:
+                    _ = try renderer.encodeDiagnosticCISolid(
+                        to: drawable.texture,
+                        commandBuffer: commandBuffer
+                    )
+                case .production:
+                    _ = try renderer.encodeAspectFit(
+                        frame: request.frame,
+                        to: drawable.texture,
+                        commandBuffer: commandBuffer
+                    )
+                }
+                let completion = DirectPreviewSubmissionArbiter()
+                inFlightCompletion = completion
+                inFlightCompletionRequestID = requestID
+                let probeIsExplicit = probeConfiguration.isExplicit
+                let probeMode = probeConfiguration.mode.rawValue
+                let probeRunID = self.probeRunID
+                let probeAttempt = self.probeAttempt
+
+                drawable.addPresentedHandler { [weak self] presentedDrawable in
+                    let presentedTime = presentedDrawable.presentedTime
+                    let resolution = completion.observePresentation(presentedTime)
+                    if probeIsExplicit {
+                        directPreviewProbeLog.info(
+                            "presented-callback run=\(probeRunID, privacy: .public) mode=\(probeMode, privacy: .public) request=\(requestID, privacy: .public) attempt=\(probeAttempt, privacy: .public) presentedTime=\(presentedTime, privacy: .public) resolutionProduced=\(resolution != nil, privacy: .public)"
+                        )
+                    }
+                    guard let resolution else { return }
+                    Task { @MainActor [weak self] in
+                        self?.submissionResolved(
+                            requestID: requestID,
+                            resolution: resolution
+                        )
+                    }
+                }
+                commandBuffer.addCompletedHandler { [weak self] completed in
+                    let statusRawValue = Int(completed.status.rawValue)
+                    let message = completed.error?.localizedDescription
+                    let resolution = completion.observeGPUCompletion(
+                        failed: statusRawValue
+                            == Int(MTLCommandBufferStatus.error.rawValue),
+                        message: message
+                    )
+                    if probeIsExplicit {
+                        directPreviewProbeLog.info(
+                            "gpu-completed run=\(probeRunID, privacy: .public) mode=\(probeMode, privacy: .public) request=\(requestID, privacy: .public) attempt=\(probeAttempt, privacy: .public) status=\(statusRawValue, privacy: .public) error=\(message ?? "none", privacy: .public) resolutionProduced=\(resolution != nil, privacy: .public)"
+                        )
+                    }
+                    Task { @MainActor [weak self] in
+                        self?.commandBufferCompleted(
+                            requestID: requestID,
+                            statusRawValue: statusRawValue,
+                            resolution: resolution
+                        )
+                    }
+                }
+                commandBuffer.present(drawable)
+                commandBuffer.commit()
+                if probeConfiguration.isExplicit {
+                    directPreviewProbeLog.info(
+                        "committed run=\(self.probeRunID, privacy: .public) mode=\(self.probeConfiguration.mode.rawValue, privacy: .public) request=\(requestID, privacy: .public) attempt=\(self.probeAttempt, privacy: .public) width=\(drawable.texture.width, privacy: .public) height=\(drawable.texture.height, privacy: .public)"
+                    )
+                }
+            } catch {
+                send(.submissionFailed(
+                    requestID: requestID,
+                    failure: .submission(error.localizedDescription)
+                ))
+            }
+        }
+
+        private func scheduleRetry(
+            token: DirectPreviewLifecycle.Token,
+            milliseconds: Int
+        ) {
+            redrawRetryTask?.cancel()
+            redrawRetryToken = token
+            redrawRetryTask = Task { @MainActor [weak self] in
                 do {
-                    try await Task.sleep(for: delay)
+                    try await Task.sleep(for: .milliseconds(milliseconds))
                 } catch {
                     return
                 }
-                guard let self else { return }
+                guard let self, self.redrawRetryToken == token else { return }
                 self.redrawRetryTask = nil
-                guard let view,
-                      self.latestRequest?.id == request.id,
-                      self.queueState.inFlightID == nil,
-                      self.pendingRequest != nil
-                else { return }
-                self.resumePendingIfVisible(in: view)
+                self.redrawRetryToken = nil
+                self.send(.retryFired(token))
             }
         }
 
-        private func armDeliveryWatchdog(
-            for request: DirectPreviewRequest,
-            in view: MTKView
-        ) {
-            guard latestRequest?.id == request.id,
-                  deliveryWatchdogID != request.id,
-                  isVisible(view),
-                  view.drawableSize.width > 0,
-                  view.drawableSize.height > 0
-            else { return }
-            cancelDeliveryWatchdog()
-            deliveryWatchdogID = request.id
-            deliveryWatchdogTask = Task { @MainActor [weak self, weak view] in
-                do {
-                    try await Task.sleep(for: Self.visibleDeliveryDeadline)
-                } catch {
-                    return
-                }
-                guard let self else { return }
-                self.deliveryWatchdogTask = nil
-                self.deliveryWatchdogID = nil
-                guard let view,
-                      self.latestRequest?.id == request.id
-                else { return }
-                guard self.isVisible(view) else {
-                    self.suspendDeliveryWhileHidden()
-                    return
-                }
-                // A presented/error callback may already have claimed the
-                // submission while its MainActor completion is still queued.
-                // The watchdog must not race that terminal callback into a
-                // false fallback.
-                if self.inFlightRequest?.id == request.id,
-                   let completion = self.inFlightCompletion,
-                   !completion.claim() {
-                    return
-                }
-                self.failRoute(
-                    request: request,
-                    message: "可視状態のMetal drawableを10秒以内に実表示できませんでした。"
-                )
-            }
-        }
-
-        private func cancelRedrawRetry() {
+        private func cancelRetry(token: DirectPreviewLifecycle.Token) {
+            guard redrawRetryToken == token else { return }
             redrawRetryTask?.cancel()
             redrawRetryTask = nil
+            redrawRetryToken = nil
         }
 
-        private func cancelDeliveryWatchdog() {
+        private func scheduleDeadline(
+            token: DirectPreviewLifecycle.Token,
+            milliseconds: Int
+        ) {
+            deliveryWatchdogTask?.cancel()
+            deliveryWatchdogToken = token
+            deliveryWatchdogTask = Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(for: .milliseconds(milliseconds))
+                } catch {
+                    return
+                }
+                guard let self, self.deliveryWatchdogToken == token else { return }
+                self.deliveryWatchdogTask = nil
+                self.deliveryWatchdogToken = nil
+                self.send(.deadlineFired(token))
+            }
+        }
+
+        private func cancelDeadline(token: DirectPreviewLifecycle.Token) {
+            guard deliveryWatchdogToken == token else { return }
             deliveryWatchdogTask?.cancel()
             deliveryWatchdogTask = nil
-            deliveryWatchdogID = nil
-        }
-
-        private func failRoute(request: DirectPreviewRequest, message: String) {
-            guard latestRequest?.id == request.id,
-                  failingRequestID != request.id
-            else { return }
-            failingRequestID = request.id
-            cancelRedrawRetry()
-            cancelDeliveryWatchdog()
-            pendingRequest = nil
-            _ = inFlightCompletion?.claim()
-            inFlightCompletion = nil
-            inFlightRequest = nil
-            latestRequest = nil
-            queueState = LatestPreviewQueueState()
-            onFailure(request.id, message)
+            deliveryWatchdogToken = nil
         }
     }
 }
@@ -849,18 +980,5 @@ private final class DirectPreviewMTKView: MTKView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         didMoveToWindowHandler?()
-    }
-}
-
-private final class SubmissionCompletion: @unchecked Sendable {
-    private let lock = NSLock()
-    private var isClaimed = false
-
-    func claim() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !isClaimed else { return false }
-        isClaimed = true
-        return true
     }
 }

@@ -1,9 +1,9 @@
 # Photo Bench プロジェクト概要
 
-- 状態: Phase 0 の証跡基盤、P1 preview parity v3 の正式評価、P1-3 の Metal 直接表示実験まで完了。縮小 RAW 候補は不採用、直接表示は実画面への到達を確認できず既定 OFF のため、製品経路は full-resolution RAW decode + 従来表示を維持
+- 状態: Phase 0 の証跡基盤、P1 preview parity v3 の正式評価、P1-3 の Metal presentation lifecycle 実験まで完了。縮小 RAW 候補は不採用。直接表示は実画像の positive presentation まで成立したが、正式な実画面 parity・p95・RSS が未承認のため既定 OFF とし、製品経路は full-resolution RAW decode + 従来表示を維持
 - 対象: オーナー個人専用の Apple Silicon macOS アプリ
 - 最終更新: 2026-07-24（JST）
-- 開発ルート: `/Users/takuyatakahama/Documents/app/NIHO/others/photo`
+- 開発ルート: Git working treeのrepository root（再現手順では`PHOTO_BENCH_ROOT`）
 
 ## 0. この文書の役割
 
@@ -16,6 +16,16 @@
 - 入力、処理、閾値の現行契約: `calibration/manifest-v3.json`。manifest schema は 3、校正 run manifest schema は 2、派生する analyzer report schema は 4 と区別する
 
 `reviews/2026-07-24-claude-research-improvement-proposals.md` は、外部調査から得た次の仮説と優先順位案をまとめた助言資料である。ここにある数値、ライセンス解釈、製品比較、技術効果は未確認のものを含み、現行仕様や合格証跡ではない。本書では、目的と時限性に照らして妥当な「Lightroom 契約中にしか取得できない資産を先に確保する」「Metal 実験を timebox し、編集永続化・カタログ・選別へ移る」という優先順位だけを採用し、個別仮説は新しい契約と実測で検証してから採否を決める。
+
+### Git と公開範囲
+
+2026-07-24 に [GitHub の `takuyatakahamaT/photoedit`](https://github.com/takuyatakahamaT/photoedit) を初期化し、動作確認済みの現行プロトタイプを `main` の commit `3a0169d` と annotated tag `prototype-p1-2026-07-24` に固定した。`main` は常時動く基準、採用前提の変更は `feature/*`、採否を事前条件で判定する短期技術検証は `experiment/*` とする。長期の別製品版を単に保存する目的では branch を残さず、再現点は tag、失敗を含む判断は文書で保持する。現在の Metal lifecycle 検証は `experiment/metal-presentation-lifecycle` で進める。
+
+リポジトリは現在 **public** である。source、tests、docs、契約 manifest、オーナー作成の XMP preset だけを追跡し、個人写真、RAW、Lightroom 教師 TIFF/JPEG、`.photobench/`、build、書き出し、署名済み app、live catalog は追跡しない。詳細は `DATA_POLICY.md` を正とする。ライセンスは未選定で、LICENSE はまだ置いていない。
+
+公開cloneでは source build は成功する一方、非公開 fixture を必要とするテストが一括 suite に混在している。tagged baseline `3a0169d` の2026-07-24クリーンclone `swift test` は93件中25件がfixture不足で失敗した。現在の実験ブランチもno-local clean cloneで追跡private media 0件とsource build成功を確認し、130件を起動して同じowner-only JPEG / RAW不足による25 issuesとなった。fixture-independentなMetal追加37件はprivate mediaなしで成功する。これは画像を公開して解決せず、fixture-independent suite と owner-only integration / formal evidence suite を専用変更で分離する。公開 CI と `main` ruleset は、その公開 suite が成立してから導入する。owner fixtureが揃う開発ルートではSwift 130件 / 10 suites、Python 52件がすべて成功している。baselineの93件とcurrentの130件を混同しない。
+
+tagged baselineの正式校正・benchmarkは、source fingerprint `f8333be9f764af76b5d7e96d7a2967a44581405fca335fa27b1110f517f14e6b`、manifest SHA-256 `2867219602b7abe89ddd8994ab243c1a9f1d020eed5710dac4bb1d475eab92a8`、24 sourceに対応する。現在の実験ブランチは`DirectPreviewLifecycle.swift`と`MetalPresentationProbe.swift`を加えた26 source契約であり、既存JSONは現ブランチの正式合格証跡ではない。採用前にrelease calibration / benchmarkを再実行して新しいfingerprintを固定する。
 
 ## 1. なぜ作るのか
 
@@ -57,7 +67,7 @@ Lightroom は移行期間中の比較基準と退避手段としてだけ用い�
 
 - 利用者: オーナー 1 人
 - 端末: Apple Silicon Mac
-- 写真置き場: 完成時は `hihirohub` の `/Volumes/hihirohub/pictures/edit` 相当
+- 写真置き場: ユーザーが選ぶローカルまたは外付けストレージ上の任意フォルダ
 - 規模: 約 17,000 枚、現状約 897 GB。選別後は約 500 GB が目標
 - 形式: JPEG と RAW が概ね半々
 - 主な RAW: Panasonic Lumix DC-S5 の RW2（検証原本は 6000×4000、14 bit）
@@ -177,12 +187,14 @@ Core Image RAW 8
 
 - full-resolution RAW の graph を準備し、`MTKView` / `CIRenderDestination` へ CPU RGBA8 readback を挟まず渡す opt-in 経路を実装
 - 有効化条件を環境変数 `PHOTO_BENCH_PREVIEW_ROUTE=metal-direct` の完全一致に限定し、通常起動は従来表示のまま維持
-- latest-only queue、request ID の厳密な所有権、ウィンドウ単位の可視性判定、drawable 再試行、10秒 watchdog、一方向の従来表示 fallback を実装
+- presentation状態を純粋な`DirectPreviewLifecycle` reducerへ分離し、latest-only queue、request IDの厳密な所有権、retry / deadline token、ウィンドウ単位の可視性、zero-size / nil drawable、drop、resize、hide / show、teardownを実装
+- GPU完了とpresented callbackをlock保護したsubmission arbiterで両方観測し、GPU errorを優先する。10秒deadline / teardownも同じarbiterを終端化し、callback順序に依存せずMainActor reducerへ結果を1回だけ渡す。失敗後は一方向で従来表示へfallback
 - direct / legacy のオフスクリーン fixture は各 channel `1 LSB`以内で合格し、上下反転を誤合格させない回帰テストへ強化
 - `cacheIntermediates` は、複数写真遷移後の定常 RSS と eviction 契約がない段階では `false`を維持
-- 最終ハードニング直前の支援技術経由 smoke では、可視 draw 後に GPU command が2回とも completed になった一方、初回は `presentedTime = 0`で drop、再試行は presented callback が返らず、10秒後に従来表示へ fallback した。その後に`drawableSize > 0`のwatchdog条件と`allowsNextDrawableTimeout = true`を追加し、最終sourceではfallback画像と空表示flashがないことを再確認したが、同じ詳細traceは再取得していない
+- native Metal clear、productionと同じCore Image destinationの単色、実画像productionを同一のdrawable / command queue / present / callback / deadline経路で切り替える完全一致probeを追加
+- LaunchServices経由のfresh `.app`起動で3段階すべてのpositive `presentedTime`を取得。写真切替、露出連続変更、resize、11.9秒の最小化と復帰でもpositive callbackを確認し、非可視中の誤deadline fallbackは発生しなかった。submission arbiter修正後の配布形アプリでも、実画像の初期表示`present 1`から別写真選択後`present 2`への進行を画面上で再確認した
 
-したがって、ここまでで「直接描画 graph を組み、失敗を検出して安全に戻れる」ことは確認したが、「実際の画面に direct frame が提示された」ことは確認していない。オフスクリーン parity は実画面 parity の代用ではなく、この経路は製品準備完了ではない。
+したがって、「直接描画 graphを組み、失敗を検出して安全に戻り、実画面へdirect frameを提示できる」ところまでは確認した。各fresh launchで初回`presentedTime = 0`が1回発生し、bounded retryでpositiveへ回復する挙動も観測した。一方、目視した個人写真のscreenshotは公開Gitへ保存せず、actual-screen parityの自動比較、代表操作のp95 / drop分布、複数写真後の定常RSS、commit済み旧drawableの瞬間的stale表示0件保証は未承認である。このため製品準備完了とはせず、既定legacyを維持する。
 
 ## 7. 2026-07-24 時点の到達点
 
@@ -195,7 +207,7 @@ Core Image RAW 8
 - 6000×4000、sRGB の原寸 JPEG を安全に書き出せる
 - 同じ署名のアプリ再起動後、選択済みフォルダを bookmark から復元できる
 
-自動検証は Swift Testing `93 tests / 7 suites`、Python `52 tests` が成功している。native 寸法・image extent の不正値拒否、preview / export context の別 instance 性、manifest v3 の固定寸法と候補行列、Lanczos 共通縮小、plateau morphology、候補なし時の full-decode fallback、system-load snapshot、benchmark の pass / performanceFailed / notEvaluated 契約に加え、direct / legacy の厳格な1 LSB parity、latest-only queue の resize・再入・順序逆転を回帰対象にした。配布形の `dist/Photo Bench.app` も release build と ad-hoc 署名を完了し、`codesign --verify --deep --strict`を通過している。ただし、ウィンドウ可視性、drawable drop、watchdog timeout、teardown といった app lifecycle 分岐は coordinator 内部にあり、自動化できていない。
+自動検証は現在の実験ブランチでSwift Testing `130 tests / 10 suites`、Python `52 tests`が成功している。native寸法・image extentの不正値拒否、preview / export contextの別instance性、manifest v3の固定寸法と候補行列、Lanczos共通縮小、plateau morphology、候補なし時のfull-decode fallback、system-load snapshot、benchmarkのpass / performanceFailed / notEvaluated契約に加え、direct / legacyの厳格な1 LSB parityを回帰対象にした。さらにpresentation lifecycle reducer 24件、submission arbiter 6件、probe設定4件、診断renderer 3件で、hidden / zero-size、nil drawable backoff、GPU / presented callback順序、stale token / callback、deadline race、resize、payload解放、teardownを自動化した。配布形の`dist/Photo Bench.app`もrelease buildとad-hoc署名を完了し、`codesign --verify --deep --strict`を通過している。AppKit / WindowServer自体のactual presentationはreducerテストとは別に、正規`.app`起動の実機smokeで確認した。
 
 ### 7.2 画質の現在値
 
@@ -237,9 +249,9 @@ Mac16,10 / Apple M4 / macOS 26.3.1 の release build で、24 MP RAW を warm �
 | warm full-current-settings engine preview | 82.879 ms | 55.598–131.204 ms | 41.34% |
 | full-resolution JPEG q0.92 | 548.776 ms | 223.044–1188.771 ms | 82.47% |
 
-各 run は `3 / 4`合格で、slider proxy は3 runすべて50ms gateを超えた。schema 3 は run / workload境界と process-fresh workerの system-load snapshotを保持し、loadを理由に sample 削除、outlier除外、再試行をしていない。process-fresh、slider proxy、exportの変動が大きく、この結果を安定した製品性能の証明とは扱わない。とくに direct 経路は positive presentation が未確認なので、UI p95 や actual-screen parity の数値はまだ存在しない。これは単一画像 engine 測定で、17,000 枚運用の保証でもない。
+各 run は `3 / 4`合格で、slider proxy は3 runすべて50ms gateを超えた。schema 3 は run / workload境界と process-fresh workerの system-load snapshotを保持し、loadを理由に sample 削除、outlier除外、再試行をしていない。process-fresh、slider proxy、exportの変動が大きく、この結果を安定した製品性能の証明とは扱わない。direct経路はpositive presentationまで成立したが、今回のsmokeは合否切り分けであって正式な反復計測ではないため、UI p95、actual-screen parity、drop分布、定常RSSの承認値はまだ存在しない。これは単一画像engine測定で、17,000枚運用の保証でもない。
 
-### 7.4 証跡 ID
+### 7.4 tagged baseline の証跡 ID
 
 - calibration run ID: `ceea9eb4-b490-4a1f-9984-3d294e2f50bb`
 - archived run manifest: `.photobench/calibration/runs/ceea9eb4-b490-4a1f-9984-3d294e2f50bb.json`
@@ -249,9 +261,11 @@ Mac16,10 / Apple M4 / macOS 26.3.1 の release build で、24 MP RAW を warm �
 - benchmark run 3 / latest: `f9024302-f48c-4f62-bd84-589013696861`（3 / 4合格）
 - benchmark release binary SHA-256: `9b6b1594e948e3f291ea9462d24d6413f868d6b3a89c72c8f3037517cafe3579`
 - manifest v3 SHA-256: `2867219602b7abe89ddd8994ab243c1a9f1d020eed5710dac4bb1d475eab92a8`
-- source fingerprint: `f8333be9f764af76b5d7e96d7a2967a44581405fca335fa27b1110f517f14e6b`
+- source fingerprint: `f8333be9f764af76b5d7e96d7a2967a44581405fca335fa27b1110f517f14e6b`（commit `3a0169d` / tag `prototype-p1-2026-07-24`）
 - schema: manifest `3` / calibration run `2` / analyzer report `4` / benchmark report `3`
-- 検証対象: 7 入力、24 source、122 / 122 artifact の構造・hash検証合格
+- 検証対象: 7入力、24 source、122 / 122 artifactの構造・hash検証合格
+
+上記はtagged baselineにだけ対応する。現在の`experiment/metal-presentation-lifecycle`はmanifestのsource listが26件で、app / renderer sourceも変更されている。旧reportとbenchmarkは設計比較のbaselineとしては有効だが、現ブランチの正式証跡ではない。現ブランチのrun ID、source fingerprint、binary SHAはまだ未取得である。
 
 P1 前 calibration baseline の run ID は `d01a48c3-d87f-414a-adbd-8c944add796c` と記録されているが、run archive は保存されていない。benchmark baseline `d50876f0-9f32-4eed-b6d7-75ea51944ef9` は archive を保存している。現行 source の判断には上記 v3 calibration run と連続3 benchmark runを使い、過去の合格を継承しない。
 
@@ -265,7 +279,8 @@ P1 前 calibration baseline の run ID は `d01a48c3-d87f-414a-adbd-8c944add796c
 - Adobe Color / DCP、レンズ補正、ディテール、ノイズ低減は未対応または未校正
 - 実 UI の slider input-to-screen latency と drop frame をまだ測っていない
 - preview parity v3 で 3,072 / 3,840 px の両候補が各 3 / 6 比較不合格で、実 UI は安全のため full-resolution RAW decode 経路のまま
-- Metal 直接表示は GPU command completion までは到達したが、positive `presentedTime`を得られず、actual-screen 表示成功・実画面1 LSB parity・UI p95を確認できていない
+- Metal直接表示はpositive `presentedTime`まで到達したが、actual-screen parity、代表操作のUI p95、反復drop率、複数写真後の定常RSSを正式gateで確認できていない
+- 現在の実験ブランチは26 source契約へ変わったため、tagged baselineの24 source校正・benchmarkを現ブランチの合格証跡として継承できない
 - 編集の再起動後復元、SQLite カタログ、評価・選別、検索が未実装
 - クロップ、回転、ブラシ部分補正が未実装
 - 原寸 JPEG 以外の主要 export 契約が不足
@@ -280,18 +295,21 @@ P1 前 calibration baseline の run ID は `d01a48c3-d87f-414a-adbd-8c944add796c
 - cache 導入で unified memory が増え続ける危険
 - 現在の表示・書き出し契約は sRGB SDR / 8-bit JPEG が中心で、Display P3、16-bit 最終出力、EDR 表示の製品仕様は未確定
 - direct 経路では、古い request の `present`登録後に新しい request が来ると、旧 frame が理論上いったん提示されうる。latest-only queue は準備前後の stale workを落とすが、「実表示した stale frame 0件」の完全保証ではない
-- 可視性はウィンドウ単位であり、preview領域の遮蔽や画面外を厳密には表さない。visibility、drop、timeout、teardown の coordinator lifecycle 分岐にも app-level 自動テストがない
+- 可視性はウィンドウ単位であり、preview領域の遮蔽や画面外を厳密には表さない。純粋lifecycle reducerはvisibility、drop、timeout、teardownを自動テストするが、AppKit notificationからWindowServerのactual presentationまでを自動化した統合テストではない
+- 公開cloneの初期フォルダhintは個人絶対パスから各ユーザーのPicturesへ変更した。security-scoped bookmarkのpublic clean-clone統合と、owner-only fixtureを含まないCIはまだ必要である
 
 対策は、manifest で処理意図と出力を分離し、品質・性能・メモリをそれぞれ独立に gate することである。
 
 ### 8.3 現在つまずいている点と扱い
 
-1. **Metal drawable の実提示**: command buffer は completed になるため graph や GPU 実行の単純失敗ではない。初回の `presentedTime = 0` と再試行後の callback 欠落が残り、drawable lifecycle / presentation timing の境界で止まっている。10秒 watchdog と一方向 fallback により利用不能にはならないが、成功条件を満たしていない。
-2. **縮小 RAW preview の画質契約**: 3,072 / 3,840 px は平均色差・EV等を通っても、事前登録した spatial plateau gate を各3比較で超えた。結果を見て閾値を変えず不採用にした。別の draft / settle 仮説を試す場合は既存 v3 を変更せず、新契約として扱う。
-3. **画質の一般化**: 2シーンだけでは、P1524180のEV失敗が実装欠陥、camera profile差、シーン固有過学習のどれかを十分切り分けられない。Lightroom 契約中のデータ確保を先に行い、その後に独立 holdout 付きで再設計する。
-4. **製品ループの未成立**: 編集値が終了時に消え、17,000枚の選別・検索・再リンクができないため、現状は日常利用から改善情報を得られる段階にない。ここは性能研究より解約への寄与が大きい。
+1. **Metalの製品受け入れ値**: positive presentationとlifecycle test境界は成立した。一方、fresh launchごとに初回`presentedTime = 0`が1回観測されるため、反復drop率、input-to-present p95、actual-screen parity、定常RSS、rapid supersede時のstale frame視認契約が未確立である。`presentedTime`は絶対時刻なので、その数値自体をlatencyとして扱わない。
+2. **現ブランチの正式証跡**: source契約が24から26へ変わり、app / renderer sourceも更新した。baselineの旧runは比較対象として残すが、現branch採用にはrelease calibration / benchmarkの再実行と新fingerprintが必要である。
+3. **縮小 RAW preview の画質契約**: 3,072 / 3,840 px は平均色差・EV等を通っても、事前登録したspatial plateau gateを各3比較で超えた。結果を見て閾値を変えず不採用にした。別のdraft / settle仮説を試す場合は既存v3を変更せず、新契約として扱う。
+4. **画質の一般化**: 2シーンだけでは、P1524180のEV失敗が実装欠陥、camera profile差、シーン固有過学習のどれかを十分切り分けられない。Lightroom契約中のデータ確保を先に行い、その後に独立holdout付きで再設計する。
+5. **製品ループの未成立**: 編集値が終了時に消え、17,000枚の選別・検索・再リンクができないため、現状は日常利用から改善情報を得られる段階にない。ここは追加の表示研究より解約への寄与が大きい。
+6. **公開開発基盤**: current branchのclean cloneでもprivate fixture不足の25 issuesが公開suiteへ混在した。portable default root、全階層のprivate media / Lightroom catalog ignore、clean-clone buildは確認済みだが、画像を公開せずsuiteを分けてCI / rulesetを導入する必要がある。LICENSEは第三者XMPの扱いを確認してから別途選定する。
 
-このため、Metal は「positive presentation を得るための短い切り分け」と「app lifecycle テスト境界の抽出」までで timebox する。それで閉じなければ既定 OFF のまま保留し、Lightroom 契約資産の退避、編集永続化、SQLiteカタログ、埋め込みJPEGを用いた選別へ優先度を移す。`cacheIntermediates = true`、linear RAW 土台、DCP、SSIMULACRA2、draft / settle 等の外部提案は有望な仮説だが、RSS、ライセンス、知覚相関、画質を未実測のため、現時点では採用済み事実にしない。
+このため、Metal調査はpositive presentationで終わりにせず、正式採否に必要なactual UI acceptanceだけを次の短いsliceに限定する。そこでp95、drop、actual-screen parity、steady RSS、rapid supersedeを測ったら、結果にかかわらずLightroom契約資産の退避、編集永続化、SQLiteカタログ、埋め込みJPEGを用いた選別へ主軸を移す。`cacheIntermediates = true`、linear RAW土台、DCP、SSIMULACRA2、draft / settle等の外部提案は有望な仮説だが、RSS、ライセンス、知覚相関、画質を未実測のため、現時点では採用済み事実にしない。
 
 ## 9. 承認済みの P1 方針
 
@@ -336,7 +354,9 @@ decoder 境界、provenance、原寸 export guard までは実装済み。parity
 - 非 Metal fallback と、両経路のオフスクリーン出力を厳格な 1 LSB 以内で監視する fixture を実装済み
 - request IDを伴う latest-only coalescing、可視時の再試行、10秒watchdog、失敗後は再度directへ戻らない一方向fallbackを実装済み
 
-本番採用条件は未達である。実機 smoke では GPU command が2回 completed になったが、初回は `presentedTime = 0`、再試行は presented callbackなしでtimeoutした。従来表示への復旧は成功したものの、direct frameの positive presentation は確認できていない。また、present登録後に新requestが来る競合では、旧frameが理論上提示される余地が残る。したがって通常起動は legacy のまま、directは完全一致の環境変数でのみ試せる診断経路である。
+段階分離 probe と lifecycle reducer を導入した実機 smoke では、native Metal clear、Core Image solid、production graph の on-demand 各経路で positive `presentedTime` を確認した。production では写真選択、連続した露出変更、resize、11.9秒の minimize → resume 後も最新requestの positive callbackを確認した。fresh launchでは最初のcallbackが `presentedTime = 0`となり、16 / 33 / 67 / 133 msのbounded retry後にpositiveとなる挙動が再現している。`presentedTime`は絶対時刻であり、その値自体をlatencyとして扱わない。
+
+ただし本番採用条件のすべてを満たしたわけではない。present登録後に新requestが来る競合では、reducerが最新stateの破壊を防いでも、登録済みの旧drawableが一瞬提示されないことまでは保証できない。actual-screen parity、反復drop率、input-to-present p95、rapid supersede時のstale-frame視認、複数写真後の定常RSSも未承認である。したがって通常起動はlegacyのまま、directは完全一致の環境変数でのみ試せる診断経路である。
 
 ### P1-4 実 UI で合否を測る
 
@@ -347,7 +367,7 @@ decoder 境界、provenance、原寸 export guard までは実装済み。parity
 - `preview-ui-path` で input event → decode → render → present と drop frame を Instruments / signpost で測定
 - 実 UI input-to-screen p95 ≤ `50 ms`を維持し、engine proxy で代用しない
 
-signpostとfallback診断は実装したが、positive presentationが得られていないため input-to-screen p95、drop frame率、actual-screen parityは未測定である。現行のengine benchmark値をこれらの代用にしない。
+signpost、fallback診断、段階分離probe、positive presentationのsmokeまでは実装・確認済みである。一方、今回のsmokeは反復性能試験ではないため、input-to-screen p95、drop frame率、actual-screen parity、steady RSSは未測定である。現行のengine benchmark値や`presentedTime`の絶対値をこれらの代用にしない。
 
 ### P1-5 kernel の保守改善
 
@@ -364,7 +384,7 @@ deprecated CIKL の packaged Metal kernel 化は必要だが、現 baseline の�
 
 両候補とも、参照 plateau の固定1 px拡張外にある spatially-distinct new area だけが上限 `0.0001`を超えた。旧 direct 2,560 px decode と exact-coordinate set-difference は履歴・診断値として残すが、現行採否には使わない。正式結果を見た後に閾値を緩めず、`selectedCandidate = null`、fallback は full-resolution RAW decode とする。
 
-この判断を受け、full-resolution decodeを保った Metal直接表示を実装した。offscreen fixtureは1 LSB以内を通ったが、実画面のpositive presentationは未確認で、UI p95も得られていない。次は presentation lifecycleの切り分けを短くtimeboxし、閉じなければ実験経路を既定OFFで保留する。縮小候補、staged render、draft / settle、detail windowを再検討する場合も、既存 v3を書き換えず、独立manifestと事前登録した知覚・settle・メモリ条件を持つ新しい仮説として扱う。
+この判断を受け、full-resolution decodeを保った Metal直接表示を実装した。offscreen fixtureは1 LSB以内を通り、lifecycle reducerと段階分離probeの導入後は実画面のpositive presentationも成立した。次はactual UIの採否に必要なp95、drop分布、actual-screen parity、rapid supersede、steady RSSだけを短いacceptance sliceで測る。結果にかかわらず、その後は編集永続化・カタログ・選別を主軸にする。縮小候補、staged render、draft / settle、detail windowを再検討する場合も、既存 v3を書き換えず、独立manifestと事前登録した知覚・settle・メモリ条件を持つ新しい仮説として扱う。
 
 ## 10. その後のロードマップ
 
@@ -375,9 +395,9 @@ Lightroom解約から逆算し、次の順へ更新する。
    - 解約後もA/B比較できる代表workflow出力を保存
    - 17,000枚の原本、評価、フラグ、アルバム構造、編集値/XMPを何が欠けずに退避できるか確認し、hashと件数付きの移行manifestを作る
    - 利用中のLightroomエディションと取得できるメタデータ範囲は未確認なので、クラウド版ともClassicとも決めつけず、`.lrcat`の存在を前提にせず実データで検証する
-2. **Metal実験の終了条件を確定**
-   - positive presentationの取得とapp lifecycle test境界の抽出だけを短いtimeboxで試す
-   - 未解決なら `metal-direct`を既定OFFの診断経路として保留し、legacy表示で製品機能を進める。`cacheIntermediates`は定常RSS、上限、evictionを測るまで有効化しない
+2. **Metalのactual UI受入を短く閉じる**
+   - positive presentationとpure lifecycle test境界は成立済み。fresh launch・写真変更・resize・resumeを反復し、input-to-present p95、drop分布、actual-screen parity、rapid supersede時のstale-frame、複数写真後のsteady RSSを事前定義した条件で測る
+   - 合否にかかわらず、このsliceで表示研究を区切る。不合格なら`metal-direct`を既定OFFの診断経路として保留し、legacy表示で製品機能を進める。合格時だけ既定経路への切替を別変更で判断する。`cacheIntermediates`は定常RSS、上限、evictionを測るまで有効化しない
 3. **編集永続化とSQLiteカタログ**
    - 写真ID、編集値、評価、flag、原本参照を保存し、再起動後に復元
    - 原本と再生成可能cacheを分離し、SSD未接続を削除・破損ではなく復旧可能な状態として扱う
@@ -398,12 +418,13 @@ Lightroom解約から逆算し、次の順へ更新する。
 ## 11. 再現方法
 
 ```sh
-cd /Users/takuyatakahama/Documents/app/NIHO/others/photo
+export PHOTO_BENCH_ROOT=/path/to/photoedit
+cd "$PHOTO_BENCH_ROOT"
 swift test
 python3 scripts/test_analyze_calibration.py
-swift run -c release PhotoBenchCalibration /Users/takuyatakahama/Documents/app/NIHO/others/photo
-python3 scripts/analyze-calibration.py /Users/takuyatakahama/Documents/app/NIHO/others/photo --enforce-preview-parity
-swift run -c release PhotoBenchBenchmark /Users/takuyatakahama/Documents/app/NIHO/others/photo
+swift run -c release PhotoBenchCalibration "$PHOTO_BENCH_ROOT"
+python3 scripts/analyze-calibration.py "$PHOTO_BENCH_ROOT" --enforce-preview-parity
+swift run -c release PhotoBenchBenchmark "$PHOTO_BENCH_ROOT"
 ./scripts/build-app.sh
 ```
 
@@ -422,6 +443,8 @@ benchmark の現行 source 固定連続3正式runは、すべて `3 / 4`合格�
 - `reviews/2026-07-24-claude-p1-final-review.md`: P1実装後のClaude独立レビューとS1〜S5対応記録
 - `reviews/2026-07-24-claude-research-improvement-proposals.md`: 外部調査に基づく方針提案。時限タスクと優先順位の助言として参照し、未検証の技術・製品・ライセンス主張は仕様や合格証跡として扱わない
 - `reviews/2026-07-24-claude-metal-direct-review.md`: P1-3 Metal直接表示のClaude実装レビュー、反映内容、実画面blocker、production判断
+- `reviews/2026-07-24-metal-presentation-lifecycle-evidence.md`: 正規`.app`起動による段階分離probe、production操作列、成立範囲と未承認gate
+- `reviews/2026-07-24-claude-metal-lifecycle-review.md`: lifecycle reducer / AppKit bridgeのClaude独立レビューと対応記録
 - `reviews/`: 設計・実装に対する Claude の独立レビュー記録
 
 ## 13. 新しいセッションへの引継ぎ手順

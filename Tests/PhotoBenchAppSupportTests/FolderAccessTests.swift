@@ -45,7 +45,7 @@ struct FolderAccessTests {
     @Test func selectedFolderIsPersistedAndRestoredWithoutUI() throws {
         let isolated = isolatedDefaults()
         defer { isolated.defaults.removePersistentDomain(forName: isolated.suiteName) }
-        let selected = URL(fileURLWithPath: "/Volumes/hihirohub/pictures/edit", isDirectory: true)
+        let selected = URL(fileURLWithPath: "/Volumes/PhotoLibrary/edit", isDirectory: true)
         let marker = Data("selected-folder-capability".utf8)
         var createdURL: URL?
         var resolvedData: Data?

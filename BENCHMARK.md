@@ -1,13 +1,13 @@
 # Photo Bench 性能基準
 
 更新日: 2026-07-24
-状態: manifest v3 / benchmark report schema 3 のsource-locked連続3 formal runsを取得済み。process-fresh、high-quality、exportは3 / 3合格したが、warm sliderは0 / 3のため、性能安定合格とは判定しない。実UIのMetal直接表示も実画面へのpresent完了を確認できていない
+状態: tag `prototype-p1-2026-07-24`（commit `3a0169d`）では、manifest v3 / benchmark report schema 3 の24 source-locked連続3 formal runsを取得済み。process-fresh、high-quality、exportは3 / 3合格したが、warm sliderは0 / 3のため、性能安定合格とは判定しない。現在の実験branchは26 source契約でformal benchmarkを再実行しておらず、このbaseline証跡をcurrent passには用いない。実UIのMetal直接表示はmanual smokeでpositive presentationまで成立したが、画面品質・UI性能のformal passではない
 
 日付はJST基準で記載する。機械可読なUTC時刻、測定値、hash、runtime条件は`.photobench/benchmark/latest.json`と`.photobench/benchmark/runs/`を正とする。
 
 ## 結論
 
-現行sourceとrelease binaryを固定して、同一コマンドを直列に3回実行した。3 runはすべて`gateEligibility = eligible`で、manifest、入力、source、postflight source、開始・終了binaryが一致し、coordinator / workerを含む全観測でthermal stateは`nominal`、low power modeは無効だった。
+tagged baselineのsourceとrelease binaryを固定して、同一コマンドを直列に3回実行した。3 runはすべて`gateEligibility = eligible`で、manifest、入力、source、postflight source、開始・終了binaryが一致し、coordinator / workerを含む全観測でthermal stateは`nominal`、low power modeは無効だった。
 
 それでも4 workloadすべてが3 / 3で合格したわけではない。process-fresh preview、full-resolution JPEG export、warm high-quality previewは3 / 3合格した一方、warm slider engine budgetは0 / 3だった。最新run `f9024302-f48c-4f62-bd84-589013696861`もsliderだけが不合格であり、現段階では**性能安定性未達**と判定する。
 
@@ -15,14 +15,15 @@
 
 また、このbenchmarkが測るdirect 2,560px RAW decodeは、性能構造を調べるための実験engine経路であり、production UIの経路ではない。画質契約v3では、final 2,560pxに対する3,072px / 3,840px oversampled decode候補が両方とも不合格だった。production UIはfull-resolution RAW decodeを維持し、benchmarkの速度だけを根拠にdirect 2,560px経路へ切り替えない。
 
-## 再現性の正本
+## tagged baselineにおける再現性の正本
 
 - 設定・入力・候補・性能閾値: `calibration/manifest-v3.json`
 - manifest schema: `3`
-- manifest SHA-256: `2867219602b7abe89ddd8994ab243c1a9f1d020eed5710dac4bb1d475eab92a8`
+- tagged baseline commit / tag: `3a0169d` / `prototype-p1-2026-07-24`
+- tagged baseline manifest SHA-256: `2867219602b7abe89ddd8994ab243c1a9f1d020eed5710dac4bb1d475eab92a8`
 - benchmark report schema: `3`
 - benchmark version: `photo-bench-render-benchmark-v3`
-- source fingerprint: `f8333be9f764af76b5d7e96d7a2967a44581405fca335fa27b1110f517f14e6b`
+- tagged baseline source fingerprint: `f8333be9f764af76b5d7e96d7a2967a44581405fca335fa27b1110f517f14e6b`
 - release executable SHA-256: `9b6b1594e948e3f291ea9462d24d6413f868d6b3a89c72c8f3037517cafe3579`
 - 実行環境: Mac16,10 / Apple M4 / arm64 / macOS 26.3.1 (`25D771280a`) / Core Image `1592.80.2`
 - 入力: manifest既定の6,000×4,000 `P1524180.RW2`
@@ -31,7 +32,7 @@
 - latest JSON: `.photobench/benchmark/latest.json`
 - run archive: `.photobench/benchmark/runs/<run-id>.json`
 
-現行sourceに対応する正式runは次の3件である。
+tagged baseline sourceに対応する正式runは次の3件である。
 
 1. `44b4c41e-e18b-4cdd-9720-4c121a365fbd`
 2. `9bd69010-e2e7-4a57-ac2c-bd0e3d04e18f`
@@ -39,7 +40,7 @@
 
 実行前後でmanifestに記録した7入力と24 sourceのSHA-256を照合する。入力またはsourceが変わったrun、quick run、workerまたはcoordinatorのruntime条件を満たさないrunはgate合格の証拠にしない。実行binary SHA-256、decode intent、decoded / native寸法、scale factor、backendもJSONへ保存する。
 
-以前のformal runはarchiveに履歴として残すが、現行source fingerprintと一致しないため、この3-run判定には混ぜない。
+以前のformal runはarchiveに履歴として残すが、tagged baseline source fingerprintと一致しないため、この3-run判定には混ぜない。同じ原則により、lifecycle reducerとdiagnostic rendererを追加して26 source契約となった現在の実験branchにも、この3 runをformal合格として転用しない。current branchの回帰テストはSwift `130 tests / 10 suites`（pure lifecycle reducer 24件、submission arbiter 6件を含む）、Python `52 tests`であり、tagged baselineのSwiftは`93 tests / 7 suites`だった。
 
 ## 連続3 formal runsの結果
 
@@ -123,15 +124,15 @@ benchmarkのpreview workloadは[`CIRAWFilter.scaleFactor`](https://developer.app
 
 `MTKView`と`CIRenderDestination`を使う実UI直接表示経路は実装済みだが、既定経路にはしていない。正確なopt-inは起動時環境変数`PHOTO_BENCH_PREVIEW_ROUTE=metal-direct`であり、未指定・別値では従来の`createCGImage` / `NSImage`経路を使う。direct routeのpreview `CIContext`も`cacheIntermediates = false`である。キャッシュ有効化は有力な次候補だが、写真切替時の回収と複数写真後の定常RSS gateを先に定義してから比較する。
 
-最終ハードニング直前の実アプリsmokeでは、window-levelで可視になった後にdrawを開始し、GPU command completionを2回確認した。しかし1回目は`presentedTime = 0`でdropと判定され、latest requestを再描画した2回目もGPU commandは完了したもののpresented callbackが返らなかった。可視状態の10秒deadline後にdirect routeをその起動中だけ無効化し、従来表示へ一方向fallbackした。その後に`drawableSize > 0`のwatchdog条件と`allowsNextDrawableTimeout = true`を追加し、最終sourceではfallback後の画像表示と空表示がないことを再確認したが、同じ詳細traceは再取得していない。
+現在の実験branchでは、native Metal clear / Core Image solid / production renderの各on-demand probeで`presentedTime > 0`のpositive presentationを確認した。production renderでは写真選択、編集更新、resize、minimizeからのresume後も最新requestのpositive presentationをmanual smokeで確認している。`presentedTime`は絶対時刻であり、input-to-present latencyではない。
 
-これは「GPUへの送信が成功した」証拠ではあるが、「実画面へpresentされた」証拠ではない。したがって現時点では次を明確に未達とする。
+visible / occluded / minimized、drop、callback欠落、bounded retry、10秒deadline、fallback、teardown、request supersedeはpure lifecycle reducerへ抽出し、24件の決定的テストで検証した。一方、AppKit / WindowServer統合はmanual smokeに留まる。したがって現時点では次を明確に未承認とする。
 
-- `presentedTime > 0`による実画面present完了
-- 実UIのslider input-to-present p95
-- dropped frame率とstale frame非表示の画面契約
-- direct routeを複数写真で使ったときの定常RSS受け入れ値
-- occlusion / minimize / callback欠落 / timeout / teardownを網羅するapp lifecycle reducerの自動テスト
+- actual-screen pixel parity
+- 反復した実UIのslider input-to-present p95
+- 反復drop率とrapid supersede時のstale frame非表示契約
+- direct routeを複数写真で使ったときのsteady RSS受け入れ値
+- AppKit / WindowServer lifecycle統合の自動試験
 
 native fixtureではdirect / legacyのoffscreen出力が各チャンネル1 LSB以内であることを回帰テストしている。ただしこれはMTKViewのactual presentation、画面capture、拡大縮小を含まないため、実画面画質のformal passではない。
 
@@ -158,21 +159,22 @@ process-freshは新しいworker processを使うが、process起動、manifest l
 
 ## 次の性能改善と受け入れ順
 
-1. **present lifecycleを根治する。** 現状はGPU completionの先でactual presentが成立していない。MTKView / drawable取得、window-level visibility、presented callback、deadlineを同一signpost traceで追い、`presentedTime > 0`を最初の受け入れ条件にする。fallbackが成功したことをdirect表示成功へ読み替えない。
-2. **app lifecycleを純粋な状態機械へ抽出して試験する。** visible / occluded / minimized、drop、callback欠落、retry、timeout、teardown、request supersedeを決定的に注入できるreducerにし、stale requestが別requestのpending stateを変更しないことを自動検証する。
-3. **実UI input-to-presentを測る。** positive presentが成立してから、input event、latest-only coalescing、render、drawable present、drop frameを同一traceで測る。engine slider benchmarkはMTKView actual presentationを含まないため、p95 ≤ 50msのUI gateを別workloadとして事前登録する。
+1. **current branchのformal evidenceを取り直す。** 26 source契約を固定し、新しいsource fingerprint / manifest hash / run IDでcalibrationとbenchmarkを実行する。tagged baselineの24 source証跡を転用しない。
+2. **実UI input-to-presentを測る。** positive presentationとpure lifecycle reducerは成立したため、input event、latest-only coalescing、render、drawable present、dropを同一traceで反復測定する。engine slider benchmarkはMTKView actual presentationを含まないため、p95 ≤ 50msのUI gateを別workloadとして事前登録する。`presentedTime`の絶対値からlatencyを算出しない。
+3. **画面受け入れ契約を閉じる。** actual-screen pixel parity、反復drop率、rapid supersede時のstale frame非表示、selection / resize / minimize-resumeのAppKit / WindowServer統合を再現可能なsuiteへする。単発manual smokeをformal passへ読み替えない。
 4. **cacheはboundedに比較する。** 研究提案のpreview-only `cacheIntermediates = true`は有力だが、export contextは分離したまま、写真切替後の`clearCaches` / resource reclaimと複数写真後の定常RSSを同じgateに含める。RSS契約なしで既定化しない。
 5. **production full-decode経路の基線を分ける。** 画質不合格のdirect 2,560px実験経路と、現在productionで使うfull-resolution decode経路を別workload IDで測り、性能値の対象を曖昧にしない。必要なら原寸settleと操作中draftの二層契約を新manifestで定義し、既存v3の不合格を上書きしない。
-6. **反復安定性の原因を分離する。** 現行sourceを固定し、run順・待機条件・同時負荷を記録した新しい反復suiteを定義する。slider初回`396.321 ms`と後続runの50 ms超過を、CPU scheduling、Metal System Trace、memory / cache状態で分離する。
+6. **反復安定性の原因を分離する。** current branchの26 sourceを固定し、run順・待機条件・同時負荷を記録した新しい反復suiteを定義する。tagged baselineのslider初回`396.321 ms`と後続runの50 ms超過を、CPU scheduling、Metal System Trace、memory / cache状態で分離する。
 
 ## 実行方法
 
 単発の正式run:
 
 ```sh
-swift run -c release PhotoBenchBenchmark /Users/takuyatakahama/Documents/app/NIHO/others/photo
+export PHOTO_BENCH_ROOT=/path/to/photoedit
+swift run -c release PhotoBenchBenchmark "$PHOTO_BENCH_ROOT"
 ```
 
-今回の連続3 formal runsは上記を同一shellで直列に3回実行した。各runは別run IDでarchiveされる。これを「独立3反復」の代用とはみなさない。
+tagged baselineの連続3 formal runsは上記を同一shellで直列に3回実行した。各runは別run IDでarchiveされる。これを「独立3反復」の代用とはみなさない。current branchで実行すれば新しい26 source fingerprintのrunとなり、上記3件とは別に判定する。
 
 `--enforce`を付けた場合、全gate合格はexit `0`、eligible runの性能不合格はexit `1`、ineligible / `notEvaluated`はexit `2`とする。構造・hash・runtime・provenance不整合、未知のgate status、未知のCLI引数はenforce有無にかかわらずexit `2`である。quick runは診断用として保存できるが、formal gate合格の証拠にはしない。

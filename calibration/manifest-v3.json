@@ -26,6 +26,8 @@
       "Sources/PhotoCore/EditSettings.swift",
       "Sources/PhotoCore/OKLabColor.swift",
       "Sources/PhotoCore/PerceptualColorMixer.swift",
+      "Sources/PhotoCore/DirectPreviewLifecycle.swift",
+      "Sources/PhotoCore/MetalPresentationProbe.swift",
       "Sources/PhotoCore/RenderEngine.swift",
       "Sources/PhotoCore/PhotoLibrary.swift",
       "Sources/PhotoCore/SRGBOutputTransform.swift",

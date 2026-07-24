@@ -1,6 +1,6 @@
 # Photo Bench（仮称）
 
-自分専用のmacOS向けローカル写真現像・整理アプリです。目的は、クラウドやAI機能を必要としないオーナーがLightroomの有料契約を終了し、ローカルだけで同等の実用画質・操作感・非破壊編集へ移行できることです。現在は**Phase 0の証跡基盤、P1 preview parity v3評価、原寸decode graphのMetal直接表示プロトタイプまで実装した段階**です。縮小RAW decode候補は品質未達で不採用、Metal直接表示は実画面への提示完了を確認できていないため起動時に明示した場合のみ有効で、既定は従来表示です。JPEGとLumix RW2の読込み、8つの基本調整、XMPプリセット解析、HDR値を保持したカラー処理、原寸JPEG書き出し、Lightroom基準TIFFとの比較までは動きますが、**Lightroomを解約できる完成度にはまだ達していません**。
+自分専用のmacOS向けローカル写真現像・整理アプリです。目的は、クラウドやAI機能を必要としないオーナーがLightroomの有料契約を終了し、ローカルだけで同等の実用画質・操作感・非破壊編集へ移行できることです。現在は**Phase 0の証跡基盤、P1 preview parity v3評価、原寸decode graphのMetal直接表示とpresentation lifecycle検証まで実装した段階**です。縮小RAW decode候補は品質未達で不採用です。Metal直接表示は実画像の正の`presentedTime`まで確認できましたが、正式な実画面parity・p95・定常RSSが未承認なので起動時に明示した場合だけ有効で、既定は従来表示です。JPEGとLumix RW2の読込み、8つの基本調整、XMPプリセット解析、HDR値を保持したカラー処理、原寸JPEG書き出し、Lightroom基準TIFFとの比較までは動きますが、**Lightroomを解約できる完成度にはまだ達していません**。
 
 公開Gitリポジトリにはsource・tests・docs・契約manifestだけを置き、個人写真、Lightroom基準画像、生成render、署名済みappは含めません。詳細は[Repository and local data policy](./DATA_POLICY.md)を参照してください。
 
@@ -64,7 +64,7 @@ P1のmanifest v2では、原寸decode後に2,560pxへ縮小した基準と、直
 
 ## 性能基準の現在地
 
-2026-07-24（JST）にMac16,10 / Apple M4 / macOS 26.3.1で、manifest既定の24MP `P1524180.RW2`をrelease build、warm各20回・process-fresh 40回として、現行sourceとbinaryを固定した正式runを直列に3回実行しました。benchmark schema v3はrun・workload・40 workerの開始／終了時にsystem loadも保存しますが、負荷値によるsample削除、再試行、合否の除外は行いません。
+2026-07-24（JST）にMac16,10 / Apple M4 / macOS 26.3.1で、manifest既定の24MP `P1524180.RW2`をrelease build、warm各20回・process-fresh 40回として、tagged baselineのsourceとbinaryを固定した正式runを直列に3回実行しました。benchmark schema v3はrun・workload・40 workerの開始／終了時にsystem loadも保存しますが、負荷値によるsample削除、再試行、合否の除外は行いません。
 
 | engine workload | run 1 p95 | run 2 p95 | run 3 p95 | gate | 合格回数 |
 |---|---:|---:|---:|---:|---:|
@@ -75,13 +75,24 @@ P1のmanifest v2では、原寸decode後に2,560pxへ縮小した基準と、直
 
 最新runを含めslider proxyは3回すべて不合格で、ほかの3 workloadは3 / 3合格です。ただしこれは画質不採用の直接2,560px実験engine経路であり、実UIの原寸decodeやinput-to-screen latencyではありません。正式run IDは`44b4c41e-e18b-4cdd-9720-4c121a365fbd`、`9bd69010-e2e7-4a57-ac2c-bd0e3d04e18f`、`f9024302-f48c-4f62-bd84-589013696861`、source fingerprintは`f8333be9f764af76b5d7e96d7a2967a44581405fca335fa27b1110f517f14e6b`です。
 
-process-freshは新しいworker processですが、timer前のmanifest検証がRAW全体をSHA-256読込するため、cold file-openではなくprevalidated / page-cache-warmed入力です。また現行値はengine wall-clockで、実UIのinput-to-screen latency、drop frame、hardware GPU timeではありません。定義、全分布、未計測項目、次の改善順は[BENCHMARK.md](./BENCHMARK.md)を正とします。
+process-freshは新しいworker processですが、timer前のmanifest検証がRAW全体をSHA-256読込するため、cold file-openではなくprevalidated / page-cache-warmed入力です。また現行値はengine wall-clockで、実UIのinput-to-screen latency、drop frame、hardware GPU timeではありません。この正式証跡は24 sourceのtagged baselineに対応し、26 source契約の現在branchではformal rerunしていません。定義、全分布、未計測項目、次の改善順は[BENCHMARK.md](./BENCHMARK.md)を正とします。
 
 ## Metal直接表示の現在地
 
-原寸decode graphのCPU bitmap round-tripを外すための`MTKView` / `CIRenderDestination`経路は実装済みです。表示はsRGB / SDR、pixel formatは`.bgra8Unorm`、黒レターボックス付きaspect fitとし、1件のin-flightと最新pendingだけを保持します。expected request IDの原子的claim、window-levelの可視性判定、上限付き再描画、可視状態の10秒deadline、signpost / counter、その起動中の一方向fallbackを持ちます。previewの`cacheIntermediates`は、RSS上限と回収契約がない現段階では`false`です。
+原寸decode graphのCPU bitmap round-tripを外すための`MTKView` / `CIRenderDestination`経路は実装済みです。表示はsRGB / SDR、pixel formatは`.bgra8Unorm`、黒レターボックス付きaspect fitとし、1件のin-flightと最新pendingだけを保持します。presentation状態を純粋な`DirectPreviewLifecycle` reducerへ分離し、request ID、retry / deadline token、window-level可視性、zero-size / nil drawable、`presentedTime == 0`、GPU error、10秒deadline、hide/show、resize、teardownを決定的に扱います。GPU完了とpresented callbackはlock保護したsubmission arbiterで両方を観測し、GPU errorを優先してcallback順序に依存せず1回だけ確定します。deadlineとteardownも同じarbiterを終端化し、失敗後は同一起動中に従来表示へ一方向fallbackします。previewの`cacheIntermediates`は、RSS上限と回収契約がない現段階では`false`です。
 
-自動テストでは直接経路と従来経路のnative raster差が全channel 1 LSB以内であることと、aspect fit、queueの順序・不正ID拒否を確認しました。最終ハードニング直前の実アプリsmokeでは、可視状態のdraw後にGPU commandが2回`completed`になった一方、1回目は`presentedTime == 0`でdrop、2回目は提示callbackが返らず、10秒deadlineで従来表示へfallbackしました。その後に`drawableSize > 0`のwatchdog条件と`allowsNextDrawableTimeout = true`を追加し、最終sourceではfallback後の写真表示と空表示がないことを再確認しましたが、同じ詳細traceは再取得していません。**正の`presentedTime`、実画面の1 LSB parity、input-to-screen p95、drop率、定常RSSは未確立**です。古いdrawableのpresent登録後により新しいrequestが来た場合の完全なstale-present防止と、可視性・drop・timeout・teardownのapp lifecycle分岐の自動テストも残っています。
+2026-07-24の正規`.app`起動による無操作smokeでは、描画内容だけを段階的に替えた3モードすべてで正の`presentedTime`を取得しました。native Metal clearは`117623.155870`、productionと同じCore Image destinationを使う単色は`117681.371117`、実画像productionは`117709.778156`です。各初回の`presentedTime == 0`は1回dropとして数え、16 / 33 / 67 / 133 ms上限付きbackoffの最初の再試行で回復しました。写真切替、露出の連続変更、`1330×854`へのresize、11.9秒の最小化と復帰でもpositive callbackを確認し、最小化中にdeadline fallbackは発生していません。submission arbiter修正後にも配布形アプリを再ビルドし、実画像の初期表示で`present 1`、別写真への切替後に`present 2`へ進むことを画面上で確認しました。
+
+診断はLaunchServicesを通る実利用相当の起動で行います。実行ファイルを直接起動すると通常のforeground activation / occlusion契約を通らないため、presentation合否には使いません。
+
+```sh
+open -n -F -a "$PWD/dist/Photo Bench.app" \
+  --env PHOTO_BENCH_PREVIEW_ROUTE=metal-direct \
+  --env PHOTO_BENCH_METAL_PRESENTATION_PROBE=production/on-demand \
+  --args "$PWD"
+```
+
+診断値は`metal-clear/on-demand`、`metal-clear/continuous`、`ci-solid/on-demand`、`production/on-demand`の完全一致だけを受け付け、未指定・不正値はproduction/on-demandへfail closedします。**正のpresentationは成立しましたが、実画面の1 LSB parity、代表操作40回以上のinput-to-screen p95、drop率の正式分布、複数写真後の定常RSSは未確立**です。また、commit済みの古いdrawableは後着の新requestから物理的に取り消せないため、「stale frameを一瞬も提示しない」完全保証は別のUX契約として残ります。したがって現ブランチでも既定経路はlegacyです。
 
 ## 重要な制限
 
@@ -99,25 +110,26 @@ process-freshは新しいworker processですが、timer前のmanifest検証がR
 - NSOpenPanel / NSSavePanelと復元bookmarkのアクセス開始・終了を対応させます。外付けSSDが一時的に外れている場合はbookmarkを削除せず、再接続後に復元できる状態を保ちます。
 - JPEGは指定先へ隠し一時ファイルを作り、完成後だけ置き換えます。失敗時は一時ファイルを除去します。
 - RAW固有のMakerNote等はレンダリング済みJPEGへコピーしません。
-- 現在の開発用ルートはこのフォルダです。完成時は`/Volumes/hihirohub/pictures/edit`相当を選べる設計です。
+- 初回はユーザーが任意の写真ルートを選びます。外付けストレージもsecurity-scoped bookmarkで再接続できる設計です。
 
 ## 検証
 
 ```sh
+export PHOTO_BENCH_ROOT=/path/to/photoedit
 swift test
-swift run -c release PhotoBenchCalibration /Users/takuyatakahama/Documents/app/NIHO/others/photo
-python3 scripts/analyze-calibration.py /Users/takuyatakahama/Documents/app/NIHO/others/photo
+swift run -c release PhotoBenchCalibration "$PHOTO_BENCH_ROOT"
+python3 scripts/analyze-calibration.py "$PHOTO_BENCH_ROOT"
 python3 scripts/test_analyze_calibration.py
-swift run -c release PhotoBenchBenchmark /Users/takuyatakahama/Documents/app/NIHO/others/photo
+swift run -c release PhotoBenchBenchmark "$PHOTO_BENCH_ROOT"
 ```
 
-現在はSwift Testing **93 tests / 7 suites**とPython **52 tests**が成功しています。従来のRAW decode intent、原寸export guard、DC-S5 profile、XMP解析、HDR階調・色域、原本不変、hash-locked校正・benchmark契約に加え、Metal直接表示のaspect-fit幾何、latest-only queue、expected-ID claim、resize / reentrant / out-of-order、従来表示とのnative raster全channel `<= 1 LSB`を検証しています。これはoffscreen / native rasterの契約であり、実画面のpresent lifecycleをテストしたものではありません。
+現在の開発ルートではSwift Testing **130 tests / 10 suites**とPython **52 tests**が成功しています。従来のRAW decode intent、原寸export guard、DC-S5 profile、XMP解析、HDR階調・色域、原本不変、hash-locked校正・benchmark契約に加え、Metal直接表示のaspect-fit幾何、latest-only queue、従来表示とのnative raster全channel `<= 1 LSB`、presentation lifecycle reducer 24件、GPU / presented callback arbiter 6件、probe設定4件、診断renderer 3件を検証しています。callback順序、GPU error、deadline、hidden / zero-size、nil drawable retry、resize、stale token / callback、payload解放、teardownはreducerとarbiterで自動化しました。AppKit / WindowServerそのもののactual presentationは上記の実機smokeで別に確認しています。
 
 厳格モードでは、単一run内の全ゲート合格をexit `0`、eligible runの数値ゲート不合格をexit `1`、構造・hash・runtime不整合およびineligible / `notEvaluated`をexit `2`にします。校正run `ceea9eb4-b490-4a1f-9984-3d294e2f50bb`はLightroom品質とpreview parityの両方が不合格で、両方をenforceするanalyzerは意図どおりexit `1`です。benchmark latestもslider gate不合格のためexit `1`です。一方、このengine benchmarkはMetal直接表示の実UI性能を評価していません。
 
 ```sh
-python3 scripts/analyze-calibration.py /Users/takuyatakahama/Documents/app/NIHO/others/photo --enforce --enforce-preview-parity
-swift run -c release PhotoBenchBenchmark /Users/takuyatakahama/Documents/app/NIHO/others/photo --enforce
+python3 scripts/analyze-calibration.py "$PHOTO_BENCH_ROOT" --enforce --enforce-preview-parity
+swift run -c release PhotoBenchBenchmark "$PHOTO_BENCH_ROOT" --enforce
 ```
 
 2026-07-23の実UI監査では、`P1524180.RW2`へ`niho-priset_colorful.xmp`を読み込み、`exports/ui-audit-P1524180.jpg`へ6000×4000・sRGB IEC61966-2.1のJPEGを書き出しました。書き出し後もRAWとXMPのSHA-256は事前値と一致し、同じ`.app`の再起動では選択ダイアログなしで10枚を復元しました。
@@ -130,6 +142,8 @@ swift run -c release PhotoBenchBenchmark /Users/takuyatakahama/Documents/app/NIH
 - [再現可能な性能基準とP1判断](./BENCHMARK.md)
 - [OSS・公式仕様の調査と採用判断](./RESEARCH.md)
 - [Claude外部調査に基づく改善提案（方針レベルの参考資料）](./reviews/2026-07-24-claude-research-improvement-proposals.md)
+- [Metal presentation lifecycleの実機証跡](./reviews/2026-07-24-metal-presentation-lifecycle-evidence.md)
+- [Metal presentation lifecycleのClaudeレビューと対応記録](./reviews/2026-07-24-claude-metal-lifecycle-review.md)
 - [P1-3 Metal直接表示のClaudeレビューと反映記録](./reviews/2026-07-24-claude-metal-direct-review.md)
 - [P0証跡基盤とP1方針のClaude最終レビュー](./reviews/2026-07-24-claude-p0-evidence-review.md)
 - [P1実装後のClaude最終レビューと対応記録](./reviews/2026-07-24-claude-p1-final-review.md)

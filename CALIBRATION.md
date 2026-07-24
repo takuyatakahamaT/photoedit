@@ -3,7 +3,7 @@
 更新日: 2026-07-24
 対象プロファイル: `panasonic-dc-s5-lightroom-9.3-edr1-v2`
 
-状態: 現行sourceで122 / 122 artifactの構造・hash検証に成功。Lightroom品質は4経路中3経路合格だがP1524180 / RAWのEV gateが不合格、preview parityは3,072 / 3,840 px候補が各3 / 6不合格であり、いずれも総合判定は`false`
+状態: tag `prototype-p1-2026-07-24`（commit `3a0169d`）のtagged baselineでは、24 sourceを固定した122 / 122 artifactの構造・hash検証に成功した。Lightroom品質は4経路中3経路合格だがP1524180 / RAWのEV gateが不合格、preview parityは3,072 / 3,840 px候補が各3 / 6不合格であり、いずれも総合判定は`false`。現在の実験branchは26 source契約へ進んでいるがformal calibrationを再実行していないため、このbaseline証跡をcurrent passには用いない
 
 日付はJST基準で記載する。機械可読なUTC時刻は`.photobench/calibration/run-manifest.json`と`.photobench/calibration/report.json`を正とする。
 
@@ -23,19 +23,19 @@ Photo Bench の校正は、Lightroom適用後の16bit sRGB参照TIFFと、同じ
 
 ## 再現性とfail-closed契約
 
-現行校正条件の正本は`calibration/manifest-v3.json`である。比較入力、source、処理profile、候補行列、共通Lanczosによる最終2,560 px化、出力stage、品質閾値に加え、preview / export decode intentの同等性契約を固定し、runnerとanalyzerが同じmanifestだけを読む。P1 preview parity v3正式runは次の同一性を持つ。
+校正条件の正本は`calibration/manifest-v3.json`である。比較入力、source、処理profile、候補行列、共通Lanczosによる最終2,560 px化、出力stage、品質閾値に加え、preview / export decode intentの同等性契約を固定し、runnerとanalyzerが同じmanifestだけを読む。以下はtag `prototype-p1-2026-07-24`（commit `3a0169d`）で取得したP1 preview parity v3 formal runの同一性であり、現在の実験branchの証跡ではない。
 
 - suite: `dc-s5-lightroom-9.3-preview-parity-2026-07-24-v3`
 - calibration run ID: `ceea9eb4-b490-4a1f-9984-3d294e2f50bb`
 - archived run manifest: `.photobench/calibration/runs/ceea9eb4-b490-4a1f-9984-3d294e2f50bb.json`
-- manifest SHA-256: `2867219602b7abe89ddd8994ab243c1a9f1d020eed5710dac4bb1d475eab92a8`
-- source fingerprint: `f8333be9f764af76b5d7e96d7a2967a44581405fca335fa27b1110f517f14e6b`
+- tagged baseline manifest SHA-256: `2867219602b7abe89ddd8994ab243c1a9f1d020eed5710dac4bb1d475eab92a8`
+- tagged baseline source fingerprint: `f8333be9f764af76b5d7e96d7a2967a44581405fca335fa27b1110f517f14e6b`
 - release executable SHA-256: `11009c7fa63f9a76820238b4ba462734903c381e20b4488ca5a471e60ae51b98`
 - 実行環境: Mac16,10 / Apple M4 / arm64 / macOS 26.3.1 (`25D771280a`) / Core Image `1592.80.2` / RAW 8
 - schema: manifest `3` / calibration run manifest `2` / analyzer report `4`
 - 検証対象: 7入力、24 source、122 / 122生成artifactを検証済み
 
-現行24 sourceには画像処理engine、校正・benchmark evidence runner、`Sources/PhotoBenchApp`、`Sources/PhotoBenchAppSupport`を含める。したがってMetal直接表示やexport中のフォルダ切替防止を含むapp-side変更もfingerprintを無効化する。実画面へのMetal presentation経路はopt-in実装済みだが、この校正suiteは生成artifactを比較するもので、MTKViewへのactual presentationや画面captureを測定したものではない。
+tagged baselineの24 sourceには画像処理engine、校正・benchmark evidence runner、`Sources/PhotoBenchApp`、`Sources/PhotoBenchAppSupport`を含める。したがってMetal直接表示やexport中のフォルダ切替防止を含むapp-side変更もfingerprintを無効化する。現在の実験branchではlifecycle reducerとdiagnostic rendererを加えた26 sourceをmanifest契約に含めたが、formal calibrationは未再実行である。実画面へのMetal presentation経路はopt-in実装済みだが、この校正suiteは生成artifactを比較するもので、MTKViewへのactual presentationや画面captureを測定したものではない。
 
 `.photobench/calibration/run-manifest.json`は、開始前に照合した全入力、source、実行binary、decode intent / 寸法 / scale / backendと、各artifactのpath / stage / SHA-256を記録する。終了時にも入力とsourceを再照合し、実行途中の変更を拒否する。同じ内容をrun IDごとのarchiveへ保存し、失敗runも上書きで失わない。`.photobench/calibration/report.json`はこのrun manifestと122 artifactを検証してから作るschema 4の派生品質レポートである。path traversal、symlink、case-only alias、正規化後の出力名衝突、未知または欠落したstage / candidate / comparison、hash不一致、環境・binary契約不一致は品質評価へ進まずexit `2`とする。正しく検証できた品質不合格だけをexit `1`とし、欠測を合格へ倒さない。
 
@@ -155,7 +155,9 @@ native fixtureでは、同じprepared frameをdirect / legacyへmaterializeし�
 - input-to-present latency、drop frame、stale frame
 - occlusion / minimize / timeout / teardownを含むapp lifecycle
 
-最終ハードニング直前の実アプリsmokeでは可視draw後にGPU command completionを2回確認したが、1回目は`presentedTime = 0`、2回目はpresented callbackなしで、10秒後に従来表示へfallbackした。その後に`drawableSize > 0`のwatchdog条件と`allowsNextDrawableTimeout = true`を追加し、最終sourceではfallback画像と空表示がないことを再確認したが、同じ詳細traceは再取得していない。positive presentを確認できていないため、direct routeの画質をformal passとは判定しない。既定をlegacyのまま維持し、actual present成立後に画面契約を別suiteとして追加する。
+現在の実験branchでは、native Metal clear / Core Image solid / production renderの各on-demand probeで`presentedTime > 0`のpositive presentationを確認した。production renderでは写真選択、編集更新、resize、minimizeからのresume後も最新requestのpositive presentationをmanual smokeで確認している。`presentedTime`は絶対時刻であり、input-to-present latencyとして解釈しない。
+
+一方、これはLaunchServicesで起動した実アプリに対するmanual smokeであり、actual-screen pixel parity、反復input-to-present p95、反復drop率、rapid supersede時のstale frame非表示、複数写真後のsteady RSSは未承認である。pure lifecycle reducerは24件の決定的テストを持つが、AppKit / WindowServer統合は自動化されていない。したがってpositive presentation成立を画質または性能のformal passへ読み替えず、既定をlegacyのまま維持して画面契約を別suiteとして追加する。
 
 ## EDR 選定
 
@@ -176,7 +178,7 @@ EDR 0 の boost sweep は診断用の旧ベースラインとして残してい�
 
 ## 最終レポート
 
-品質判定の正本は `.photobench/calibration/report.json` である。上記現行runでもLightroom品質の数値はP1前baselineから非回帰で、C1 shoulder修正後の結果は次のとおり。
+品質判定の正本は `.photobench/calibration/report.json` である。以下はtagged baseline formal runで得た値であり、Lightroom品質の数値はP1前baselineから非回帰だった。C1 shoulder修正後の結果は次のとおり。
 
 | シーン / 経路 | 平均 ΔE basic → full | 平均 EV差 basic → full | complete / near clip | 新規共有 plateau | 判定 |
 |---|---:|---:|---:|---:|---|
@@ -210,14 +212,16 @@ EDR 0 の boost sweep は診断用の旧ベースラインとして残してい�
 
 ## 回帰テスト
 
-- Swift: `93 tests / 7 suites`
+- Swift tagged baseline: `93 tests / 7 suites`
+- Swift current branch: `130 tests / 10 suites`
 - Python: `52 tests`
 
-Swift 側では 1D カーブの端点外挿、重複x規則、OKLCh 8バンド境界、Luminance / Saturation / curveの段別CPU fixture、RAW プロファイル選択、generic RAWのY>1合成出力経路、bounded-sRGB neutral bypass、shoulder の C1 連続性、固定 L / h gamut compression、67,368点の運用／stress色域gridを検証する。さらにpreview / full-resolution intent、RAW scale provenance、preview画像と偽装full-resolution画像の原寸export拒否、native寸法の0・非有限・不明と非有限extentの整数化前拒否、同一`RenderEngine`内のpreview / export contextの別instance性、候補なし時のfull-decode fallback、direct / legacy native fixtureの1 LSB parity、latest-only queueのwrong-ID非変更・resize・reentrant・out-of-order挙動、benchmarkのpass / performanceFailed / notEvaluatedとsystem-load snapshot、manifest v3の固定寸法・候補行列、入力・source・binary・122 artifactのhash、path traversal、symlink、case-only alias、正規化後の成果物名衝突を検証する。Python 側ではmanifest / run manifestを再検証したうえで、レポート生成、ΔE / EV、clip / near clip、新規共有 plateau、共通Lanczos preview parity、square-3x3のplateau morphologyと境界・離隔・collapse合成fixture、入力不変性、固定比較行列をfail-closedで検証する。window visibility、presented callback欠落、10秒deadline、fallback、teardownを含むapp lifecycle reducerはまだ抽出されておらず、この93 testsには含まれない。
+Swift 側では 1D カーブの端点外挿、重複x規則、OKLCh 8バンド境界、Luminance / Saturation / curveの段別CPU fixture、RAW プロファイル選択、generic RAWのY>1合成出力経路、bounded-sRGB neutral bypass、shoulder の C1 連続性、固定 L / h gamut compression、67,368点の運用／stress色域gridを検証する。さらにpreview / full-resolution intent、RAW scale provenance、preview画像と偽装full-resolution画像の原寸export拒否、native寸法の0・非有限・不明と非有限extentの整数化前拒否、同一`RenderEngine`内のpreview / export contextの別instance性、候補なし時のfull-decode fallback、direct / legacy native fixtureの1 LSB parity、latest-only queueのwrong-ID非変更・resize・reentrant・out-of-order挙動、benchmarkのpass / performanceFailed / notEvaluatedとsystem-load snapshot、manifest v3の固定寸法・候補行列、入力・source・binary・122 artifactのhash、path traversal、symlink、case-only alias、正規化後の成果物名衝突を検証する。current branchでは加えて、window visibility、presented callback欠落、10秒deadline、bounded retry、fallback、teardown、request supersedeを純粋状態機械へ抽出したlifecycle reducerを24件、GPU完了とpresented callbackの両順序、GPU error優先、deadline / invalidate後のlate callback抑止をsubmission arbiter 6件で検証する。Python 側ではmanifest / run manifestを再検証したうえで、レポート生成、ΔE / EV、clip / near clip、新規共有 plateau、共通Lanczos preview parity、square-3x3のplateau morphologyと境界・離隔・collapse合成fixture、入力不変性、固定比較行列をfail-closedで検証する。AppKit / WindowServer統合はmanual smokeに留まり、current branchの130件にもactual-screen presentationの自動試験は含まれない。
 
-校正画像は原本を上書きせず、生成物とレポートを `.photobench/` 配下へ分離する。結果を更新する場合はmanifestを明示更新し、run manifestの入力・source・binary・全artifact hashとruntimeを残して、同じ契約から再現できることを確認する。現runのpreview parity不合格を再現する厳格実行は次で、exit `1`が期待値である。
+校正画像は原本を上書きせず、生成物とレポートを `.photobench/` 配下へ分離する。結果を更新する場合はmanifestを明示更新し、run manifestの入力・source・binary・全artifact hashとruntimeを残して、同じ契約から再現できることを確認する。以下はtagged baselineのpreview parity不合格を同じtagから再現する厳格実行で、exit `1`が期待値である。current branchでは26 source契約に対する新しいrun IDとfingerprintが必要になる。
 
 ```sh
-swift run -c release PhotoBenchCalibration /Users/takuyatakahama/Documents/app/NIHO/others/photo
-python3 scripts/analyze-calibration.py /Users/takuyatakahama/Documents/app/NIHO/others/photo --enforce-preview-parity
+export PHOTO_BENCH_ROOT=/path/to/photoedit
+swift run -c release PhotoBenchCalibration "$PHOTO_BENCH_ROOT"
+python3 scripts/analyze-calibration.py "$PHOTO_BENCH_ROOT" --enforce-preview-parity
 ```
