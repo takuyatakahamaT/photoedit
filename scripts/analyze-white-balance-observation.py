@@ -72,6 +72,11 @@ FORBIDDEN_OBSERVATION_LANGUAGE = (
     "recommended",
     "mapping",
 )
+OPAQUE_PROVENANCE_KEY_PATHS = frozenset({
+    # Metal exposes this canonical runtime field name. It records a hardware
+    # memory limit and is not an observation candidate recommendation.
+    "report.run.runtime.metalDevice.recommendedMaxWorkingSetSize",
+})
 
 
 class ObservationValidationError(RuntimeError):
@@ -1987,13 +1992,15 @@ def build_report(
 def assert_observation_language(value: Any, path: str = "report") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
+            child_path = f"{path}.{key}"
             lowered = str(key).lower()
-            for token in FORBIDDEN_OBSERVATION_LANGUAGE:
-                if token in lowered:
-                    raise ObservationValidationError(
-                        f"observation report keyに採用語彙があります: {path}.{key}"
-                    )
-            assert_observation_language(child, f"{path}.{key}")
+            if child_path not in OPAQUE_PROVENANCE_KEY_PATHS:
+                for token in FORBIDDEN_OBSERVATION_LANGUAGE:
+                    if token in lowered:
+                        raise ObservationValidationError(
+                            f"observation report keyに採用語彙があります: {child_path}"
+                        )
+            assert_observation_language(child, child_path)
     elif isinstance(value, list):
         for index, child in enumerate(value):
             assert_observation_language(child, f"{path}[{index}]")

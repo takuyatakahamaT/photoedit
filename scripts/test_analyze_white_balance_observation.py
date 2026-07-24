@@ -201,11 +201,37 @@ class WhiteBalanceObservationAnalyzerTests(unittest.TestCase):
         ANALYZER.assert_observation_language(
             {"status": "descriptive", "items": ["fixed order"]}
         )
+        ANALYZER.assert_observation_language(
+            {
+                "run": {
+                    "runtime": {
+                        "metalDevice": {"recommendedMaxWorkingSetSize": 1}
+                    }
+                }
+            }
+        )
         for value in (
             {"winner": "x"},
             {"text": "best candidate"},
             {"text": "recommended transform"},
             {"text": "learned mapping"},
+            {"recommendedMaxWorkingSetSize": 1},
+            {
+                "run": {
+                    "runtime": {
+                        "metalDevice": {"recommendedCandidate": 1}
+                    }
+                }
+            },
+            {
+                "run": {
+                    "runtime": {
+                        "metalDevice": {
+                            "recommendedMaxWorkingSetSize": "winner"
+                        }
+                    }
+                }
+            },
         ):
             with self.assertRaises(ANALYZER.ObservationValidationError):
                 ANALYZER.assert_observation_language(value)
