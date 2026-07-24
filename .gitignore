@@ -1,0 +1,90 @@
+# macOS / editors
+.DS_Store
+**/.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+.secrets/
+*.pem
+*.key
+*.p12
+*.mobileprovision
+*.provisionprofile
+
+# Swift / Xcode build products
+/.build/
+/.swiftpm/
+/DerivedData/
+*.dSYM/
+*.xcresult
+*.xcuserstate
+xcuserdata/
+*.profraw
+*.profdata
+
+# Python caches
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+
+# Reproducible local outputs and signed app bundles
+/.photobench/
+/dist/
+/exports/
+*.log
+*.trace
+
+# Private source photos and Lightroom reference exports live beside the app
+# locally, but must never be committed to this public repository. Synthetic,
+# redistributable fixtures may be added under Tests/Fixtures in the future.
+/*.RW2
+/*.rw2
+/*.[Aa][Rr][Ww]
+/*.[Nn][Ee][Ff]
+/*.[Cc][Rr]2
+/*.[Cc][Rr]3
+/*.[Dd][Nn][Gg]
+/*.[Rr][Aa][Ff]
+/*.[Oo][Rr][Ff]
+/*.TIF
+/*.tif
+/*.TIFF
+/*.tiff
+/*.JPG
+/*.jpg
+/*.JPEG
+/*.jpeg
+/*.HEIC
+/*.heic
+/*.PNG
+/*.png
+
+# Root-level Lightroom sidecars are private by default. These four reviewed,
+# owner-authored project presets are explicit source fixtures.
+/*.xmp
+/*.XMP
+!/niho-priset_colorful.xmp
+!/niho-preset bluesky2.xmp
+!/niho-preset night.xmp
+!/niho-preset pastel.xmp
+
+# Future local catalog stores. Checked-in schema files belong under Sources or
+# a dedicated migrations directory, never as a live database at repo root.
+/*.sqlite
+/*.sqlite3
+/*.db
+/*.db-shm
+/*.db-wal

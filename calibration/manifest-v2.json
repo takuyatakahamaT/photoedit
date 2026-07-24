@@ -1,0 +1,286 @@
+{
+  "schemaVersion": 2,
+  "suiteID": "dc-s5-lightroom-9.3-preview-parity-2026-07-24-v2",
+  "description": "Lumix DC-S5のRAWとAdobe Lightroom 9.3による16bit sRGB基準を使い、full-resolutionと2560px interactive previewの画質同等性も固定するPhoto Bench回帰校正。現2シーンはどちらも開発時に参照済みで、独立holdoutではない。",
+  "expectedEnvironment": {
+    "macOSVersion": "26.3.1",
+    "macOSBuild": "25D771280a",
+    "architecture": "arm64",
+    "hardwareModel": "Mac16,10",
+    "metalDevice": "Apple M4",
+    "rawDecoderBackend": "Core Image RAW 8"
+  },
+  "processing": {
+    "fingerprint": {
+      "basicTone": "analytic-monotonic-hdr-basic-tone-v3",
+      "toneCurve": "encoded-srgb-endpoint-extrapolation-v1",
+      "colorMixer": "oklch-eight-band-mixer-v1",
+      "outputTransform": "extended-linear-to-srgb-soft-output-v2",
+      "rawDecode": "core-image-raw8-intent-v2"
+    },
+    "sourceFiles": [
+      "Package.swift",
+      "Sources/PhotoCore/PhotoCoreProcessingFingerprint.swift",
+      "Sources/PhotoCore/BasicToneModel.swift",
+      "Sources/PhotoCore/CoreImageDecoder.swift",
+      "Sources/PhotoCore/EditSettings.swift",
+      "Sources/PhotoCore/OKLabColor.swift",
+      "Sources/PhotoCore/PerceptualColorMixer.swift",
+      "Sources/PhotoCore/RenderEngine.swift",
+      "Sources/PhotoCore/PhotoLibrary.swift",
+      "Sources/PhotoCore/SRGBOutputTransform.swift",
+      "Sources/PhotoCore/ToneCurveModel.swift",
+      "Sources/PhotoCore/XMPPresetParser.swift",
+      "Sources/PhotoBenchCalibrationSupport/BenchmarkModels.swift",
+      "Sources/PhotoBenchCalibrationSupport/CalibrationManifest.swift",
+      "Sources/PhotoBenchCalibrationSupport/CalibrationRun.swift",
+      "Sources/PhotoBenchCalibrationSupport/CalibrationStages.swift",
+      "Sources/PhotoBenchApp/ContentView.swift",
+      "Sources/PhotoBenchApp/EditorModel.swift",
+      "Sources/PhotoBenchApp/PhotoBenchApp.swift",
+      "Sources/PhotoBenchApp/RenderCoordinator.swift",
+      "Sources/PhotoBenchAppSupport/FolderAccess.swift",
+      "Sources/PhotoBenchCalibration/main.swift",
+      "Sources/PhotoBenchBenchmark/main.swift",
+      "scripts/analyze-calibration.py"
+    ]
+  },
+  "preset": {
+    "file": {
+      "path": "niho-priset_colorful.xmp",
+      "sha256": "d1702c6222588dcd97d9594ff647a315abe4bb39f298af1e8c3ca5787b86ddb4"
+    },
+    "uuid": "3D1872BC45B84849BEE4C3AE29C0C13F",
+    "cameraRawVersion": "17.0",
+    "processVersion": "11.0"
+  },
+  "comparison": {
+    "maxDimension": 1500,
+    "outputFormat": "RGBA16 sRGB TIFF",
+    "outputColorSpace": "sRGB IEC61966-2.1",
+    "bitsPerChannel": 16,
+    "referenceSoftware": "Adobe Lightroom 9.3 (Macintosh)",
+    "referenceWhiteBalance": "As Shot",
+    "orientationPolicy": "Photo Bench normalizes source orientation before comparison",
+    "cropPolicy": "full frame; no analyzer-side resize or registration"
+  },
+  "rawProfile": {
+    "id": "panasonic-dc-s5-lightroom-9.3-edr1-v2",
+    "boostAmount": 0.9,
+    "extendedDynamicRangeAmount": 1.0
+  },
+  "diagnostics": {
+    "boostAmounts": [
+      0.0,
+      0.25,
+      0.5,
+      0.75,
+      0.8,
+      0.85,
+      0.9,
+      0.95,
+      1.0
+    ],
+    "extendedDynamicRangeAmounts": [
+      0.0,
+      1.0,
+      2.0
+    ]
+  },
+  "legacyCandidates": [
+    {
+      "id": "exposure-only",
+      "rawLabel": "xmp-exposure-only",
+      "lightroomInputLabel": "lr-input-xmp-exposure-only"
+    },
+    {
+      "id": "tone-base",
+      "rawLabel": "xmp-tone",
+      "lightroomInputLabel": "lr-input-xmp-tone"
+    },
+    {
+      "id": "basic-legacy",
+      "rawLabel": "xmp-basic",
+      "lightroomInputLabel": "lr-input-xmp-basic"
+    },
+    {
+      "id": "full-current",
+      "rawLabel": "xmp-full-current",
+      "lightroomInputLabel": "lr-input-xmp-full-current"
+    }
+  ],
+  "stageMatrix": [
+    {
+      "id": "tone-base",
+      "rawLabel": "xmp-stage-tone-base",
+      "lightroomInputLabel": "lr-input-xmp-stage-tone-base"
+    },
+    {
+      "id": "tone-plus-vibrance",
+      "rawLabel": "xmp-stage-tone-plus-vibrance",
+      "lightroomInputLabel": "lr-input-xmp-stage-tone-plus-vibrance"
+    },
+    {
+      "id": "tone-plus-global-saturation",
+      "rawLabel": "xmp-stage-tone-plus-global-saturation",
+      "lightroomInputLabel": "lr-input-xmp-stage-tone-plus-global-saturation"
+    },
+    {
+      "id": "tone-plus-global-curve",
+      "rawLabel": "xmp-stage-tone-plus-global-curve",
+      "lightroomInputLabel": "lr-input-xmp-stage-tone-plus-global-curve"
+    },
+    {
+      "id": "tone-plus-rgb-curves",
+      "rawLabel": "xmp-stage-tone-plus-rgb-curves",
+      "lightroomInputLabel": "lr-input-xmp-stage-tone-plus-rgb-curves"
+    },
+    {
+      "id": "tone-plus-all-curves",
+      "rawLabel": "xmp-stage-tone-plus-all-curves",
+      "lightroomInputLabel": "lr-input-xmp-stage-tone-plus-all-curves"
+    },
+    {
+      "id": "tone-plus-mixer-hue",
+      "rawLabel": "xmp-stage-tone-plus-mixer-hue",
+      "lightroomInputLabel": "lr-input-xmp-stage-tone-plus-mixer-hue"
+    },
+    {
+      "id": "tone-plus-mixer-saturation",
+      "rawLabel": "xmp-stage-tone-plus-mixer-saturation",
+      "lightroomInputLabel": "lr-input-xmp-stage-tone-plus-mixer-saturation"
+    },
+    {
+      "id": "tone-plus-mixer-luminance",
+      "rawLabel": "xmp-stage-tone-plus-mixer-luminance",
+      "lightroomInputLabel": "lr-input-xmp-stage-tone-plus-mixer-luminance"
+    },
+    {
+      "id": "tone-plus-all-mixer",
+      "rawLabel": "xmp-stage-tone-plus-all-mixer",
+      "lightroomInputLabel": "lr-input-xmp-stage-tone-plus-all-mixer"
+    },
+    {
+      "id": "tone-plus-curves-mixer",
+      "rawLabel": "xmp-stage-tone-plus-curves-mixer",
+      "lightroomInputLabel": "lr-input-xmp-stage-tone-plus-curves-mixer"
+    },
+    {
+      "id": "full-current",
+      "rawLabel": "xmp-stage-full-current",
+      "lightroomInputLabel": "lr-input-xmp-stage-full-current"
+    }
+  ],
+  "qualityGate": {
+    "routes": [
+      {
+        "id": "raw",
+        "basicLabel": "xmp-basic",
+        "fullLabel": "xmp-full-current"
+      },
+      {
+        "id": "lr-input",
+        "basicLabel": "lr-input-xmp-basic",
+        "fullLabel": "lr-input-xmp-full-current"
+      }
+    ],
+    "meanDeltaEMaximumIncrease": 0.25,
+    "meanEVAbsoluteErrorMaximumIncrease": 0.05,
+    "newSharedPlateauMaximumArea": 0.0005
+  },
+  "benchmark": {
+    "sceneID": "P1524180",
+    "previewMaxDimension": 2560,
+    "jpegQuality": 0.92,
+    "warmupIterations": 5,
+    "measuredIterations": 20,
+    "processFreshIterations": 40,
+    "thresholdsMilliseconds": {
+      "processFreshLowResolutionPreviewP95": 1000.0,
+      "warmSliderEngineP95": 50.0,
+      "warmHighQualityPreviewP95": 300.0,
+      "fullResolutionJPEGExportP95": 3000.0
+    }
+  },
+  "scenes": [
+    {
+      "id": "P1524180",
+      "sceneGroup": "dc-s5-indoor-incandescent-p1524180",
+      "fold": "development",
+      "lighting": "camera WB Incandescent; Lightroom As Shot 3600 K",
+      "capture": {
+        "cameraMake": "Panasonic",
+        "cameraModel": "DC-S5",
+        "lensModel": "LUMIX S 35/F1.8",
+        "iso": 1250,
+        "exposureTime": "1/80",
+        "fNumber": 4.5,
+        "exposureCompensation": 0.0,
+        "sourceWhiteBalance": "Incandescent",
+        "lightroomColorTemperature": 3600,
+        "width": 6000,
+        "height": 4000,
+        "rawBitsPerSample": 14
+      },
+      "raw": {
+        "path": "P1524180.RW2",
+        "sha256": "fce0bce63c7413bce729401f110879d26b2cbbbfae6706bd0f67d05b294eeacf"
+      },
+      "lightroomBefore": {
+        "path": "P1524180.tif",
+        "sha256": "ecfd7912618d9df2d7d66628a201e76b4c94f31c998fe3a9abeb11bdf8a81024"
+      },
+      "lightroomAfter": {
+        "path": "P1524180-2.tif",
+        "sha256": "705a94c913ed7f21e7fcebb4ac3cd3ea0e1c44a9c159c90e50a19d4a8920b698"
+      }
+    },
+    {
+      "id": "P1522877",
+      "sceneGroup": "dc-s5-daylight-auto-p1522877",
+      "fold": "development",
+      "lighting": "camera WB Auto; Lightroom As Shot 5400 K",
+      "capture": {
+        "cameraMake": "Panasonic",
+        "cameraModel": "DC-S5",
+        "lensModel": "50mm F1.4 DG DN | Art 023",
+        "iso": 100,
+        "exposureTime": "1/250",
+        "fNumber": 1.4,
+        "exposureCompensation": 0.0,
+        "sourceWhiteBalance": "Auto",
+        "lightroomColorTemperature": 5400,
+        "width": 6000,
+        "height": 4000,
+        "rawBitsPerSample": 14
+      },
+      "raw": {
+        "path": "P1522877.RW2",
+        "sha256": "041fe32dd3ad9b0b58de4d4d9edc7e30ab7220ef744cc08fd0b310b5228b8627"
+      },
+      "lightroomBefore": {
+        "path": "P1522877.tif",
+        "sha256": "05dd03c1c66e7029b6a3d619f5db9379c2329059572354f47d85ee9a1e7a2667"
+      },
+      "lightroomAfter": {
+        "path": "P1522877-2.tif",
+        "sha256": "8838a8035b5aca362bda6ab05ce55262b073efbed961b26fdde165f4f1478172"
+      }
+    }
+  ],
+  "previewParity": {
+    "maxDimension": 2560,
+    "settingsStageIDs": [
+      "neutral",
+      "basic-legacy",
+      "full-current"
+    ],
+    "baselineDecodeIntent": "full-resolution",
+    "candidateDecodeIntent": "interactive-preview",
+    "thresholds": {
+      "meanDeltaEMaximum": 1.0,
+      "meanEVAbsoluteDriftMaximum": 0.02,
+      "newSharedPlateauMaximumArea": 0.0001
+    }
+  }
+}
