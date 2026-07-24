@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import PhotoCore
 
@@ -338,6 +339,30 @@ public enum CalibrationManifestLoader {
     }
 
     public static func validateStructure(_ manifest: CalibrationManifest) throws {
+        try validateStructure(
+            manifest,
+            enforceCurrentProcessingCompatibility: true
+        )
+    }
+
+    /// Validates an exact historical manifest without comparing its processing
+    /// identifiers or RAW profile to the current application build. Historical
+    /// evidence must remain archivable after a future processing/profile
+    /// revision; all schema, path, artifact-expansion, and safety checks still
+    /// apply.
+    public static func validateHistoricalStructure(
+        _ manifest: CalibrationManifest
+    ) throws {
+        try validateStructure(
+            manifest,
+            enforceCurrentProcessingCompatibility: false
+        )
+    }
+
+    private static func validateStructure(
+        _ manifest: CalibrationManifest,
+        enforceCurrentProcessingCompatibility: Bool
+    ) throws {
         guard [1, 2, 3, 4].contains(manifest.schemaVersion) else {
             throw CalibrationManifestError.unsupportedSchema(manifest.schemaVersion)
         }
@@ -389,28 +414,41 @@ public enum CalibrationManifestLoader {
             try requireText(value, field: field)
         }
         let fingerprint = manifest.processing.fingerprint
-        let currentFingerprint = PhotoCoreProcessingFingerprint.current
-        let sharedFingerprintMatches = fingerprint.basicTone == currentFingerprint.basicTone
-            && fingerprint.toneCurve == currentFingerprint.toneCurve
-            && fingerprint.colorMixer == currentFingerprint.colorMixer
-            && fingerprint.outputTransform == currentFingerprint.outputTransform
-        let fingerprintMatches: Bool
-        if manifest.schemaVersion == 1 {
-            fingerprintMatches = sharedFingerprintMatches
-                && fingerprint.rawDecode
-                    == PhotoCoreProcessingFingerprint.legacyRawDecodeIdentifier
-                && fingerprint.renderPipeline
-                    == RenderEngine.legacyProcessingIdentifier
-        } else if manifest.schemaVersion <= 3 {
-            fingerprintMatches = fingerprint
-                == PhotoCoreProcessingFingerprint.legacyCurrentRawDecode
+        if enforceCurrentProcessingCompatibility {
+            let currentFingerprint = PhotoCoreProcessingFingerprint.current
+            let sharedFingerprintMatches = fingerprint.basicTone == currentFingerprint.basicTone
+                && fingerprint.toneCurve == currentFingerprint.toneCurve
+                && fingerprint.colorMixer == currentFingerprint.colorMixer
+                && fingerprint.outputTransform == currentFingerprint.outputTransform
+            let fingerprintMatches: Bool
+            if manifest.schemaVersion == 1 {
+                fingerprintMatches = sharedFingerprintMatches
+                    && fingerprint.rawDecode
+                        == PhotoCoreProcessingFingerprint.legacyRawDecodeIdentifier
+                    && fingerprint.renderPipeline
+                        == RenderEngine.legacyProcessingIdentifier
+            } else if manifest.schemaVersion <= 3 {
+                fingerprintMatches = fingerprint
+                    == PhotoCoreProcessingFingerprint.legacyCurrentRawDecode
+            } else {
+                fingerprintMatches = fingerprint == currentFingerprint
+            }
+            guard fingerprintMatches else {
+                throw CalibrationManifestError.invalid(
+                    "processing fingerprintがschemaのPhotoCore契約と一致しません"
+                )
+            }
         } else {
-            fingerprintMatches = fingerprint == currentFingerprint
-        }
-        guard fingerprintMatches else {
-            throw CalibrationManifestError.invalid(
-                "processing fingerprintがschemaのPhotoCore契約と一致しません"
-            )
+            for (field, value) in [
+                ("processing.fingerprint.basicTone", fingerprint.basicTone),
+                ("processing.fingerprint.toneCurve", fingerprint.toneCurve),
+                ("processing.fingerprint.colorMixer", fingerprint.colorMixer),
+                ("processing.fingerprint.outputTransform", fingerprint.outputTransform),
+                ("processing.fingerprint.rawDecode", fingerprint.rawDecode),
+                ("processing.fingerprint.renderPipeline", fingerprint.renderPipeline)
+            ] {
+                try requireText(value, field: field)
+            }
         }
         guard manifest.comparison.maxDimension == 1_500,
               manifest.comparison.outputFormat == "RGBA16 sRGB TIFF",
@@ -427,22 +465,28 @@ public enum CalibrationManifestLoader {
                 "schema v1 comparison contractが固定条件と一致しません"
             )
         }
-        let expectedRAWProfile = RAWCalibrationProfile.panasonicDCS5Lightroom93
-        guard manifest.rawProfile.id == expectedRAWProfile.id,
-              manifest.rawProfile.boostAmount.isFinite,
-              manifest.rawProfile.extendedDynamicRangeAmount.isFinite,
-              abs(
-                  manifest.rawProfile.boostAmount
-                      - Double(expectedRAWProfile.configuration.boostAmount)
-              ) < 0.000_001,
-              abs(
-                  manifest.rawProfile.extendedDynamicRangeAmount
-                      - Double(expectedRAWProfile.configuration.extendedDynamicRangeAmount)
-              ) < 0.000_001
+        guard manifest.rawProfile.boostAmount.isFinite,
+              manifest.rawProfile.extendedDynamicRangeAmount.isFinite
         else {
-            throw CalibrationManifestError.invalid(
-                "schema v1 rawProfileが現行DC-S5 profileと一致しません"
-            )
+            throw CalibrationManifestError.invalid("rawProfileに非finite値があります")
+        }
+        try requireText(manifest.rawProfile.id, field: "rawProfile.id")
+        if enforceCurrentProcessingCompatibility {
+            let expectedRAWProfile = RAWCalibrationProfile.panasonicDCS5Lightroom93
+            guard manifest.rawProfile.id == expectedRAWProfile.id,
+                  abs(
+                      manifest.rawProfile.boostAmount
+                          - Double(expectedRAWProfile.configuration.boostAmount)
+                  ) < 0.000_001,
+                  abs(
+                      manifest.rawProfile.extendedDynamicRangeAmount
+                          - Double(expectedRAWProfile.configuration.extendedDynamicRangeAmount)
+                  ) < 0.000_001
+            else {
+                throw CalibrationManifestError.invalid(
+                    "rawProfileが現行DC-S5 profileと一致しません"
+                )
+            }
         }
         guard manifest.diagnostics.boostAmounts == requiredBoostAmounts,
               manifest.diagnostics.extendedDynamicRangeAmounts == requiredEDRAmounts
@@ -1051,6 +1095,391 @@ public enum CalibrationManifestLoader {
         )
         guard value.unicodeScalars.allSatisfy(allowed.contains) else {
             throw CalibrationManifestError.invalid("\(field)に未対応文字があります: \(value)")
+        }
+    }
+}
+
+public enum HistoricalCalibrationManifestSource: Equatable, Sendable {
+    case archiveSnapshot
+    case currentFile
+    case gitRevision(String)
+}
+
+public struct ResolvedHistoricalCalibrationManifest: Sendable {
+    public let data: Data
+    public let manifest: CalibrationManifest
+    public let source: HistoricalCalibrationManifestSource
+
+    public init(
+        data: Data,
+        manifest: CalibrationManifest,
+        source: HistoricalCalibrationManifestSource
+    ) {
+        self.data = data
+        self.manifest = manifest
+        self.source = source
+    }
+}
+
+/// Resolves the exact manifest bytes named by an already-completed run.
+///
+/// Calibration manifest paths are intentionally reusable across schema/source
+/// updates, so the current worktree file is not necessarily the file a run
+/// used. Resolution is fail-closed and ordered by evidence durability:
+/// an immutable archive snapshot, an exact current-file match, then committed
+/// Git history. A present but invalid archive snapshot is never ignored.
+public enum HistoricalCalibrationManifestResolver {
+    public static func resolve(
+        root: URL,
+        manifestPath: String,
+        expectedSHA256: String,
+        expectedSuiteID: String,
+        archiveSnapshotURL: URL?
+    ) throws -> ResolvedHistoricalCalibrationManifest {
+        try validateExpectedReference(
+            sha256: expectedSHA256,
+            suiteID: expectedSuiteID
+        )
+        try validateManifestPath(manifestPath)
+        let normalizedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        let currentURL = normalizedRoot
+            .appendingPathComponent(manifestPath)
+            .standardizedFileURL
+
+        if let archiveSnapshotURL,
+           let snapshotData = try readOrdinaryFileIfPresent(
+               archiveSnapshotURL,
+               inside: normalizedRoot
+           ) {
+            return try validate(
+                snapshotData,
+                expectedSHA256: expectedSHA256,
+                expectedSuiteID: expectedSuiteID,
+                source: .archiveSnapshot
+            )
+        }
+
+        // A changed path may now be a symlink. It is not evidence for the old
+        // run and must not prevent recovery from the repository's object DB.
+        let currentAttributes = try? FileManager.default.attributesOfItem(
+            atPath: currentURL.path
+        )
+        let currentIsSafeRegularFile = currentAttributes?[.type] as? FileAttributeType
+            == .typeRegular
+            && currentURL.resolvingSymlinksInPath().path == currentURL.path
+        if currentIsSafeRegularFile,
+           let currentData = try readOrdinaryFileIfPresent(
+               currentURL,
+               inside: normalizedRoot
+           ), SHA256Digest.data(currentData) == expectedSHA256 {
+            return try validate(
+                currentData,
+                expectedSHA256: expectedSHA256,
+                expectedSuiteID: expectedSuiteID,
+                source: .currentFile
+            )
+        }
+
+        for revision in try gitRevisions(
+            containing: manifestPath,
+            repositoryRoot: normalizedRoot
+        ) {
+            guard let data = try gitBlob(
+                revision: revision,
+                path: manifestPath,
+                repositoryRoot: normalizedRoot
+            ), SHA256Digest.data(data) == expectedSHA256 else {
+                continue
+            }
+            return try validate(
+                data,
+                expectedSHA256: expectedSHA256,
+                expectedSuiteID: expectedSuiteID,
+                source: .gitRevision(revision)
+            )
+        }
+
+        throw CalibrationManifestError.invalid(
+            "既存runが参照するmanifestの完全一致bytesをarchive snapshot・現在file・Git履歴から復元できません: \(manifestPath), sha256=\(expectedSHA256)"
+        )
+    }
+
+    private static func validate(
+        _ data: Data,
+        expectedSHA256: String,
+        expectedSuiteID: String,
+        source: HistoricalCalibrationManifestSource
+    ) throws -> ResolvedHistoricalCalibrationManifest {
+        let actualSHA256 = SHA256Digest.data(data)
+        guard actualSHA256 == expectedSHA256 else {
+            throw CalibrationManifestError.hashMismatch(
+                path: "historical calibration manifest",
+                expected: expectedSHA256,
+                actual: actualSHA256
+            )
+        }
+        let manifest: CalibrationManifest
+        do {
+            manifest = try JSONDecoder().decode(CalibrationManifest.self, from: data)
+        } catch {
+            throw CalibrationManifestError.invalid(
+                "既存runのmanifest bytesをdecodeできません: \(error.localizedDescription)"
+            )
+        }
+        try CalibrationManifestLoader.validateHistoricalStructure(manifest)
+        guard manifest.suiteID == expectedSuiteID else {
+            throw CalibrationManifestError.invalid(
+                "既存runのmanifest suiteIDが一致しません: expected=\(expectedSuiteID), actual=\(manifest.suiteID)"
+            )
+        }
+        return ResolvedHistoricalCalibrationManifest(
+            data: data,
+            manifest: manifest,
+            source: source
+        )
+    }
+
+    private static func validateExpectedReference(
+        sha256: String,
+        suiteID: String
+    ) throws {
+        let lowercaseHex = CharacterSet(charactersIn: "0123456789abcdef")
+        guard sha256.count == 64,
+              sha256 == sha256.lowercased(),
+              sha256.unicodeScalars.allSatisfy(lowercaseHex.contains),
+              !suiteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            throw CalibrationManifestError.invalid(
+                "既存runのmanifest SHA-256またはsuiteIDが不正です"
+            )
+        }
+    }
+
+    private static func validateManifestPath(_ path: String) throws {
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard !path.isEmpty,
+              !NSString(string: path).isAbsolutePath,
+              !path.contains("\0"),
+              components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." })
+        else {
+            throw CalibrationManifestError.pathEscapesRoot(path)
+        }
+    }
+
+    private static func readOrdinaryFileIfPresent(
+        _ url: URL,
+        inside root: URL
+    ) throws -> Data? {
+        let standardizedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        let rootPrefix = standardizedRoot.path.hasSuffix("/")
+            ? standardizedRoot.path
+            : standardizedRoot.path + "/"
+        let standardizedURL = url.standardizedFileURL
+        guard standardizedURL.path.hasPrefix(rootPrefix) else {
+            throw CalibrationManifestError.pathEscapesRoot(url.path)
+        }
+
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: standardizedURL.path)
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            return nil
+        } catch {
+            throw CalibrationManifestError.invalid(
+                "historical manifest候補を検査できません: \(standardizedURL.path), \(error.localizedDescription)"
+            )
+        }
+        guard attributes[.type] as? FileAttributeType == .typeRegular,
+              standardizedURL.resolvingSymlinksInPath().path == standardizedURL.path
+        else {
+            throw CalibrationManifestError.invalid(
+                "historical manifest候補が通常fileではないかsymlinkを含みます: \(standardizedURL.path)"
+            )
+        }
+        // Keep an owned byte snapshot. Memory-mapped Data could observe an
+        // in-place file mutation between digest, decode, and archive publish.
+        return try Data(contentsOf: standardizedURL)
+    }
+
+    private static func gitRevisions(
+        containing path: String,
+        repositoryRoot: URL
+    ) throws -> [String] {
+        let topLevel = try runGit(
+            ["rev-parse", "--show-toplevel"],
+            repositoryRoot: repositoryRoot
+        )
+        guard topLevel.status == 0,
+              let topLevelPath = String(data: topLevel.stdout, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              URL(fileURLWithPath: topLevelPath)
+                .standardizedFileURL
+                .resolvingSymlinksInPath().path == repositoryRoot.path
+        else {
+            return []
+        }
+        let history = try runGit(
+            ["log", "--all", "--full-history", "--format=%H", "--", path],
+            repositoryRoot: repositoryRoot
+        )
+        guard history.status == 0,
+              let text = String(data: history.stdout, encoding: .utf8)
+        else {
+            throw CalibrationManifestError.invalid(
+                "manifestのGit履歴を列挙できません: \(history.stderr)"
+            )
+        }
+        let lowercaseHex = CharacterSet(charactersIn: "0123456789abcdef")
+        var seen = Set<String>()
+        return text.split(whereSeparator: \.isNewline).compactMap { line in
+            let revision = String(line)
+            guard (revision.count == 40 || revision.count == 64),
+                  revision == revision.lowercased(),
+                  revision.unicodeScalars.allSatisfy(lowercaseHex.contains),
+                  seen.insert(revision).inserted
+            else {
+                return nil
+            }
+            return revision
+        }
+    }
+
+    private static func gitBlob(
+        revision: String,
+        path: String,
+        repositoryRoot: URL
+    ) throws -> Data? {
+        let result = try runGit(
+            ["show", "\(revision):\(path)"],
+            repositoryRoot: repositoryRoot
+        )
+        return result.status == 0 ? result.stdout : nil
+    }
+
+    private static func runGit(
+        _ arguments: [String],
+        repositoryRoot: URL
+    ) throws -> (status: Int32, stdout: Data, stderr: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", repositoryRoot.path] + arguments
+        let standardOutput = Pipe()
+        let standardError = Pipe()
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+        do {
+            try process.run()
+        } catch {
+            throw CalibrationManifestError.invalid(
+                "Gitを起動できません: \(error.localizedDescription)"
+            )
+        }
+        let output = standardOutput.fileHandleForReading.readDataToEndOfFile()
+        let errorData = standardError.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (
+            process.terminationStatus,
+            output,
+            String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        )
+    }
+}
+
+/// Atomically publishes immutable calibration evidence without replacing an
+/// existing path. The hard-link operation is the no-replace commit point.
+public enum ImmutableCalibrationEvidenceWriter {
+    public static func writeNew(
+        _ data: Data,
+        to destination: URL,
+        inside root: URL
+    ) throws {
+        let validated = try CalibrationManifestLoader.prepareOutputFile(
+            named: destination.lastPathComponent,
+            in: destination.deletingLastPathComponent(),
+            inside: root
+        )
+        guard validated.standardizedFileURL.path == destination.standardizedFileURL.path else {
+            throw CalibrationManifestError.invalid(
+                "immutable evidence destinationの検証結果が一致しません"
+            )
+        }
+        if (try? FileManager.default.attributesOfItem(atPath: destination.path)) != nil {
+            throw CalibrationManifestError.invalid(
+                "既存calibration evidenceは上書きできません: \(destination.path)"
+            )
+        }
+
+        let temporary = destination.deletingLastPathComponent()
+            .appendingPathComponent(".\(UUID().uuidString.lowercased()).manifest.tmp")
+        try writeExclusive(data, to: temporary)
+        do {
+            try FileManager.default.linkItem(at: temporary, to: destination)
+            try FileManager.default.removeItem(at: temporary)
+            try synchronizeDirectory(destination.deletingLastPathComponent())
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw CalibrationManifestError.invalid(
+                "immutable calibration evidenceのpublishに失敗しました: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private static func writeExclusive(_ data: Data, to destination: URL) throws {
+        let descriptor = Darwin.open(
+            destination.path,
+            O_WRONLY | O_CREAT | O_EXCL,
+            S_IRUSR | S_IWUSR
+        )
+        guard descriptor >= 0 else {
+            throw CalibrationManifestError.invalid(
+                "immutable evidence staging fileをexclusive作成できません: \(String(cString: strerror(errno)))"
+            )
+        }
+        var shouldRemove = true
+        defer {
+            Darwin.close(descriptor)
+            if shouldRemove { try? FileManager.default.removeItem(at: destination) }
+        }
+        try data.withUnsafeBytes { bytes in
+            guard var pointer = bytes.baseAddress else { return }
+            var remaining = bytes.count
+            while remaining > 0 {
+                let count = Darwin.write(descriptor, pointer, remaining)
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else {
+                    throw CalibrationManifestError.invalid(
+                        "immutable evidence staging writeに失敗しました: \(String(cString: strerror(errno)))"
+                    )
+                }
+                remaining -= count
+                pointer = pointer.advanced(by: count)
+            }
+        }
+        while Darwin.fsync(descriptor) != 0 {
+            guard errno == EINTR else {
+                throw CalibrationManifestError.invalid(
+                    "immutable evidence staging fsyncに失敗しました: \(String(cString: strerror(errno)))"
+                )
+            }
+        }
+        shouldRemove = false
+    }
+
+    private static func synchronizeDirectory(_ directory: URL) throws {
+        let descriptor = Darwin.open(directory.path, O_RDONLY)
+        guard descriptor >= 0 else {
+            throw CalibrationManifestError.invalid(
+                "calibration archive directoryを開けません: \(String(cString: strerror(errno)))"
+            )
+        }
+        defer { Darwin.close(descriptor) }
+        while Darwin.fsync(descriptor) != 0 {
+            guard errno == EINTR else {
+                throw CalibrationManifestError.invalid(
+                    "calibration archive directory fsyncに失敗しました: \(String(cString: strerror(errno)))"
+                )
+            }
         }
     }
 }

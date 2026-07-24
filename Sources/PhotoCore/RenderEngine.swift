@@ -1,5 +1,6 @@
 import AppKit
 import CoreImage
+import Darwin
 import Foundation
 import ImageIO
 import Metal
@@ -633,7 +634,8 @@ public final class RenderEngine: @unchecked Sendable {
         maxDimension: CGFloat? = nil,
         downsamplingFilter: TIFFDownsamplingFilter = .affineTransform,
         outputTransformPlacement: OutputTransformPlacement = .afterDownsampling,
-        protectedSourceURLs: [URL] = []
+        protectedSourceURLs: [URL] = [],
+        allowDestinationReplacement: Bool = true
     ) throws -> Double {
         if maxDimension == nil {
             try Self.requireFullResolutionDecodeForExport(decoded)
@@ -675,7 +677,8 @@ public final class RenderEngine: @unchecked Sendable {
             try Self.installAtomically(
                 temporary: temporary,
                 destination: destination,
-                protectedSources: protectedSources
+                protectedSources: protectedSources,
+                allowDestinationReplacement: allowDestinationReplacement
             )
         } catch {
             try? FileManager.default.removeItem(at: temporary)
@@ -724,7 +727,8 @@ public final class RenderEngine: @unchecked Sendable {
     static func installAtomically(
         temporary: URL,
         destination: URL,
-        protectedSources: [URL]
+        protectedSources: [URL],
+        allowDestinationReplacement: Bool = true
     ) throws {
         // Re-check immediately before replacement as well. The early public API
         // guard avoids needless rendering, while this prevents a destination
@@ -736,7 +740,16 @@ public final class RenderEngine: @unchecked Sendable {
         guard !destinationAliasesAnySource(destination, sources: protectedSources) else {
             throw RenderEngineError.sourceOverwriteForbidden(destination)
         }
-        if FileManager.default.fileExists(atPath: destination.path) {
+        if !allowDestinationReplacement {
+            // `link(2)` is an atomic no-replace publication: an existing file,
+            // directory, or symlink makes the operation fail with EEXIST. This
+            // is used for immutable evidence, while user exports retain their
+            // explicit replacement behavior through the default branch.
+            try synchronizeFile(temporary)
+            try FileManager.default.linkItem(at: temporary, to: destination)
+            try FileManager.default.removeItem(at: temporary)
+            try synchronizeDirectory(destination.deletingLastPathComponent())
+        } else if FileManager.default.fileExists(atPath: destination.path) {
             _ = try FileManager.default.replaceItemAt(
                 destination,
                 withItemAt: temporary,
@@ -745,6 +758,32 @@ public final class RenderEngine: @unchecked Sendable {
             )
         } else {
             try FileManager.default.moveItem(at: temporary, to: destination)
+        }
+    }
+
+    private static func synchronizeFile(_ file: URL) throws {
+        let descriptor = Darwin.open(file.path, O_RDONLY)
+        guard descriptor >= 0 else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        defer { Darwin.close(descriptor) }
+        while Darwin.fsync(descriptor) != 0 {
+            guard errno == EINTR else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+        }
+    }
+
+    private static func synchronizeDirectory(_ directory: URL) throws {
+        let descriptor = Darwin.open(directory.path, O_RDONLY)
+        guard descriptor >= 0 else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        defer { Darwin.close(descriptor) }
+        while Darwin.fsync(descriptor) != 0 {
+            guard errno == EINTR else {
+                throw CocoaError(.fileWriteUnknown)
+            }
         }
     }
 

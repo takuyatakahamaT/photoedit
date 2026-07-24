@@ -1,4 +1,5 @@
 import CoreImage
+import Darwin
 import Foundation
 import ImageIO
 import PhotoBenchCalibrationSupport
@@ -560,17 +561,39 @@ enum PhotoBenchCalibration {
                 "既存校正run IDが安全な識別子ではありません"
             )
         }
-        let referencedManifest = try CalibrationManifestLoader.load(
-            root: root,
-            manifestURL: root.appendingPathComponent(existing.manifest.path)
+        let archiveRoot = try CalibrationManifestLoader.prepareOutputDirectory(
+            ".photobench/calibration-archives",
+            inside: root
         )
-        guard referencedManifest.manifestSHA256 == existing.manifest.sha256,
-              referencedManifest.manifest.suiteID == existing.manifest.suiteID
-        else {
-            throw CalibrationManifestError.invalid(
-                "既存校正runが参照するmanifestのSHA-256またはsuiteIDが一致しません: \(existing.manifest.path)"
-            )
+        let destination = archiveRoot.appendingPathComponent(
+            existing.runID,
+            isDirectory: true
+        )
+        let archivedManifest = destination.appendingPathComponent("run-manifest.json")
+        let archivedSourceManifest = destination.appendingPathComponent(
+            "source-manifest.json"
+        )
+        let archiveAlreadyExists = FileManager.default.fileExists(atPath: destination.path)
+        if archiveAlreadyExists {
+            try verifyOrdinaryDirectoryTree(destination)
+            try verifyOrdinaryFile(archivedManifest, inside: destination)
+            guard FileManager.default.fileExists(atPath: archivedManifest.path),
+                  try SHA256Digest.file(archivedManifest)
+                    == SHA256Digest.file(runManifestURL)
+            else {
+                throw CalibrationManifestError.invalid(
+                    "既存校正archiveが不完全または別内容です: \(destination.path)"
+                )
+            }
         }
+
+        let referencedManifest = try HistoricalCalibrationManifestResolver.resolve(
+            root: root,
+            manifestPath: existing.manifest.path,
+            expectedSHA256: existing.manifest.sha256,
+            expectedSuiteID: existing.manifest.suiteID,
+            archiveSnapshotURL: archivedSourceManifest
+        )
         let expectedArtifactPaths = Set(
             CalibrationManifestLoader.expectedArtifactRelativePaths(
                 for: referencedManifest.manifest
@@ -582,24 +605,25 @@ enum PhotoBenchCalibration {
             expectedArtifactPaths: expectedArtifactPaths
         )
 
-        let archiveRoot = try CalibrationManifestLoader.prepareOutputDirectory(
-            ".photobench/calibration-archives",
-            inside: root
-        )
-        let destination = archiveRoot.appendingPathComponent(
-            existing.runID,
-            isDirectory: true
-        )
-        let archivedManifest = destination.appendingPathComponent("run-manifest.json")
-        if FileManager.default.fileExists(atPath: destination.path) {
-            try verifyOrdinaryDirectoryTree(destination)
-            try verifyOrdinaryFile(archivedManifest, inside: destination)
-            guard FileManager.default.fileExists(atPath: archivedManifest.path),
-                  try SHA256Digest.file(archivedManifest)
-                    == SHA256Digest.file(runManifestURL)
+        if archiveAlreadyExists {
+            try verifyCalibrationEvidence(
+                existing,
+                at: destination,
+                expectedArtifactPaths: expectedArtifactPaths
+            )
+            if referencedManifest.source != .archiveSnapshot {
+                try ImmutableCalibrationEvidenceWriter.writeNew(
+                    referencedManifest.data,
+                    to: archivedSourceManifest,
+                    inside: root
+                )
+            }
+            try verifyOrdinaryFile(archivedSourceManifest, inside: destination)
+            guard try SHA256Digest.file(archivedSourceManifest)
+                    == existing.manifest.sha256
             else {
                 throw CalibrationManifestError.invalid(
-                    "既存校正archiveが不完全または別内容です: \(destination.path)"
+                    "既存校正archiveのsource manifest snapshotがrun参照と一致しません"
                 )
             }
             try verifyCalibrationEvidence(
@@ -607,6 +631,9 @@ enum PhotoBenchCalibration {
                 at: destination,
                 expectedArtifactPaths: expectedArtifactPaths
             )
+            try synchronizeArchiveDirectory(destination)
+            try synchronizeArchiveDirectory(archiveRoot)
+            try synchronizeArchiveDirectory(archiveRoot.deletingLastPathComponent())
             print("Previous calibration already archived: \(destination.path)")
             return
         }
@@ -630,7 +657,45 @@ enum PhotoBenchCalibration {
                 at: staging,
                 expectedArtifactPaths: expectedArtifactPaths
             )
+            let stagedSourceManifest = staging.appendingPathComponent(
+                "source-manifest.json"
+            )
+            try ImmutableCalibrationEvidenceWriter.writeNew(
+                referencedManifest.data,
+                to: stagedSourceManifest,
+                inside: root
+            )
+            try verifyOrdinaryFile(stagedSourceManifest, inside: staging)
+            guard try SHA256Digest.file(stagedSourceManifest)
+                    == existing.manifest.sha256
+            else {
+                throw CalibrationManifestError.invalid(
+                    "staging校正archiveのsource manifest snapshotがrun参照と一致しません"
+                )
+            }
+            try synchronizeArchiveDirectoryTree(staging)
             try FileManager.default.moveItem(at: staging, to: destination)
+            try verifyCalibrationEvidence(
+                existing,
+                at: destination,
+                expectedArtifactPaths: expectedArtifactPaths
+            )
+            try verifyOrdinaryFile(
+                destination.appendingPathComponent("source-manifest.json"),
+                inside: destination
+            )
+            guard try SHA256Digest.file(
+                destination.appendingPathComponent("source-manifest.json")
+            ) == existing.manifest.sha256 else {
+                throw CalibrationManifestError.invalid(
+                    "移動後の校正archive source manifestがrun参照と一致しません"
+                )
+            }
+            try synchronizeArchiveDirectory(destination)
+            try synchronizeArchiveDirectory(archiveRoot)
+            // `prepareOutputDirectory` may have created calibration-archives;
+            // persist that parent entry before shared calibration paths change.
+            try synchronizeArchiveDirectory(archiveRoot.deletingLastPathComponent())
         } catch {
             try? FileManager.default.removeItem(at: staging)
             throw CalibrationManifestError.invalid(
@@ -638,6 +703,63 @@ enum PhotoBenchCalibration {
             )
         }
         print("Previous calibration archived: \(destination.path)")
+    }
+
+    private static func synchronizeArchiveDirectoryTree(_ root: URL) throws {
+        var directories = [root]
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: keys,
+            options: []
+        ) else {
+            throw CalibrationManifestError.invalid(
+                "校正archive staging treeを列挙できません: \(root.path)"
+            )
+        }
+        for case let item as URL in enumerator {
+            let values = try item.resourceValues(forKeys: Set(keys))
+            guard values.isSymbolicLink != true else {
+                throw CalibrationManifestError.invalid(
+                    "校正archive staging treeにsymlinkがあります: \(item.path)"
+                )
+            }
+            if values.isDirectory == true {
+                directories.append(item)
+            }
+        }
+        for directory in directories.sorted(by: { $0.path.count > $1.path.count }) {
+            try synchronizeArchiveDirectory(directory)
+        }
+    }
+
+    private static func synchronizeArchiveDirectory(_ directory: URL) throws {
+        let standardized = directory.standardizedFileURL
+        let values = try standardized.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard values.isDirectory == true,
+              values.isSymbolicLink != true,
+              standardized.resolvingSymlinksInPath().path == standardized.path
+        else {
+            throw CalibrationManifestError.invalid(
+                "校正archiveのfsync対象が通常directoryではありません: \(directory.path)"
+            )
+        }
+        let descriptor = Darwin.open(standardized.path, O_RDONLY)
+        guard descriptor >= 0 else {
+            throw CalibrationManifestError.invalid(
+                "校正archive directoryを開けません: \(String(cString: strerror(errno)))"
+            )
+        }
+        defer { Darwin.close(descriptor) }
+        while Darwin.fsync(descriptor) != 0 {
+            guard errno == EINTR else {
+                throw CalibrationManifestError.invalid(
+                    "校正archive directory fsyncに失敗しました: \(String(cString: strerror(errno)))"
+                )
+            }
+        }
     }
 
     private static func verifyCalibrationEvidence(

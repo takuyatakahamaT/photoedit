@@ -16,6 +16,10 @@ let package = Package(
         ),
         .executable(name: "PhotoBench", targets: ["PhotoBenchApp"]),
         .executable(name: "PhotoBenchCalibration", targets: ["PhotoBenchCalibration"]),
+        .executable(
+            name: "PhotoBenchWhiteBalanceObservation",
+            targets: ["PhotoBenchWhiteBalanceObservation"]
+        ),
         .executable(name: "PhotoBenchBenchmark", targets: ["PhotoBenchBenchmark"])
     ],
     targets: [
@@ -36,6 +40,11 @@ let package = Package(
             name: "PhotoBenchCalibration",
             dependencies: ["PhotoCore", "PhotoBenchCalibrationSupport"],
             path: "Sources/PhotoBenchCalibration"
+        ),
+        .executableTarget(
+            name: "PhotoBenchWhiteBalanceObservation",
+            dependencies: ["PhotoCore", "PhotoBenchCalibrationSupport"],
+            path: "Sources/PhotoBenchWhiteBalanceObservation"
         ),
         .target(
             name: "PhotoBenchCalibrationSupport",
