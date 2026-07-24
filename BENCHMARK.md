@@ -2,13 +2,13 @@
 
 更新日: 2026-07-24（JST）
 
-状態: manifest v4 / benchmark report schema 3のsource-locked formal runを取得済み。4 workload中3件が合格し、warm sliderだけが不合格だった。現行v4は1 runだけなので、性能安定合格とは判定しない。実UIのMetal直接表示もactual present完了を正式確認できていない。
+状態: manifest v4 / benchmark report schema 3のsource-locked formal archiveを1件取得済みで、4 workload中3件が合格し、warm sliderだけが不合格だった。ただしWB観測source追加後の現行HEADとはmanifest SHA / source fingerprintが異なり、現行sourceのformal性能合否は未評価である。実UIのMetal直接表示もactual present完了を正式確認できていない。
 
 機械可読なUTC時刻、全sample、hash、runtime条件は`.photobench/benchmark/latest.json`と`.photobench/benchmark/runs/`を正とする。
 
-## 現行 v4 の結論
+## 最新 v4 formal archiveの結論
 
-正式run `bbb5bc5b-7c12-4b29-b803-c863d6059d55`は`gateEligibility = eligible`で、manifest、入力、source、postflight source、開始・終了binaryが一致した。
+正式run `bbb5bc5b-7c12-4b29-b803-c863d6059d55`は`gateEligibility = eligible`で、archive内のmanifest、入力、source、postflight source、開始・終了binaryが一致した。
 
 | engine workload | p95 | gate | 判定 |
 |---|---:|---:|---|
@@ -19,9 +19,11 @@
 
 数値上は3 / 4合格だが、1回のformal runは安定性の証明ではない。とくにsliderはengine proxyの時点で50msを超えており、Lightroomと遜色ない操作感を主張できない。速いworkloadについても、反復run、実UI input-to-present、drop frame、定常RSSを確認するまでproduction performance passにはしない。
 
+さらに、このrunはmanifest SHA `87a9ea...`、source fingerprint `1451c62b...`へ固定されている。現行HEADはmanifest SHA `9da1fd...`、calibration source fingerprint `b7d8c57f...`である。production render graphの性能変更を示す差ではないが、provenance契約上は別sourceなので、`bbb5bc5b...`を現行HEADの合否へ読み替えない。
+
 ## 再現性の正本
 
-- 設定・入力・候補・性能閾値: `calibration/manifest-v4.json`
+- archive時点の設定・入力・候補・性能閾値: run内でhash-lockされた`calibration/manifest-v4.json`
 - manifest schema: `4`
 - manifest SHA-256: `87a9ea124bb8425a8efc8ef4fe79748c54b55097bfcfe503e96ef693304bb312`
 - benchmark report schema: `3`
@@ -34,22 +36,22 @@
 
 入力・source・binary、decode intent、decoded / native寸法、scale factor、backend、runtimeをJSONへ保存する。入力またはsourceが変わったrun、quick run、worker / coordinatorのruntime条件を満たさないrunは合格証拠にしない。outlierを結果確認後に削除せず、再測定は別run IDとして元runとともに残す。
 
-## 旧 v3 の連続3 run
+## canonical v3 の連続3 formal runs
 
-次は旧source・旧manifestの履歴であり、現行v4の合否へ継承しない。
+次はmanifest v3、manifest SHA `2867219602b7abe89ddd8994ab243c1a9f1d020eed5710dac4bb1d475eab92a8`、source fingerprint `c287d40e1fe913c93b7c35c0f8ad560e4f49292829897b1758919dc64e83b7a8`へ固定されたcanonical v3の履歴であり、v4の合否へ継承しない。
 
-1. `44b4c41e-e18b-4cdd-9720-4c121a365fbd`
-2. `9bd69010-e2e7-4a57-ac2c-bd0e3d04e18f`
-3. `f9024302-f48c-4f62-bd84-589013696861`
+1. `5b2dae18-e24d-4709-a381-4fb8d8e54213`
+2. `a13033d0-2782-4f50-abd6-76238c3d3340`
+3. `c2c4794f-292d-4591-bc04-b0c8afae16cd`
 
 | workload | run 1 | run 2 | run 3 | 合格回数 |
 |---|---:|---:|---:|---:|
-| process-fresh preview | 960.767 ms | 369.026 ms | 575.269 ms | 3 / 3 |
-| warm slider engine | 396.321 ms | 59.836 ms | 52.754 ms | 0 / 3 |
-| warm high-quality preview | 131.204 ms | 61.835 ms | 55.598 ms | 3 / 3 |
-| full-resolution JPEG export | 1,188.771 ms | 234.513 ms | 223.044 ms | 3 / 3 |
+| process-fresh preview | **1,902.959 ms 不合格** | 620.723 ms 合格 | 338.650 ms 合格 | 2 / 3 |
+| warm slider engine | **54.479 ms 不合格** | **52.437 ms 不合格** | 49.089 ms 合格 | 1 / 3 |
+| warm high-quality preview | 58.498 ms 合格 | 53.756 ms 合格 | 52.381 ms 合格 | 3 / 3 |
+| full-resolution JPEG export | 964.177 ms 合格 | 272.225 ms 合格 | 218.697 ms 合格 | 3 / 3 |
 
-同じshell loopで直列に実行し、再起動、待機条件の統制、順序randomizeを行っていないため「独立3反復」とは呼ばない。run間変動は大きく、とくにsliderは3 / 3不合格だった。この履歴は、単一の速いrunを安定性と読み替えない理由になる。
+run単位では2 / 4、3 / 4、4 / 4と改善したが、process-freshは2 / 3、sliderは1 / 3しか合格していない。同じshell loopで直列に実行し、再起動、待機条件の統制、順序randomizeを行っていないため「独立3反復」とは呼ばない。この履歴は、最後の速いrunを安定性と読み替えない理由になる。
 
 ## 測定経路とproduction境界
 
@@ -91,11 +93,13 @@ process-freshは新worker processだが、manifest load、fixture hash、preset 
 3. input eventからactual presentまでのUI p95、drop、stale frameを事前登録gateで測る。
 4. cache候補は写真切替後の回収と複数写真後の定常RSSを含めて比較する。
 5. v4 sourceを固定した複数formal runを、順序・待機・同時負荷を記録して取得する。
+6. まず現行HEADに対応するformal runを1件取得し、古いv4 archiveと現行合否を分離する。
 
 ## 実行方法
 
 ```sh
-swift run -c release PhotoBenchBenchmark /Users/takuyatakahama/Documents/app/NIHO/others/photo
+cd /path/to/photoedit
+swift run -c release PhotoBenchBenchmark .
 ```
 
-`--enforce`では全gate合格をexit `0`、eligible runの性能不合格をexit `1`、ineligible / `notEvaluated`または構造・hash・runtime・provenance不整合をexit `2`とする。現行runはslider不合格のため期待exitは`1`である。
+`--enforce`では全gate合格をexit `0`、eligible runの性能不合格をexit `1`、ineligible / `notEvaluated`または構造・hash・runtime・provenance不整合をexit `2`とする。既存archive `bbb5bc5b...`はslider不合格でexit `1`相当だが、上記runnerは現行sourceの新runを作るため、その新しいrun IDとfingerprintで別途判定する。

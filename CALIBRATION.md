@@ -3,7 +3,7 @@
 更新日: 2026-07-24（JST）
 対象プロファイル: `panasonic-dc-s5-lightroom-9.3-edr1-v2`
 
-状態: manifest v4 の正式 run で 122 / 122 artifact の構造・hash検証に成功した。canonical settle は既知の2 development sceneで合格したが、Lightroom品質は4経路中1経路が不合格であり、preview parityも3,072pxで2 / 6、3,840pxで4 / 6比較が不合格である。したがって総合画質は未合格であり、Lightroom相当を主張しない。
+状態: RAWホワイトバランス観測sourceを含むmanifest v4の正式runで、122 / 122 artifactの構造・hash検証に成功した。canonical settleは既知の2 development sceneで合格したが、Lightroom品質は4経路中1経路が不合格であり、preview parityも3,072pxで2 / 6、3,840pxで4 / 6比較が不合格である。別契約のWB観測も構造検証には合格したがproduction採用は禁止されている。したがって総合画質は未合格であり、Lightroom相当を主張しない。
 
 機械可読な正本は`.photobench/calibration/run-manifest.json`と`.photobench/calibration/report.json`である。本書の丸め値と差がある場合はJSONを優先する。
 
@@ -22,12 +22,12 @@ Lightroom適用後の16bit sRGB参照TIFFと、同じシーンのRAW / Lightroom
 現行契約の正本は`calibration/manifest-v4.json`である。
 
 - suite: `dc-s5-lightroom-9.3-canonical-settle-2026-07-24-v4`
-- calibration run ID: `77c1c00b-2a1e-4e46-8713-99095ebda59c`
-- manifest SHA-256: `87a9ea124bb8425a8efc8ef4fe79748c54b55097bfcfe503e96ef693304bb312`
-- source fingerprint: `1451c62b42e175814a316c1e7f8ffaaf44d17cd6ae9397ea8edd1e7eb74e3125`
-- calibration release executable SHA-256: `89579b271f452f2f1273607b7ddd2464f50a432ff4718d99d9692959d2364fec`
+- calibration run ID: `1c324af0-7ec3-4c33-bc6f-3bd653794800`
+- manifest SHA-256: `9da1fd58ec4ead9b921dea477319423711567de3c06f8eb39d429c89980267f6`
+- source fingerprint: `b7d8c57fab4428679a4f4e7cfacf2f64e67b317e9b9f46a00093cf7b5bf1a858`
+- calibration release executable SHA-256: `6f1be9b7a44529f25fb7fe8ad90b6b030bfa128e2108174bc86cab09cd775a15`
 - schema: manifest `4` / calibration run manifest `2` / analyzer report `5`
-- 検証対象: 7入力、24 source、122 / 122 artifact
+- 検証対象: 7入力、26 source、122 / 122 artifact
 
 runnerは開始前後の入力・source・binaryと、artifactのpath・stage・byte count・SHA-256を照合する。analyzerはrun manifest記載の122 artifactだけを正本として再検証する。path traversal、symlink、case-only alias、成果物名衝突、欠測、未知stage、hash・runtime・処理fingerprint不一致は品質評価前にexit `2`、正しく測れた数値不合格はexit `1`とし、欠測を合格へ倒さない。
 
@@ -113,6 +113,24 @@ full-resolution、3,072px、3,840px RAW decodeを`neutral`、`basic-legacy`、`f
 
 6件の失敗理由はいずれもspatially-distinct plateauだけである。3,072pxは両sceneの`full-current`、3,840pxはP1524180の3段階とP1522877の`full-current`が不合格だった。正式結果を見て閾値を緩めていない。`selectedCandidate = null`で、productionはfull-resolution RAW decodeを維持する。
 
+## RAWホワイトバランス観測
+
+製品へ接続する前段として、As Shotは既存production decoder delegateへ委ねて一切設定せず、custom Temperature / Tintだけをfresh Core Image RAW 8 filterで観測する独立suiteを追加した。正本、候補集合、代表値、制約、次の受け入れ条件は[`docs/WHITE_BALANCE_OBSERVATION.md`](docs/WHITE_BALANCE_OBSERVATION.md)にまとめる。
+
+- suite: `dc-s5-lightroom-9.3-white-balance-observation-2026-07-24-v1`
+- run ID: `51ba2f46-185d-4b87-8345-407d380214cd`
+- manifest SHA-256: `aea4c93626b0a32259c747d2e2ca4ca82b45647d0336507bb709bc86b4e0faf3`
+- source fingerprint: `413fce7eb57938b958f3e1efd7f835e6fd7cae5561e8327341e4c4faaaec8b3e`
+- release executable SHA-256: `5e08849cc3d431cde4c42aad7523fd4b704591ae5aecb3f2d11404f92a0edf44`
+- 2 development scene、0 holdout、各18候補、40 / 40 artifact
+- validation: `passed`
+- adoption status: `exploratory-observation-only`
+- production adoption allowed: `false`
+
+P1524180のCore Image As Shotは固定Lightroom参照に対してmean ΔE00 `3.6660247`、EV `+0.1050286`、P1522877は`2.1292396`、`+0.0294950`だった。fresh filterの中心Temperature / Tintを書き戻したcustom centerとAs Shotの差は、それぞれmean ΔE00 `0.0001510` / `0.0003225`と小さいがbyte exactではない。setter順序比較は両sceneでbyte exactだった。
+
+これは記述的な2scene観測であり、候補の順位付け、Adobe値からApple値への写像、未知sceneへの一般化、またはproduction WBの採用を意味しない。Lightroom側のTemperature / Tint教師sweep、灰色基準と領域別評価、5〜10以上のdevelopment scene、最低2 sealed holdout、preview / export / persistence / Undoへの同一intent接続が先に必要である。
+
 ## EDRと色域圧縮の補助検証
 
 DC-S5ではEDR 1がEDR 2の`> 1`領域の約96.3% / 93.8%を保持しつつ最大channelの拡大を抑えたため、DC-S5限定profileに`boost = 0.9`、`extendedDynamicRangeAmount = 1`を採用している。他機種へ一般化しない。
@@ -121,7 +139,7 @@ DC-S5ではEDR 1がEDR 2の`> 1`領域の約96.3% / 93.8%を保持しつつ最�
 
 ## 未完了と次の品質作業
 
-- XMPのWhite Balance値は解析できるが、RAW decode / renderへ接続されていない。
+- XMPのWhite Balance値を解析でき、custom RAW decodeの開発用観測経路もあるが、製品のpreview / export / edit persistenceへは接続されていない。
 - Adobe / camera-specific profileやDCP相当のprofile処理がない。Adobeも現像時のprofileとwhite balanceを別の基本制御として扱っているため、両方を教師sweepで検証する。[Adobe Lightroom Classicの画像トーンとカラー](https://helpx.adobe.com/lightroom-classic/desktop/process-and-develop-photos/image-tone-color.html)
 - 2 development sceneのみで独立holdoutがない。5〜10 sceneの探索用集合と、最終候補選定後まで触らないsealed holdoutを追加する。
 - crop / rotate、local adjustment、sharpening、noise reduction、lens correction、永続catalogなどは未完成である。
@@ -129,17 +147,25 @@ DC-S5ではEDR 1がEDR 2の`> 1`領域の約96.3% / 93.8%を保持しつつ最�
 
 ## 回帰テストと再現コマンド
 
-- Swift Testing: `99 tests / 7 suites`
-- Python: `61 tests`
+- Swift Testing: `119 tests / 10 suites`
+- Python calibration analyzer: `61 tests`
+- Python WB observation analyzer: `17 tests`
 
 現行テストは、旧 / 新graphの識別、edge clamp + Lanczos + crop、terminal transformの順序、bounded neutral bypass、canonical settleの整数clip countと欠測時fail-closed、preview parity、manifest / hash / archive契約を含む。実画面のdisplay color management、window lifecycle、未知カメラ、holdout品質は含まない。
+
+WB関連では、As Shot delegateの非変更、custom値域、fresh filter、setter順序、provenance、18候補の固定集合、private input / immutable output / metadata契約、source fingerprintと観測専用analyzerを検証する。2sceneの構造合格は製品品質テストではない。
 
 formal evidenceを再生成する場合は並行校正がないことを確認し、release runnerを使う。Lightroom品質・preview parityの既知不合格を含むため、全gate enforceの期待exitは`1`である。
 
 ```sh
-swift run -c release PhotoBenchCalibration /Users/takuyatakahama/Documents/app/NIHO/others/photo
-python3 scripts/analyze-calibration.py /Users/takuyatakahama/Documents/app/NIHO/others/photo \
+cd /path/to/photoedit
+swift run -c release PhotoBenchCalibration .
+python3 scripts/analyze-calibration.py . \
   --enforce \
   --enforce-preview-parity \
   --enforce-canonical-settle
+swift run -c release PhotoBenchWhiteBalanceObservation .
+python3 scripts/analyze-white-balance-observation.py . \
+  --run .photobench/white-balance-observations/<run-id>/run.json
+python3 -m unittest scripts/test_analyze_white_balance_observation.py
 ```

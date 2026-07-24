@@ -1,6 +1,6 @@
 # Photo Bench（仮称）設計書
 
-- 状態: Phase 0証跡基盤、preview parity、canonical settle v4、原寸decode graphのMetal直接表示プロトタイプを実装。v4縮小順序は2 development sceneで合格したが、Lightroom品質と縮小decode候補は不合格。Metal経路は実画面のpresent未成立のためopt-in、既定は従来表示
+- 状態: Phase 0証跡基盤、preview parity、canonical settle v4、原寸decode graphのMetal直接表示プロトタイプ、開発用RAW WB観測を実装。v4縮小順序は2 development sceneで合格したが、Lightroom品質と縮小decode候補は不合格。Metal経路は実画面のpresent未成立、RAW WBは教師・holdout不足のため、どちらも製品既定経路へ未採用
 - 対象: 自分専用のmacOSデスクトップアプリ
 - 作成日: 2026-07-23
 - 最終更新: 2026-07-24（JST）
@@ -29,7 +29,9 @@ P1では`interactive-preview`と`full-resolution`のdecode intent、原寸export
 
 その後、productionの原寸decode graphをCPU bitmapへ戻さず、`CIRenderDestination`からsRGB / SDR `MTKView`へ直接描画するプロトタイプを追加した。`PHOTO_BENCH_PREVIEW_ROUTE=metal-direct`の完全一致でのみopt-inし、既定はlegacyとする。黒レターボック付きaspect fit、1 in-flight + latest pending、expected-ID claim、window-level可視性、上限付き再描画、可視状態の10秒deadline、signpost / counter、その起動中の一方向fallbackを持つ。preview cacheはRSS・回収契約がない間`cacheIntermediates = false`とする。
 
-現行v4のformal benchmark run `bbb5bc5b-7c12-4b29-b803-c863d6059d55`は3 / 4合格し、warm sliderだけが`55.649 ms`で50ms gateを超えた。現行sourceのrunは1回だけなので安定性を証明しない。旧v3の連続3 runは履歴として残すが、現行合否へ継承しない。
+RAW WBは製品経路を変えず、As Shotを既存production decoder delegateへ委ねた出力と、fresh `CIRAWFilter`へcustom neutralを設定した出力を比較する開発専用観測経路を追加した。正式run `51ba2f46-185d-4b87-8345-407d380214cd`は2 development scene、各18固定候補、合計40 artifact、setter順序のbyte一致、構造・hash・release provenance検証に合格した。中心customはAs Shotと平均ΔE `0.000151 / 0.000323`でほぼ一致した一方、Lightroom As Shotとの差は平均ΔE `3.6660 / 2.1292`残った。これは候補の優劣やAdobe→Apple変換を示さず、教師sweep・gray基準・sealed holdoutを揃えるまでproduction採用を禁止する。
+
+最新のarchived v4 formal benchmark run `bbb5bc5b-7c12-4b29-b803-c863d6059d55`は3 / 4合格し、warm sliderだけが`55.649 ms`で50ms gateを超えた。ただしWB観測source追加前のmanifest / sourceへ固定され、現行HEADとはfingerprintが異なるため、現行sourceの性能合否へ読み替えない。旧v3の連続3 runも履歴として残すが、v4の安定性証明へ混ぜない。
 
 Metal直接表示のnative rasterは従来経路と全channel 1 LSB以内で一致し、queue / aspect fitも自動テストを通過した。最終ハードニング直前の実UI smokeではGPU commandが2回`completed`になった後、1回目は`presentedTime == 0`、2回目はpresented callback不返却となり、10秒deadlineでlegacyへfallbackした。その後に`drawableSize > 0`のwatchdog条件と`allowsNextDrawableTimeout = true`を追加し、最終sourceではfallback後のlegacy写真と空表示がないことを再確認したが、同じ詳細traceは再取得していない。したがってpositive presentation、実画面parity・p95・drop率・RSSは未承認である。
 
@@ -43,7 +45,7 @@ v4最終レポートでは、P1524180 / P1522877のRAW・Lightroom入力計4経�
 
 ### 1.3 性能ゲートの到達点
 
-manifest v4固定の24MP RAWをrelease buildで測った現行formal runは、process-fresh `357.990 ms`、warm high-quality `58.023 ms`、原寸JPEG `225.922 ms`が合格し、warm slider `55.649 ms`だけが50ms gateに不合格だった。1 runだけであり安定性を証明しない。これは実験2,560px engine経路で、production full-decode UIやinput-to-screenを測ったものでもない。
+manifest v4固定の24MP RAWをrelease buildで測った最新archiveでは、process-fresh `357.990 ms`、warm high-quality `58.023 ms`、原寸JPEG `225.922 ms`が合格し、warm slider `55.649 ms`だけが50ms gateに不合格だった。1 runだけで安定性を証明せず、現行HEADとはsource fingerprintも異なる。これは実験2,560px engine経路で、production full-decode UIやinput-to-screenを測ったものでもない。
 
 ## 2. Goal
 
@@ -84,7 +86,7 @@ manifest v4固定の24MP RAWをrelease buildで測った現行formal runは、pr
 - 検証JPEGはSony ILCE-7M2のJPEG、6000×4000、8bit sRGBも含む。
 - Lightroom上の現状規模は約897GB・17,000枚。Cloud版かClassicかは未確認であり、選別後は約500GBを目標にする。
 - 初期開発中はこの`NIHO/others/photo`を読込・保存ルートにする。
-- 完成後は`/Volumes/hihirohub/pictures/edit`相当を読込・保存ルートにする。
+- 完成後はユーザーが選んだ外付けSSD上の写真フォルダを読込・保存ルートにする。
 - Lightroomと似た操作配置は採用するが、アイコン、固有アセット、名称をそのまま複製しない。
 - XMPはLightroomに極力近い色を目指し、未対応項目は黙って無視せず表示する。
 
@@ -104,7 +106,7 @@ manifest v4固定の24MP RAWをrelease buildで測った現行formal runは、pr
 - レンズ: 色収差補正、レンズプロファイル
 - プロファイル: Adobe Color
 
-現在は基本8項目を解析・近似適用し、WB値を構造化して保持する。HSLとトーンカーブは任意適用できるが未校正のため初期OFF。Adobe Color、レンズプロファイル、Adobe固有のノイズ低減は、初期版では完全再現の対象外とする。
+現在は基本8項目を解析・近似適用し、WB値を構造化して保持する。RAW WBは開発専用runnerでAs Shot / custom neutralを観測できるが、製品のpreview / export / persistence / Undoには未接続である。HSLとトーンカーブは任意適用できるが未校正のため初期OFF。Adobe Color、レンズプロファイル、Adobe固有のノイズ低減は、初期版では完全再現の対象外とする。
 
 ## 5. User journey
 
@@ -449,7 +451,7 @@ Mask
 | ToneCurvePV2012 | 近似・初期OFF | encoded-sRGBの1D区分線形曲線。0〜1外は正の端点傾きで外挿 |
 | ToneCurve Red/Green/Blue | 近似・初期OFF | 各channel curveの後にglobal curveを適用。3D LUTは使わない |
 | HSL Hue/Saturation/Luminance | 近似・初期OFF | OKLChの8色バンド補間。相対chromaで低彩度を保護。効果量100%時のLuminanceは`+100 = +1 EV`の局所露光 |
-| WhiteBalance | 値保持・未適用 | As Shot / Custom、絶対値、増分値、明示的0を保持。XMP WBのレンダーは未実装 |
+| WhiteBalance | 値保持・開発観測 / 製品未適用 | As Shot / Custom、絶対値、増分値、明示的0を保持。fresh RAW filterの固定候補を開発専用runnerで観測できるが、順位付け・変換式・製品レンダーは未実装 |
 | Sharpness | 後続 | Adobeと異なるため初期は警告 |
 | ColorNoiseReduction | 後続 | 初期は未対応表示 |
 | LensProfileEnable | 未対応 | AdobeレンズDBを持たない |
@@ -479,19 +481,21 @@ Mask
 ### 11.1 推奨保存場所
 
 ```text
-/Volumes/hihirohub/
+<user-selected-photo-root>/
 ├── Photos/                         # 原本。既存構成を尊重
 └── .photobench/
-    ├── catalog.sqlite
-    ├── thumbnails/
-    ├── previews/
-    ├── mask-cache/
-    └── backups/
+    └── backups/                    # 再生成不能なカタログの安全な複製だけ
+
+~/Library/Application Support/PhotoBench/
+├── catalog.sqlite
+├── thumbnails/
+├── previews/
+└── mask-cache/
 ```
 
 カタログ本体はMac側のApplication Supportへ置き、SSD側へ安全なバックアップを保存する。これによりSSDが一時的に外れても、評価、アルバム、直前までの編集状態を失わない。原本が必要な編集・書き出しはSSD再接続まで無効にする。
 
-開発中だけは可視性を優先し、`NIHO/others/photo/.photobench`をカタログ・キャッシュ置き場、`NIHO/others/photo/exports`を書き出し先にする。完成版ではMac側のApplication Supportを主カタログ、`/Volumes/hihirohub/pictures/edit/.photobench/backups`をバックアップ先にする。既存の写真フォルダ構成は勝手に変更しない。
+開発中だけは可視性を優先し、リポジトリrootの`.photobench`をカタログ・キャッシュ置き場、`exports`を書き出し先にする。完成版ではMac側のApplication Supportを主カタログ、ユーザーが選んだ写真root内の`.photobench/backups`をバックアップ先にする。既存の写真フォルダ構成は勝手に変更しない。
 
 ### 11.2 macOSファイル権限と署名
 
@@ -525,16 +529,16 @@ Mask
 
 ## 12. 性能目標
 
-完成形の目安とengine実測、製品UXを分けて管理する。Mac16,10 / Apple M4 / macOS 26.3.1、manifest v4既定24MP RAW、release buildの現行formal runは次のとおり。
+完成形の目安とengine実測、製品UXを分けて管理する。Mac16,10 / Apple M4 / macOS 26.3.1、manifest v4既定24MP RAW、release buildの最新archived formal run（WB観測source追加前）は次のとおり。
 
-| engine workload | current p95 | gate | 判定 |
+| engine workload | archived p95 | gate | 判定 |
 |---|---:|---:|---|
 | process-fresh tone engine preview | 357.990 ms | ≤ 1,000 ms | 合格 |
 | warm exposure-perturbation engine proxy | 55.649 ms | ≤ 50 ms | 不合格 |
 | warm full-current-settings engine preview | 58.023 ms | ≤ 300 ms | 合格 |
 | 原寸JPEG quality 0.92 | 225.922 ms | ≤ 3,000 ms | 合格 |
 
-benchmark schema v3はrun / workload境界と40個のprocess-fresh workerの開始・終了にsystem loadを記録する。現行runは`bbb5bc5b-7c12-4b29-b803-c863d6059d55`で3 / 4合格だが、1回だけなので安定性を証明しない。旧v3の3 runは履歴として`BENCHMARK.md`に残し、現行合否へ混ぜない。
+benchmark schema v3はrun / workload境界と40個のprocess-fresh workerの開始・終了にsystem loadを記録する。latest archive `bbb5bc5b-7c12-4b29-b803-c863d6059d55`は3 / 4合格だが、1回だけなので安定性を証明しない。さらに現行HEADとはmanifest SHA / source fingerprintが異なるため現行合否ではない。旧v3の3 runは履歴として`BENCHMARK.md`に残し、v4反復へ混ぜない。
 
 manifest v4の3,072px候補は2 / 6、3,840px候補は4 / 6比較でspatial plateau gateに失敗し、両方不採用である。原寸full-decode graphのMetal直接描画は実装したが、実画面のpresent成功を確認できず、既定はlegacyを維持する。`cacheIntermediates = true`、draft / settle二層化、100% detail windowはそれぞれ別の受入条件とRSS / 知覚契約が必要な仮説であり、現時点の採用仕様ではない。
 
@@ -569,14 +573,15 @@ manifest v4の3,072px候補は2 / 6、3,840px候補は4 / 6比較でspatial plat
 
 - 4 XMPのProcess Version、基本8項目、WB、HSL、curve、未対応項目を解析済み
 - 単調な基本階調、HDR端点外挿付きencoded-sRGB 1D curve、OKLCh 8-band mixer、最終shoulder / 色域圧縮を実装し、同一正規化経路で2組のゴールデンTIFFと比較済み
-- WBレンダー、各スライダー単独校正、Adobe Color/DCP残差分離は未完了
+- 既存delegateのAs Shot出力と、fresh RAW filterへ設定したcustom neutralを比較する18固定候補・2sceneの開発観測、setter順序比較、private data / provenance / no-replace検証は完了
+- Lightroom側のTemperature / Tint教師sweep、gray card / ColorChecker、領域別評価、sealed holdout、製品preview / export / persistence / Undoへの接続は未完了
 - 5〜10シーンのleave-one-image-outを通るまでは全XMP補正を暫定扱いとする
 
 #### Spike C: 操作と書き出し
 
 - JPEGとRW2を同じUIで表示する
-- 露出摂動proxyの直接2,560px実験engine p95は現行v4 runで`55.649ms`となり、50ms gateに不合格
-- 原寸sRGB JPEGは24MP・品質92のp95 `225.922ms`で3秒gateを通過。ただし現行sourceは1 runだけ
+- 露出摂動proxyの直接2,560px実験engine p95はlatest archived v4 runで`55.649ms`となり、50ms gateに不合格
+- 原寸sRGB JPEGは24MP・品質92のarchived p95 `225.922ms`で3秒gateを通過。ただし1 runだけで、現行HEADとはsource fingerprintが異なる
 - oversample parity v4は3,072pxが2 / 6、3,840pxが4 / 6比較でspatial plateau gateに不合格。productionは原寸decodeを維持する
 - 原寸decode graphのMetal直接経路はopt-inで実装。offscreen / native rasterの1 LSB parityは通過したが、実UIでpositive presentationは未確認、10秒deadlineからlegacyへのfallbackは成立
 - EXIF Orientation、DateTimeOriginal、Make/ModelとICC profileを保持する
@@ -647,11 +652,13 @@ manifest v4の3,072px候補は2 / 6、3,840px候補は4 / 6比較でspatial plat
 
 ### 自動テスト
 
-現行Swift Testing **99 tests / 7 suites**とPython **61 tests**で実施済み:
+現行Swift Testing **119 tests / 10 suites**、Python calibration analyzer **61 tests**、Python WB observation analyzer **17 tests**で実施済み:
 
 - 4 XMPの基本8項目、WB表現、HSL/curve、未対応項目の解析
 - 範囲外・NaN・Infinityの拒否/clampと旧設定JSON移行
 - 実物DC-S5 RW2の原寸デコードと機種限定校正プロファイル
+- As ShotではdelegateのRAW状態を変更せず、customでは候補ごとにfresh `CIRAWFilter`へneutral temperature / tintを設定すること
+- 2scene×18固定候補、setter順序byte一致、metadata scrub、private input / Git追跡拒否、release binary / source provenance、既存run非置換をfail-closedで検証すること
 - 原寸JPEG、比較用16bit sRGB TIFF、EXIF寸法・向き・sRGB表記、原本バイト不変
 - 基本階調のneutral identity、0〜4 HDR、各±100と複合極端値での有限性・単調性
 - CPU基本階調式と、software rendererおよび明示的Metal-backed Core Imageレンダーの一致
@@ -729,6 +736,9 @@ Phase 1以降で追加:
 - Apple `CILanczosScaleTransform`: https://developer.apple.com/documentation/coreimage/cilanczosscaletransform?changes=l_7&language=objc
 - Apple `CIImage.clampedToExtent()`: https://developer.apple.com/documentation/coreimage/ciimage/clampedtoextent%28%29
 - Apple `CIRAWFilter`: https://developer.apple.com/documentation/coreimage/cirawfilter
+- Apple `CIRAWFilter.neutralTemperature`: https://developer.apple.com/documentation/coreimage/cirawfilter/neutraltemperature
+- Apple `CIRAWFilter.neutralTint`: https://developer.apple.com/documentation/coreimage/cirawfilter/neutraltint
+- Apple `CIRAWFilter.neutralChromaticity`: https://developer.apple.com/documentation/coreimage/cirawfilter/neutralchromaticity
 - Adobe XMP Camera Raw namespace: https://developer.adobe.com/xmp/docs/xmp-namespaces/crs/
 - Adobe Process Versions: https://helpx.adobe.com/ie/camera-raw/using/process-versions.html
 - Adobe Tone controls: https://helpx.adobe.com/lightroom-classic/desktop/help/tone-control-adjustment.html
@@ -736,6 +746,7 @@ Phase 1以降で追加:
 - darktable tone equalizer: https://docs.darktable.org/usermanual/development/en/module-reference/processing-modules/tone-equalizer/
 - CIEDE2000: https://doi.org/10.1002/col.20070
 - 外部調査に基づく改善提案（参考資料）: `reviews/2026-07-24-claude-research-improvement-proposals.md`
+- RAWホワイトバランス観測契約と正式結果: `docs/WHITE_BALANCE_OBSERVATION.md`
 
 ## 18. Next steps
 
@@ -764,10 +775,11 @@ Phase 1以降で追加:
 - 非同期フォルダ走査、遅延フィルムストリップ、レンダ同時実行制御
 - App Sandbox、security-scoped bookmark、初回の明示フォルダ選択、再起動時復元、SSD不在時のcapability保持
 - Lightroom参照と候補を同じ1500px経路へ通す対称校正と、RAW差を除くLightroom-TIFF入力比較
-- CPU/software/Metal階調一致、極端値単調性、curve HDR外挿、OKLCh無彩色保護、HSL/curve段別fixture、generic RAW Y>1出力経路、output shoulder / 67,368点の色域圧縮grid、bounded-sRGB bypass、EXIF正規化、全ライブラリ原本・既存フォルダへの上書き拒否、部分XMP、folder bookmark、不正native寸法、decode intent、export guard、context isolation、Metal直接表示のqueue / aspect / native parity、canonical settleを含む99件のSwiftテストと61件のPythonテスト
-- manifest schema 4を正本に、7入力、24 source、実行binary、122 artifactを開始前後と解析時にSHA-256検証するfail-closed校正基盤。run manifestはschema 2、analyzer reportはschema 5
+- CPU/software/Metal階調一致、極端値単調性、curve HDR外挿、OKLCh無彩色保護、HSL/curve段別fixture、generic RAW Y>1出力経路、output shoulder / 67,368点の色域圧縮grid、bounded-sRGB bypass、EXIF正規化、全ライブラリ原本・既存フォルダへの上書き拒否、部分XMP、folder bookmark、不正native寸法、decode intent、export guard、context isolation、Metal直接表示のqueue / aspect / native parity、canonical settle、fresh RAW WB filterを含む119件のSwiftテスト、61件のcalibration analyzerテスト、17件のWB analyzerテスト
+- manifest schema 4を正本に、7入力、26 calibration source、実行binary、122 artifactを開始前後と解析時にSHA-256検証するfail-closed校正基盤。run manifestはschema 2、analyzer reportはschema 5
+- 製品経路から分離したRAW WB観測runner。2scene×18固定候補、合計40 artifact、28 source、setter順序byte一致、metadata scrub、private input / Git拒否、release provenance、write-once runを検証し、候補順位やproduction採用を意図的に出力しない
 - `interactive-preview` / `full-resolution`の責務分離、RAW `scaleFactor`候補、共通Lanczos、1px morphologyを含む2シーン×2候補×3段階のpreview parity、run archive、app-side source fingerprint
-- release benchmark schema 3とsystem-load provenance。現行v4正式runは3 / 4合格でslider proxyだけ不合格。1 runなので安定性は未証明
+- release benchmark schema 3とsystem-load provenance。latest archived v4正式runは3 / 4合格でslider proxyだけ不合格。1 runかつ現行HEADとはfingerprint不一致なので、安定性と現行合否は未証明
 - 正式parity v4で3,072pxを2 / 6、3,840pxを4 / 6比較不合格として不採用にし、productionの原寸decode維持を決定
 - canonical settle v4でextended-linear編集 → edge-clamped Lanczos → terminal sRGB変換を固定し、2 development sceneの縮小後clip非回帰を確認。旧v3失敗runはarchiveへ保持
 - `PHOTO_BENCH_PREVIEW_ROUTE=metal-direct`のopt-in原寸Metal直接表示、可視性・再試行・deadline・一方向fallback、signpost / counterを実装。native raster parityは通過、実画面presentは未成立
@@ -778,6 +790,6 @@ P1の受け入れ契約、preview / export intent分離、`CIRAWFilter.scaleFact
 
 full-decode graphを`MTKView` / `CIRenderDestination`へ直接描画する経路はopt-inで実装し、queue、fallback、native raster parityをhardeningした。しかし実機ではGPU command completionの先でpositive presentationを確認できず、10秒後にlegacyへfallbackした。次のMetal作業は、lifecycleを純粋なreducerへ切り出すことと、`presentedTime > 0`を得て実UI測定へ進めるかの判定だけを1スライスにtimeboxする。成立しなければ既定OFFの診断経路として保留し、legacy表示で製品機能を進める。`cacheIntermediates = true`、draft / settle、100% detail windowは、定常RSS・知覚差・settle時間を事前登録した別仮説としてのみ扱う。
 
-Lightroomは当面継続するため、解約前の一括退避を緊急作業にはしない。まずP1524180 / RAWの露出・色差を分解し、RAW WBをdecodeへ接続し、camera profile / DCP不在の残差を教師sweepとholdoutで評価する。並行して編集値の再起動後復元とSQLiteカタログを進め、「編集して閉じても残る」日常ループを成立させる。
+Lightroomは当面継続するため、解約前の一括退避を緊急作業にはしない。RAW WBの再現可能な観測基盤はできたが、2sceneのLightroom As Shot参照だけでは変換を決めない。まずLightroom側のTemperature / Tint教師sweep、gray card / ColorChecker、5〜10以上のdevelopment sceneと最低2 sealed holdoutを揃え、P1524180 / RAWの露出・色差をWB、baseline exposure、camera profile / DCP、toneへ分解する。事前登録した品質契約を通った場合だけ、latest-only decode、preview / export一致、永続化、Undo / Redoと一体で製品へ接続する。並行して編集値の再起動後復元とSQLiteカタログを進め、「編集して閉じても残る」日常ループを成立させる。
 
 実験的HSL/curveは初期OFFのまま保つ。5〜10以上の探索sceneと各基本スライダー単独のLightroom基準、最後まで触らないsealed holdoutを用意してから、EV drift、WB、camera profile、linear土台、DCP等を分離して再評価する。crop / rotate、100% detail、sharpening、noise reduction、lens correction、export presetを画質契約と永続化の上へ積む。cross-process calibration lockも、複数run運用前に追加する。

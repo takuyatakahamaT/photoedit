@@ -12,17 +12,21 @@ manifest v4の最終レポートでは、RAW / Lightroom入力の4経路すべ�
 
 preview parity v4では、原寸・3,072px・3,840px RAW decodeへ同じ編集を適用してfinal 2,560pxへ揃えた。3,072pxは2 / 6、3,840pxは4 / 6比較でspatial plateau上限を超え、候補なし・full-resolution decode fallbackとなった。canonical settleは **extended-linear-sRGB edits → edge-clamped Lanczos downsample → terminal sRGB transform** を固定し、2 development sceneでcomplete / near clip `0 → 0`と新規plateau上限内を確認した。独立holdoutはなく、未知sceneへの一般化ではない。
 
+RAW WBは、製品挙動を変えない開発専用runnerでAs Shot / custom neutralの固定18候補を2 development sceneへ適用し、再現可能な正式観測を取得した。中心customはAs Shotと平均ΔE `0.000151 / 0.000323`で数値的に極めて近かったがbyte exactではなく、Lightroom As Shotとの差は平均ΔE `3.6660 / 2.1292`残った。これはWB、Adobe Standard、camera profile、decoder等の複合差を含み得る。Lightroom teacher sweepもsealed holdoutもないため、候補順位・変換式・production採用は決めていない。
+
 [`reviews/2026-07-24-claude-research-improvement-proposals.md`](reviews/2026-07-24-claude-research-improvement-proposals.md)は、外部調査に基づく優先順位と技術候補の助言資料として参照する。Lightroomは当面継続するため、解約前退避を急ぐより、教師として使える期間にWB・profile・tone / colorを層別して品質差を潰す。一方、linear RAW土台、DCP、preview cache、draft / settle、SSIMULACRA2、制約付きLUT、初回遅延原因などの個別主張は未検証で、仕様や合格証跡にはしない。
 
 ## Adobeの仕様から分かること
 
 [AdobeのProcess Version説明](https://helpx.adobe.com/ie/camera-raw/using/process-versions.html)はPV2012系でHighlights、Shadows、Whites、Blacks等を使うことを示し、[LightroomのTone controls](https://helpx.adobe.com/lightroom-classic/desktop/help/tone-control-adjustment.html)は主な影響域を、Blacks 0〜10%、Shadows 10〜30%、Exposure/Contrast 30〜70%、Highlights 70〜90%、Whites 90〜100%として説明している。しかしレンダー数式、Adobe Colorのプロファイル本体、内部処理順は公開していない。
 
-[Adobe Camera Raw namespace](https://developer.adobe.com/xmp/docs/xmp-namespaces/crs/)はXMPプロパティの名称と型を定義する。よって「XMP値を正しく読める」と「Lightroomと同じ色になる」は別の受け入れ条件にする。[AdobeのProfile / White Balance説明](https://helpx.adobe.com/lightroom-classic/desktop/process-and-develop-photos/image-tone-color.html)も両者を別の基本制御として扱う。Photo BenchはWB値を解析・保持するだけでレンダーへ接続しておらず、camera profile / DCPもないため、現時点の色差をtoneだけで解決しようとしない。
+[Adobe Camera Raw namespace](https://developer.adobe.com/xmp/docs/xmp-namespaces/crs/)はXMPプロパティの名称と型を定義する。よって「XMP値を正しく読める」と「Lightroomと同じ色になる」は別の受け入れ条件にする。[AdobeのProfile / White Balance説明](https://helpx.adobe.com/lightroom-classic/desktop/process-and-develop-photos/image-tone-color.html)も両者を別の基本制御として扱う。Photo BenchはWB値を解析・保持し、製品経路とは分離したrunnerでRAW neutral候補を観測できるようになったが、camera profile / DCPはなく、productionレンダーにも未接続である。したがって現時点の色差をtoneだけ、またはWBだけで解決しようとしない。
 
 ## Appleの一次資料から分かること
 
 [Apple `CIRAWFilter.extendedDynamicRangeAmount`](https://developer.apple.com/documentation/coreimage/cirawfilter/extendeddynamicrangeamount)は、`0`をEDRなし、`1`を既定のEDR、`2`を最大EDRと定義している。DC-S5の2 RAWではEDR 1がEDR 2の`> 1`画素領域の約96.3% / 93.8%を回収しながら最大値の伸びを抑えたため、Make/Model一致時だけ`boost = 0.9`、EDR 1を使う。これはAppleの一般推奨を機種横断の校正値と解釈したものではなく、DC-S5実画像で限定検証したプロファイルである。
+
+Appleは`CIRAWFilter`に[`neutralTemperature`](https://developer.apple.com/documentation/coreimage/cirawfilter/neutraltemperature)、[`neutralTint`](https://developer.apple.com/documentation/coreimage/cirawfilter/neutraltint)、[`neutralChromaticity`](https://developer.apple.com/documentation/coreimage/cirawfilter/neutralchromaticity)をRAW decode時のneutral制御として公開している。Photo BenchはAs Shotではdelegateの状態を変更せず、custom候補ごとにfresh filterを作る。2 development scene×18固定候補の正式観測は構造・hash・release provenanceに合格したが、LightroomのTemperature / Tint教師sweep、gray基準、領域別指標、sealed holdoutがないため、候補順位やAdobe→Apple変換を導出しない。
 
 [Apple extended linear sRGB](https://developer.apple.com/documentation/coregraphics/cgcolorspace/extendedlinearsrgb)は、linear sRGB primaries / white pointを使いながら0未満と1超の成分を表現できる。Photo Benchは[`CIContext`のworking color space](https://developer.apple.com/documentation/coreimage/cicontext/workingcolorspace)にこれを明示し、[output color space](https://developer.apple.com/documentation/coreimage/cicontextoption/outputcolorspace?language=objc)をsRGBとして分離する。RAW decode後から縮小まで拡張値を保持し、表示とJPEG/TIFFの境界でだけbounded sRGBへ収容する。
 
@@ -32,7 +36,7 @@ v4ではAppleの高品質縮小[`CILanczosScaleTransform`](https://developer.app
 
 plateau比較は、面積差だけでなくfinal raster上のsquare-3x3 dilationを使い、斜めを含む1px境界移動と、それより外側に生じた領域を分けた。これは物体境界で領域IoUとは別の境界感度が必要だとする[Boundary IoU研究](https://openaccess.thecvf.com/content/CVPR2021/html/Cheng_Boundary_IoU_Improving_Object-Centric_Image_Segmentation_Evaluation_CVPR_2021_paper.html)を参考にしたPhoto Bench固有の許容であり、論文の閾値を流用したものではない。最大connected component、最悪128×128 window、Chebyshev距離histogramも保存するが、scene数が不足するため現時点では診断値とし、結果を見てhard thresholdを後付けしない。
 
-現行v4のformal benchmarkは、process-fresh `357.990 ms`、warm high-quality `58.023 ms`、原寸JPEG `225.922 ms`が合格し、warm slider `55.649 ms`だけが50ms gateを超えた。ただし現行sourceは1 runだけで、安定性を証明しない。旧v3の連続3 runは履歴として残すが、現行合否へ混ぜない。[Google Benchmarkの反復・warm-up指針](https://google.github.io/benchmark/user_guide.html)を参考に全sampleを保存し、遅い値をoutlierとして削除・再試行しない。
+最新のarchived v4 formal benchmarkは、process-fresh `357.990 ms`、warm high-quality `58.023 ms`、原寸JPEG `225.922 ms`が合格し、warm slider `55.649 ms`だけが50ms gateを超えた。ただし1 runだけで、WB観測source追加前のmanifest / sourceへ固定され、現行HEADとはfingerprintが異なる。したがって安定性も現行sourceの性能合否も証明しない。旧v3の連続3 runは履歴として残すが、v4の反復へ混ぜない。[Google Benchmarkの反復・warm-up指針](https://google.github.io/benchmark/user_guide.html)を参考に全sampleを保存し、遅い値をoutlierとして削除・再試行しない。
 
 画質不採用の縮小decodeを前提にせず、[Core Image render destinationの公式例](https://developer.apple.com/documentation/coreimage/generating-an-animation-with-a-core-image-render-destination)に沿ってproductionのfull-decode graphをMetal-backed destinationへ直接描画するopt-in経路を実装した。最終ハードニング直前の詳細traceではGPU commandは完了したが、初回は[`presentedTime`](https://developer.apple.com/documentation/metal/mtldrawable/presentedtime)が0、再試行はpresented callbackが返らず、実画面提示を確認できなかった。その後に`drawableSize > 0`のwatchdog条件と`allowsNextDrawableTimeout = true`を追加し、最終sourceではfallback画像と空表示がないことを再確認したが、同じ詳細traceは再取得していない。Appleが示すとおり[`MTKView.currentDrawable`](https://developer.apple.com/documentation/metalkit/mtkview/currentdrawable)はnilになり得るため、再試行・可視性・10秒deadline・一方向fallbackを実装したが、positive presentationなしに成功とは判定しない。
 
@@ -77,7 +81,7 @@ AGPL-3.0なのでコードは取り込まない。同プロジェクトの[Light
 | 基本階調 | 露出後、輝度をsRGB transferへ写し、5調整を共通RGBゲインで適用 | `analytic-monotonic-hdr-basic-tone-v3`。Adobe数式ではない |
 | curve | encoded-sRGB 1D区分線形曲線。0〜1外は有限な正の端点傾きで外挿 | XMP点列のclean-room近似。実験扱いで初期OFF |
 | color mixer | OKLCh 8バンドでhue / chromaを環状補間し、効果量100%のLuminanceを`+100 = +1 EV`の局所露光として適用。相対chromaで低彩度を保護 | Adobe HSLの内部処理とは異なる。実験扱いで初期OFF |
-| WB | XMPのモード・絶対値・増分値を保持 | レンダー未実装 |
+| WB | XMPのモード・絶対値・増分値を保持し、開発runnerでAs Shot / custom neutralを固定観測 | 2sceneの観測構造だけが成立。順位・変換式・製品preview / export / persistence / Undoは未実装 |
 | resize / 出力変換 | extended-linear編集 → edge-clamped Lanczos → terminal sRGB transform | terminal nodeはmax-channel C1 shoulder + OKLCh固定L/h gamut compression。bounded-sRGB neutral入力はbypass |
 | ファイル出力 | 原寸sRGB JPEG、比較用16bit sRGB TIFF | 原本上書きなし、JPEGはatomic install |
 
@@ -128,12 +132,12 @@ bounded sRGB内の通常画像でカラー編集がneutralなら、最終出力�
 
 色差はSharmaらの[CIEDE2000定義](https://hajim.rochester.edu/ece/sites/gsharma/papers/)を実装し、全画面だけでなく中間調と低ディテール領域も保存する。さらに未ぼかし16bit TIFFからcomplete / near clipを測り、basic/full共有ハイライトに新たに生じたplateau、linear-sRGB輝度の平均EV差もfail-closedで判定する。preview parity v4はぼかし後ΔE00 p95、signed plateau面積差、1px dilation外面積もhard gateとし、canonical settleは縮小後の整数clip countを別gateにする。単一の平均ΔEだけでは、肌、局所クリップ、ノイズ、シャープネス、色相回転を評価できないため、最終Go判定では領域別ΔE、EV、ハイライト階調、100%表示の解像感、複数ディスプレイでの目視を併用する。
 
-現行の自動回帰はSwift Testing `99 tests / 7 suites`とPython `61 tests`である。従来のtone / color / decode / evidence契約に加え、旧 / 新graphの識別、edge-clamped Lanczos、縮小後terminal transform、canonical settleの整数clip countと欠測時fail-closedを検証する。Metal直接表示のactual present lifecycle、RAW WB、camera profile / DCP、独立holdout品質は未検証である。
+現行の自動回帰はSwift Testing `119 tests / 10 suites`、Python calibration analyzer `61 tests`、Python WB observation analyzer `17 tests`である。従来のtone / color / decode / evidence契約に加え、旧 / 新graphの識別、edge-clamped Lanczos、縮小後terminal transform、canonical settleの整数clip count、fresh RAW WB filter、固定18候補、private data / provenance / no-replace契約と欠測時fail-closedを検証する。Metal直接表示のactual present lifecycle、production WB、camera profile / DCP、独立holdout品質は未検証である。
 
 ## 次の優先順位
 
-1. P1524180 / RAWのEV・色差を段別教師sweepで分解し、RAW WBをdecodeへ接続する
-2. 5〜10以上の探索sceneとsealed holdoutを追加し、camera profile / DCP、tone、colorを独立仮説として比較する
+1. LightroomのTemperature / Tint教師sweep、gray card / ColorChecker、領域別指標を追加し、観測済みRAW WB候補をWB・baseline exposure・profile差へ分解する
+2. 5〜10以上の探索sceneと最低2 sealed holdoutを追加し、事前登録gateを通ったWBだけをlatest-only decode、preview / export一致、永続化、Undoと一体で製品へ接続する
 3. 編集値の再起動後復元とSQLiteカタログを実装し、原本・正本DB・再生成可能cacheを分離する
 4. crop / rotate、100% detail、sharpening、noise reduction、lens correctionをpreview / export共通契約で実装する
 5. 現行full-decode UIのinput-to-presentを測り、Metal直接表示はpositive presentationを得られる範囲だけtimeboxして比較する

@@ -1,6 +1,6 @@
 # Photo Bench（仮称）
 
-自分専用のmacOS向けローカル写真現像・整理アプリです。クラウドやAI機能を持たず、最終的にLightroomの有料契約を終了して、ローカルだけで遜色ない実用画質・操作感・非破壊編集へ移行することを目指します。Lightroomは当面継続し、教師出力と退避手段として活用します。現在は**Phase 0の証跡基盤、preview parity、canonical settle v4、原寸decode graphのMetal直接表示プロトタイプまで実装した段階**です。現行graphは2つの既知sceneで縮小後clip非回帰を通りましたが、Lightroom品質、縮小RAW preview、日常編集機能は未達であり、**まだ解約できる完成度ではありません**。
+自分専用のmacOS向けローカル写真現像・整理アプリです。クラウドやAI機能を持たず、最終的にLightroomの有料契約を終了して、ローカルだけで遜色ない実用画質・操作感・非破壊編集へ移行することを目指します。Lightroomは当面継続し、教師出力と退避手段として活用します。現在は**Phase 0の証跡基盤、preview parity、canonical settle v4、原寸decode graphのMetal直接表示プロトタイプ、開発用RAWホワイトバランス観測基盤まで実装した段階**です。現行graphは2つの既知sceneで縮小後clip非回帰を通りましたが、Lightroom品質、製品のRAW WB、縮小RAW preview、日常編集機能は未達であり、**まだ解約できる完成度ではありません**。
 
 公開Gitリポジトリにはsource・tests・docs・契約manifestだけを置き、個人写真、Lightroom基準画像、生成render、署名済みappは含めません。詳細は[Repository and local data policy](./DATA_POLICY.md)を参照してください。
 
@@ -30,6 +30,7 @@ Finderから`open-photo.command`をダブルクリックします。ターミナ
 - 写真ごとの編集状態を、アプリを閉じるまでメモリ内に保持
 - `colorful` / `bluesky2` / `night` / `pastel`のProcess Version 11 XMPを解析
 - XMPの属性形式と要素形式を解析し、基本8項目を近似適用。WBはモード・絶対値・増分値・明示的な0を区別して保持
+- 既存delegateのAs Shot出力と、fresh Core Image RAW 8 filterへ設定したcustom Temperature・Tintを、製品未接続の開発用経路で観測。個人RAWと生成artifactをGit管理外に置き、2scene×18候補をhash-lockする
 - RGBトーンカーブをencoded-sRGBの1D区分線形曲線で適用し、0〜1外は正の端点傾きで外挿。8色カラーミキサーはOKLChで色相・クロマを補間し、XMP Luminanceを効果量100%の色で`+100 = +1 EV`となる色域別局所露光として扱い、低彩度色を保護する。Adobe HSL Luminanceと同義ではない実験的近似なので、curveとmixerは初期OFF
 - RAWとカラー編集途中はextended-linear sRGBを保持し、preview / 指定サイズ時はedge-clamped Lanczosで縮小した後にterminal sRGB transformを適用。既にbounded sRGBで、かつカラー編集がneutralなJPEG等は変換をbypassする
 - 原寸sRGB JPEGを書き出し。選択中だけでなく走査済みの全原本、既存のsymlink / hard link、既存フォルダは上書きしない
@@ -62,9 +63,15 @@ preview parityは、原寸・3,072px・3,840pxの各RAW decodeへ同じ編集を
 
 全6件の失敗理由は上限`0.0001`の1px dilation外にあるspatial plateauだけです。正式結果を見た後に閾値は緩めず、選択候補なし・full-resolution RAW decodeへのfallbackとしています。
 
+## RAWホワイトバランスの現在地
+
+製品へ接続する前に、As Shotは既存production decoder delegateへ委ねたまま、custom Temperature / Tintだけをfresh Core Image RAW 8 filterで観測する独立suiteを追加しました。正式run `51ba2f46-185d-4b87-8345-407d380214cd`は、2 development scene、各18候補、40 / 40 artifactの構造・hash・metadata検証に合格しました。custom中心点のsetter順序は両sceneでbyte exactでした。
+
+ただし採用状態は`exploratory-observation-only`、`productionAdoptionAllowed = false`です。Lightroom側のTemperature / Tint教師sweep、灰色基準と領域別評価、5〜10以上のdevelopment scene、最低2 sealed holdoutがないため、候補の順位やAdobe→Apple変換は決めていません。製品のpreview / export / persistence / Undoにも未接続です。正確な結果と次の受け入れ条件は[RAWホワイトバランス観測記録](./docs/WHITE_BALANCE_OBSERVATION.md)を参照してください。
+
 ## 性能基準の現在地
 
-manifest v4の現行sourceとbinaryを固定した正式benchmark run `bbb5bc5b-7c12-4b29-b803-c863d6059d55`はeligibleで、4 workload中3件が合格しました。
+manifest v4の最新正式benchmark archive `bbb5bc5b-7c12-4b29-b803-c863d6059d55`はeligibleで、4 workload中3件が合格しました。ただしWB観測source追加前のmanifest / sourceへ固定され、現行HEADとはfingerprintが異なります。production render graphの変更を示す差ではありませんが、現行sourceのformal性能合否としては未評価です。
 
 | engine workload | p95 | gate | 判定 |
 |---|---:|---:|---|
@@ -73,7 +80,7 @@ manifest v4の現行sourceとbinaryを固定した正式benchmark run `bbb5bc5b-
 | warm full-current preview | 58.0227 ms | ≤ 300 ms | 合格 |
 | 原寸JPEG quality 0.92 | 225.9223 ms | ≤ 3,000 ms | 合格 |
 
-slider proxyだけが50ms gateを超えました。これは1回のengine runで、安定性や実UIのinput-to-screen latencyを証明しません。旧v3 sourceの連続3 runは履歴として残しますが、現行v4の合否へ継承しません。詳しくは[BENCHMARK.md](./BENCHMARK.md)を参照してください。
+slider proxyだけが50ms gateを超えました。これは1回のengine runで、安定性や実UIのinput-to-screen latencyを証明しません。canonical v3の連続3 runは履歴として残しますが、v4の合否へ継承しません。詳しくは[BENCHMARK.md](./BENCHMARK.md)を参照してください。
 
 process-freshは新しいworker processですが、timer前のmanifest検証がRAW全体をSHA-256読込するため、cold file-openではなくprevalidated / page-cache-warmed入力です。また現行値はengine wall-clockで、実UIのinput-to-screen latency、drop frame、hardware GPU timeではありません。定義、全分布、未計測項目、次の改善順は[BENCHMARK.md](./BENCHMARK.md)を正とします。
 
@@ -86,11 +93,12 @@ process-freshは新しいworker processですが、timer前のmanifest検証がR
 ## 重要な制限
 
 - Adobe Color、Adobe PV2012の非公開数式、camera profile / DCP、レンズプロファイルは再現していません。
-- WBはXMPのモード・絶対値・増分値・明示的な0を区別して解析・保持しますが、レンダーへの適用は未実装です。未知のCamera Raw画像処理項目と埋め込みAdobe Lookは「未対応」として表示します。
+- WBはXMPのモード・絶対値・増分値・明示的な0を区別して解析・保持し、開発用のRAW観測経路もありますが、製品のpreview / export / persistenceへは未接続です。未知のCamera Raw画像処理項目と埋め込みAdobe Lookは「未対応」として表示します。
 - クロップ、ブラシマスク、SQLiteカタログ、評価・選別、アルバム、再起動後の編集復元は未実装です。
 - DC-S5以外のRAWは読めても機種別の色校正はされません。
 - 2つのdevelopment sceneだけで独立holdoutがありません。最終判定には5〜10以上の探索sceneとsealed holdout、各スライダー単独の教師書き出しが必要です。
 - 編集永続化、SQLiteカタログ、評価・選別、WBレンダー、クロップがなく、毎日の編集ループは成立しません。
+- WB観測は2 development scene、1 camera model、0 holdoutで、Lightroomの固定As Shot参照だけです。構造検証の合格を画質やproduction採用の合格に読み替えません。
 - 校正archiveの置換はatomicですがcross-process lockがなく、同じrootの並行校正は禁止です。
 
 ## データの扱い
@@ -100,28 +108,33 @@ process-freshは新しいworker processですが、timer前のmanifest検証がR
 - NSOpenPanel / NSSavePanelと復元bookmarkのアクセス開始・終了を対応させます。外付けSSDが一時的に外れている場合はbookmarkを削除せず、再接続後に復元できる状態を保ちます。
 - JPEGは指定先へ隠し一時ファイルを作り、完成後だけ置き換えます。失敗時は一時ファイルを除去します。
 - RAW固有のMakerNote等はレンダリング済みJPEGへコピーしません。
-- 現在の開発用ルートはこのフォルダです。完成時は`/Volumes/hihirohub/pictures/edit`相当を選べる設計です。
+- 現在の開発用ルートはこのフォルダです。完成時はユーザーが選んだ外付けSSD上の写真フォルダを復元できる設計です。
 
 ## 検証
 
 ```sh
+cd /path/to/photoedit
 swift test
-swift run -c release PhotoBenchCalibration /Users/takuyatakahama/Documents/app/NIHO/others/photo
-python3 scripts/analyze-calibration.py /Users/takuyatakahama/Documents/app/NIHO/others/photo
+swift run -c release PhotoBenchCalibration .
+python3 scripts/analyze-calibration.py .
 python3 scripts/test_analyze_calibration.py
-swift run -c release PhotoBenchBenchmark /Users/takuyatakahama/Documents/app/NIHO/others/photo
+swift run -c release PhotoBenchWhiteBalanceObservation .
+python3 scripts/analyze-white-balance-observation.py . \
+  --run .photobench/white-balance-observations/<run-id>/run.json
+python3 -m unittest scripts/test_analyze_white_balance_observation.py
+swift run -c release PhotoBenchBenchmark .
 ```
 
-現在はSwift Testing **99 tests / 7 suites**とPython **61 tests**が成功しています。旧 / 新graphの識別、edge-clamped Lanczos後のterminal transform、未clamp縮小との境界alpha比較、canonical settleの整数clip countとfail-closed契約を追加で検証しています。これは2sceneの生成raster契約であり、実画面のpresent lifecycleやholdout品質をテストしたものではありません。
+現在はSwift Testing **119 tests / 10 suites**、Python calibration analyzer **61 tests**、Python WB observation analyzer **17 tests**が成功しています。旧 / 新graphの識別、edge-clamped Lanczos後のterminal transform、未clamp縮小との境界alpha比較、canonical settleの整数clip count、fresh RAW WB filter、18候補の固定集合、private data / provenance / no-replace契約を検証しています。これは2sceneの生成rasterと観測構造の契約であり、実画面のpresent lifecycle、production WB、holdout品質をテストしたものではありません。
 
-厳格モードでは、全gate合格をexit `0`、eligible runの数値不合格をexit `1`、構造・hash・runtime不整合をexit `2`にします。校正run `77c1c00b-2a1e-4e46-8713-99095ebda59c`はcanonical settleに合格しますが、Lightroom品質とpreview parityが不合格なので、全gate enforceの期待exitは`1`です。benchmarkもslider gate不合格のためexit `1`です。
+厳格モードでは、全gate合格をexit `0`、eligible runの数値不合格をexit `1`、構造・hash・runtime不整合をexit `2`にします。校正run `1c324af0-7ec3-4c33-bc6f-3bd653794800`はcanonical settleに合格しますが、Lightroom品質とpreview parityが不合格なので、全gate enforceの期待exitは`1`です。WB analyzerは正式runの構造検証に成功してexit `0`ですが、production adoptionは契約上falseです。既存benchmarkもslider gate不合格のためexit `1`です。
 
 ```sh
-python3 scripts/analyze-calibration.py /Users/takuyatakahama/Documents/app/NIHO/others/photo \
+python3 scripts/analyze-calibration.py . \
   --enforce \
   --enforce-preview-parity \
   --enforce-canonical-settle
-swift run -c release PhotoBenchBenchmark /Users/takuyatakahama/Documents/app/NIHO/others/photo --enforce
+swift run -c release PhotoBenchBenchmark . --enforce
 ```
 
 2026-07-23の実UI監査では、`P1524180.RW2`へ`niho-priset_colorful.xmp`を読み込み、`exports/ui-audit-P1524180.jpg`へ6000×4000・sRGB IEC61966-2.1のJPEGを書き出しました。書き出し後もRAWとXMPのSHA-256は事前値と一致し、同じ`.app`の再起動では選択ダイアログなしで10枚を復元しました。
@@ -131,9 +144,12 @@ swift run -c release PhotoBenchBenchmark /Users/takuyatakahama/Documents/app/NIH
 - [プロジェクト概要・別セッション向け引継ぎ](./PROJECT_OVERVIEW.md)
 - [全体設計](./DESIGN.md)
 - [DC-S5 / Lightroom色校正](./CALIBRATION.md)
+- [RAWホワイトバランス観測記録](./docs/WHITE_BALANCE_OBSERVATION.md)
 - [再現可能な性能基準とP1判断](./BENCHMARK.md)
 - [OSS・公式仕様の調査と採用判断](./RESEARCH.md)
 - [Claude外部調査に基づく改善提案（方針レベルの参考資料）](./reviews/2026-07-24-claude-research-improvement-proposals.md)
+- [RAW WB観測のClaude設計レビューと反映記録](./reviews/2026-07-24-claude-raw-wb-design-review.md)
+- [RAW WB観測のClaude実装レビューと反映記録](./reviews/2026-07-24-claude-raw-wb-implementation-review.md)
 - [P1-3 Metal直接表示のClaudeレビューと反映記録](./reviews/2026-07-24-claude-metal-direct-review.md)
 - [P0証跡基盤とP1方針のClaude最終レビュー](./reviews/2026-07-24-claude-p0-evidence-review.md)
 - [P1実装後のClaude最終レビューと対応記録](./reviews/2026-07-24-claude-p1-final-review.md)
