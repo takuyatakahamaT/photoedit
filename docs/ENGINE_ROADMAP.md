@@ -208,6 +208,12 @@ Swift実装（LibRaw 0.21.4 + Adobe Standard DCP + Adobe Color、CIColorCube 64�
 
 更新版bluesky2全体（HSL／彩度／グレーディング／Calibration／ハイライト／シャドウは旧近似のまま）: **5.03 / 7.10 / 6.55**（開始時 17〜22）。EV +0.17〜+0.36、彩度比 1.08〜1.37 で、残りは旧近似のハイライト／シャドウ（明るさ）と彩度系（C2／C3 で置換）。
 
+### フェーズ2 C2 の結果（2026-09-22、`c1d274d`）
+
+HSL（リニアRGBのHSV色相、8帯のcos²クロスフェード、彩度±で異なる式、輝度は帯別 (K,P,Q) 表）、Vibrance／Saturation（輝度不動点・色相保存のクロマ倍率。Vibrance は彩度・肌色保護）、Color Grading（輝度の山型重み＋色相方向＋既存彩度の保護）、Camera Calibration（リニアProPhotoの 3×3 行列）を `ColorOps` として実装し、fixture 26件×64色で Python 参照と相対 1e-4 で一致。順序は cube P（トーン）→ cube Q（Vibrance→Saturation→HSL→Grading）→ Calibration 行列。旧近似（`CIVibrance` / `CIColorControls` / OKLCh `PerceptualColorMixer`）は撤去。
+
+実写ゲート（LR書き出し比、領域平均ΔE）: only-hsl 1.38 / only-saturation 1.27 / only-vibrance 1.30 / only-splittoning 1.33 / only-calibration 2.24 / SatOrange+60 1.40, 1.51 / LumBlue+60 1.33, 1.54 / GreenHue+50 1.99, 2.15 / BlueSat+50 2.57, 2.68。更新版 bluesky2 全体は **4.16 / 5.55 / 5.62**（C1 時点 5.03 / 7.10 / 6.55）、彩度比 0.93〜1.07。残りは旧近似のハイライト／シャドウ（EV +0.18〜+0.33）で C3 の対象。MidtoneLum / GlobalLum は未計測のため保持のみ。cube Q の生成は 610ms で要最適化。
+
 旧校正契約（`calibration/*.json`、7月の manifest）は歴史的証跡として変更しない。関連テスト9件は OS固定条件と processing fingerprint の変更で失敗する既知事項。フェーズ4/5 で契約を新ゲートへ置き換えて整理する。
 
 ## 8. リスクと見通し

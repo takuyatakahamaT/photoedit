@@ -1,6 +1,6 @@
 # Photo Bench 進捗・目標・次の作業
 
-更新日: 2026-09-22 JST
+更新日: 2026-09-23 JST
 
 ## 現在の目標
 
@@ -46,7 +46,7 @@
 - **フェーズ1完了:** RAWの基準現像を LibRaw + Adobe Standard DCP + Adobe Color（Lightroom同梱の資産を実行時に読む）へ切り替え、プリセット無しでLR既定と平均ΔE00 1.2〜1.9（旧: 2.4〜3.0、明るく高彩度）。アプリの写真情報に「現像: Adobe Standard + Adobe Color（LibRaw）」が出る。`photobench-render` CLI で GUI 無しに書き出せる。
 - **round0 / round1 の計測完了（2026-09-22）。** 機械生成XMPはLRが読み、手動適用と完全一致。チャート194枚・実写94枚から操作ごとの式を同定した（`.photobench/phase2/{tone,hsl,color,spatial}/model.md`）。RAW実写で確定: 露出＝トーンカーブ前のリニア倍率、絶対WB＝DNG SDKの式、基準露出 −0.135 EV、Adobe Colorの点カーブ＝sRGB符号化RGBTone、コントラスト／白／黒／parametric／点カーブ＝トーンカーブ後のsRGB符号化空間、HSLとCalibration＝出力参照。
 - ハイライト／シャドウは空間処理（HALDでは測れない）。同定した「大域カーブ＋ディテール保持」モデルの到達点は実写15ケース平均ΔE 3.1（大域のみと同程度）で、ここが最後まで残る残差。
-- 実装は3段: C1（露出・絶対WB・コントラスト・白黒・parametric・点カーブ、[PHASE2_DEVELOP_PIPELINE.md](PHASE2_DEVELOP_PIPELINE.md)）→ C2（HSL・Calibration・Color Grading・Vibrance／Saturation）→ C3（ハイライト／シャドウ）、[PHASE2_C2_C3.md](PHASE2_C2_C3.md)。C1 は `2df8f6a` で完了（単一操作ゲート 1.2〜2.1。bluesky2全体は 5.0〜7.1 まで改善、開始時 17〜22）。C2 を実装中。
+- 実装は3段: C1（露出・絶対WB・コントラスト・白黒・parametric・点カーブ、[PHASE2_DEVELOP_PIPELINE.md](PHASE2_DEVELOP_PIPELINE.md)）→ C2（HSL・Calibration・Color Grading・Vibrance／Saturation）→ C3（ハイライト／シャドウ）、[PHASE2_C2_C3.md](PHASE2_C2_C3.md)。C1 は `2df8f6a` で完了（単一操作ゲート 1.2〜2.1。bluesky2全体は 5.0〜7.1 まで改善、開始時 17〜22）。C2 は `c1d274d` で完了（実写ゲート: HSL 1.38 / Saturation 1.27 / Vibrance 1.30 / SplitToning 1.33 / Calibration 2.24 / GreenHue+50 2.0〜2.2 / BlueSat+50 2.6〜2.7。bluesky2全体は **4.16 / 5.55 / 5.62**、彩度比 0.93〜1.07。残りは旧近似のハイライト／シャドウで EV +0.18〜+0.33）。**C3（ハイライト／シャドウの局所ラプラシアン）を 2026-09-23 に実装中。** 並行して Texture／Clarity／Dehaze の同定（round1 の書き出しを使用）と、アプリ UI への HSL・カーブ・グレーディング・Calibration・絶対WB の露出を進めている。
 
 根拠・方式比較・出典は[ENGINE_ROADMAP.md](ENGINE_ROADMAP.md)。過去の調査は[汎用XMPエンジン設計](GENERIC_XMP_ENGINE.md)、[エンジン比較・根拠](ENGINE_RESEARCH.md)。
 
@@ -56,8 +56,8 @@
 |---|---|---|
 | 0 | ~~チェックポイントcommit、bluesky2専用補正の撤去~~（完了）、計測リグ（round0生成・判定は済み）、LRローカルタブのXMP往復確認（オーナーの書き出し待ち） | 往復が確認でき、リグが再現可能 |
 | 1 | ~~RAW基準現像（DCP＋Adobe Color＋ACR既定カーブ＋基準露出）~~ **完了（`ce91bfc`）。** 設計は[PHASE1_BASE_RENDERING.md](PHASE1_BASE_RENDERING.md)。3枚とも平均ΔE00 1.2〜1.9、EV差 ±0.03 で合格。旧土台は 2.4〜3.0 | プリセット無しでLR既定と平均ΔE00 ≤ 2、平均EV差 ≤ 0.05（`compare_renders.py`） |
-| 2 | 画素単位の色操作。計測・同定は完了。実装 C1（進行中）→ C2 | 実写（round0/1の参照）で操作ごとに平均ΔE00 ≤ 2（基準現像 1.2〜1.4 と同水準） |
-| 3 | 空間操作（ハイライト／シャドウ→Texture／Clarity／Dehaze）。同定 v1 完了（大域＋ディテール保持、平均3.1）。実装 C3 | v1: 実写15ケース平均 ≤ 3.1。以降、局所モデルの改良で 2 以下を目指す |
+| 2 | 画素単位の色操作。計測・同定は完了。~~実装 C1 → C2~~ **完了（`2df8f6a`、`c1d274d`）** | 実写（round0/1の参照）で操作ごとに平均ΔE00 ≤ 2（基準現像 1.2〜1.4 と同水準） |
+| 3 | 空間操作（ハイライト／シャドウ→Texture／Clarity／Dehaze）。同定 v2 完了（局所ラプラシアン、H/S 単体 12 ケース領域平均 2.08）。実装 C3（進行中）→ C4（Texture／Clarity／Dehaze、同定中） | v1: 実写15ケース平均 ≤ 3.1。以降、局所モデルの改良で 2 以下を目指す |
 | 4 | 既定シャープ／NR、レンズ補正、周辺光量・粒子、速度 | 100%表示の解像感がLRと同等 |
 | 5 | 未使用プリセット×未使用写真の総合検証 | オーナーが普段使いできると判断 |
 | 6 | NIHO Desktop統合 | — |
