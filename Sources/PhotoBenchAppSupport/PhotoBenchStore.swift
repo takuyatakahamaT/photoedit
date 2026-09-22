@@ -94,12 +94,9 @@ public extension PhotoEditSnapshot {
     static let bluesky2ReferencePresetID = "01383daec2d7ba46bc0cf857e597ee85e6fab636c14c01c837fbf350eacbb054"
 
     /// Applies every newly selected preset through the same XMP patch path.
-    /// Saved reference looks remain in snapshots loaded from earlier edits.
     func applying(preset storedPreset: StoredXMPPreset) -> PhotoEditSnapshot {
-        var baseSettings = settings
-        baseSettings.referenceLook = nil
-        return PhotoEditSnapshot(
-            settings: storedPreset.preset.applying(to: baseSettings),
+        PhotoEditSnapshot(
+            settings: storedPreset.preset.applying(to: settings),
             appliedPresetID: storedPreset.id,
             appliedPreset: storedPreset.preset,
             applyApproximateXMPColor: false

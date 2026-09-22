@@ -909,17 +909,10 @@ public final class RenderEngine: @unchecked Sendable {
 
     func apply(
         settings: EditSettings,
-        to source: CIImage,
-        decodeInfo: DecodeInfo? = nil
+        to source: CIImage
     ) -> CIImage {
-        var image = source
-        if let referenceLook = settings.referenceLook,
-           let decodeInfo {
-            image = BlueskyReferenceLook.apply(to: image, info: decodeInfo, look: referenceLook)
-        }
-
-        image = RelativeColorAdjustment.apply(
-            to: image,
+        var image = RelativeColorAdjustment.apply(
+            to: source,
             relativeTemperature: settings.relativeTemperature,
             relativeTint: settings.relativeTint
         )
@@ -985,7 +978,7 @@ public final class RenderEngine: @unchecked Sendable {
     /// Kept module-internal so tests can exercise the real RAW/raster branch
     /// together with the final shoulder and gamut transform.
     func applyForOutput(decoded: DecodedPhoto, settings: EditSettings) -> CIImage {
-        let working = apply(settings: settings, to: decoded.image, decodeInfo: decoded.info)
+        let working = apply(settings: settings, to: decoded.image)
         return applyOutputTransformIfRequired(
             to: working,
             info: decoded.info,
@@ -1009,7 +1002,7 @@ public final class RenderEngine: @unchecked Sendable {
             }
         }
 
-        var image = apply(settings: settings, to: decoded.image, decodeInfo: decoded.info)
+        var image = apply(settings: settings, to: decoded.image)
         if outputTransformPlacement == .legacyBeforeDownsampling {
             image = applyOutputTransformIfRequired(
                 to: image,

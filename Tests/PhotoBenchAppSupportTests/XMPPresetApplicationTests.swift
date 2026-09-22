@@ -3,32 +3,7 @@ import PhotoBenchAppSupport
 import PhotoCore
 import Testing
 
-struct ReferenceLookApplicationTests {
-    @Test func updatedPresetDigestUsesItsXMPPatchAndDoesNotSelectAReferenceLook() throws {
-        let root = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let store = PhotoBenchStore(rootDirectory: root)
-        let stored = try updatedPreset(in: store)
-        #expect(stored.id == PhotoEditSnapshot.bluesky2ReferencePresetID)
-
-        let base = PhotoEditSnapshot(settings: EditSettings(
-            exposure: 1.2,
-            saturation: -18,
-            relativeTemperature: 24,
-            relativeTint: -11,
-            referenceLook: .bluesky2September2026
-        ))
-        var expectedBase = base.settings
-        expectedBase.referenceLook = nil
-
-        let applied = base.applying(preset: stored)
-        #expect(applied.settings == stored.preset.applying(to: expectedBase))
-        #expect(applied.settings.referenceLook == nil)
-        #expect(applied.appliedPresetID == stored.id)
-        #expect(applied.appliedPreset == stored.preset)
-        #expect(!applied.applyApproximateXMPColor)
-    }
-
+struct XMPPresetApplicationTests {
     @Test func metadataOnlyXMPChangesKeepRenderSettingsAndExposureChangesAreApplied() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -65,17 +40,12 @@ struct ReferenceLookApplicationTests {
         #expect(original.preset.name != metadataVariant.preset.name)
         #expect(original.preset.settings == metadataVariant.preset.settings)
 
-        let base = PhotoEditSnapshot(settings: EditSettings(
-            exposure: -0.4,
-            saturation: 12,
-            referenceLook: .bluesky2September2026V3
-        ))
+        let base = PhotoEditSnapshot(settings: EditSettings(exposure: -0.4, saturation: 12))
         let originalApplication = base.applying(preset: original)
         let metadataApplication = base.applying(preset: metadataVariant)
         let exposureApplication = base.applying(preset: exposureVariant)
 
         #expect(originalApplication.settings == metadataApplication.settings)
-        #expect(originalApplication.settings.referenceLook == nil)
         #expect(originalApplication.settings.exposure == original.preset.settings.exposure)
         #expect(exposureApplication.settings.exposure == exposureVariant.preset.settings.exposure)
         #expect(exposureApplication.settings.exposure != originalApplication.settings.exposure)
@@ -100,85 +70,14 @@ struct ReferenceLookApplicationTests {
         #expect(cases[0].id != PhotoEditSnapshot.bluesky2ReferencePresetID)
         #expect(cases[1].id != PhotoEditSnapshot.bluesky2ReferencePresetID)
 
-        var settings = EditSettings(exposure: 0.4, saturation: 8)
-        settings.referenceLook = .bluesky2September2026
+        let settings = EditSettings(exposure: 0.4, saturation: 8)
         let base = PhotoEditSnapshot(settings: settings)
         for stored in cases {
             let applied = base.applying(preset: stored)
-            var expectedBase = settings
-            expectedBase.referenceLook = nil
-            #expect(applied.settings == stored.preset.applying(to: expectedBase))
-            #expect(applied.settings.referenceLook == nil)
+            #expect(applied.settings == stored.preset.applying(to: settings))
             #expect(applied.appliedPresetID == stored.id)
             #expect(!applied.applyApproximateXMPColor)
         }
-    }
-
-    @Test func xmpPresetApplicationClearsSavedReferenceLook() throws {
-        let root = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let store = PhotoBenchStore(rootDirectory: root)
-        let updated = try updatedPreset(in: store)
-        let colorful = try store.registerPreset(
-            data: xmpData("niho-priset_colorful.xmp"),
-            name: "colorful"
-        )
-        let referenceBase = PhotoEditSnapshot(
-            settings: EditSettings(referenceLook: .bluesky2September2026)
-        )
-
-        let updatedXMPApplication = referenceBase.applying(preset: updated)
-        var fallbackBase = referenceBase.settings
-        fallbackBase.referenceLook = nil
-        #expect(updatedXMPApplication.settings == updated.preset.applying(to: fallbackBase))
-        #expect(updatedXMPApplication.settings.referenceLook == nil)
-        #expect(!updatedXMPApplication.applyApproximateXMPColor)
-
-        let otherPreset = referenceBase.applying(preset: colorful)
-        #expect(otherPreset.settings.referenceLook == nil)
-        #expect(otherPreset.appliedPresetID == colorful.id)
-        #expect(!otherPreset.applyApproximateXMPColor)
-    }
-
-    @Test func xmpApplicationAndSavedReferenceLooksPersistAndHistoryUndoRedoRestoreThem() throws {
-        let root = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let store = PhotoBenchStore(rootDirectory: root)
-        let stored = try updatedPreset(in: store)
-        let snapshot = PhotoEditSnapshot.neutral.applying(preset: stored)
-        let photo = URL(fileURLWithPath: "/private/photos/reference-look.jpg")
-        try store.saveEdit(snapshot, for: photo)
-        let restored = try PhotoBenchStore(rootDirectory: root).loadEdit(for: photo)?.snapshot
-        #expect(restored == snapshot)
-        #expect(restored?.settings.referenceLook == nil)
-        #expect(restored?.settings == stored.preset.applying(to: .neutral))
-
-        let previousSnapshot = PhotoEditSnapshot(
-            settings: EditSettings(referenceLook: .bluesky2September2026)
-        )
-        let previousV3Snapshot = PhotoEditSnapshot(
-            settings: EditSettings(referenceLook: .bluesky2September2026V3)
-        )
-        let previousPhoto = URL(fileURLWithPath: "/private/photos/reference-look-v2.jpg")
-        let previousV3Photo = URL(fileURLWithPath: "/private/photos/reference-look-v3.jpg")
-        try store.saveEdit(previousSnapshot, for: previousPhoto)
-        try store.saveEdit(previousV3Snapshot, for: previousV3Photo)
-        let restoredPrevious = try PhotoBenchStore(rootDirectory: root)
-            .loadEdit(for: previousPhoto)?.snapshot
-        let restoredPreviousV3 = try PhotoBenchStore(rootDirectory: root)
-            .loadEdit(for: previousV3Photo)?.snapshot
-        #expect(restoredPrevious == previousSnapshot)
-        #expect(restoredPrevious?.settings.referenceLook == .bluesky2September2026)
-        #expect(restoredPreviousV3 == previousV3Snapshot)
-        #expect(restoredPreviousV3?.settings.referenceLook == .bluesky2September2026V3)
-
-        var history = PhotoEditHistory()
-        history.record(before: previousSnapshot, after: previousV3Snapshot)
-        history.record(before: previousV3Snapshot, after: snapshot)
-        #expect(history.undo(current: snapshot) == previousV3Snapshot)
-        #expect(history.undo(current: previousV3Snapshot) == previousSnapshot)
-        #expect(history.redo(current: previousSnapshot) == previousV3Snapshot)
-        #expect(history.redo(current: previousV3Snapshot) == snapshot)
     }
 
     @Test func seedVersionTwoAddsUpdatedPresetWithoutRemovingTheExistingFourOrEdits() throws {
@@ -244,7 +143,7 @@ struct ReferenceLookApplicationTests {
 
     private func temporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("PhotoBenchReferenceLookTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("PhotoBenchXMPPresetApplicationTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }

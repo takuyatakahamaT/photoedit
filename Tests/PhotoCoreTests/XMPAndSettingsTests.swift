@@ -102,6 +102,22 @@ struct XMPAndSettingsTests {
         #expect(settings.whiteBalance == .asShot)
     }
 
+    @Test func decodesLegacyEditSettingsJSONWithUnknownReferenceLookKey() throws {
+        let legacyJSON = Data(
+            #"""
+            {"exposure":0.4,"contrast":-8,"saturation":5,"relativeTemperature":12,"referenceLook":"niho-bluesky2-reference-20260922-v3"}
+            """#.utf8
+        )
+
+        let settings = try JSONDecoder().decode(EditSettings.self, from: legacyJSON)
+
+        #expect(settings.exposure == 0.4)
+        #expect(settings.contrast == -8)
+        #expect(settings.saturation == 5)
+        #expect(settings.relativeTemperature == 12)
+        #expect(settings.whiteBalance == .asShot)
+    }
+
     @Test func rejectsNonFiniteXMPNumbersAndClampsOutOfRangeControls() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PhotoBenchXMPTests-\(UUID().uuidString)", isDirectory: true)

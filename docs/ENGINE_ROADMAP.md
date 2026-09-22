@@ -165,7 +165,9 @@ production実装はSonnet 5のサブエージェント、設計・計測設計�
 - Adobe Colorのポイントカーブは「リニアProPhoto値へ色相保持のRGBToneで適用」が3枚とも最良。
 - ルックテーブルのバイナリは、ヘッダu32×5（type, version, hue 36, sat 16, val 16）＋float32の`(hueShift, satScale, valScale)`＋末尾4バイト。彩度0の項目はvalScale=1.0で、DNG仕様と整合する。
 
-**まだ差が残る要因（フェーズ1本実装で潰す）:** レンズ歪曲・周辺光量補正が無い（LRはRW2内蔵の補正を適用。dcraw出力は約2.0〜2.5%広い）、ハイライトのクリップ処理の省略、Adobe Colorテーブルを1 floatずれて読んでいた試作側の不具合、8bit・縮小画像での比較。画素単位のゲート判定には幾何補正の一致が要る。
+**まだ差が残る要因:** レンズ歪曲・周辺光量補正が無い（LRはRW2内蔵の補正を適用。dcraw出力は約2.0〜2.5%広い。残差を中心／中間／周辺で分けると、3枚中2枚は周辺でも差が増えず、別レンズのP1012822だけ周辺が2.6。→ フェーズ4で対応）、ハイライトのクリップ処理の省略、Adobe Colorテーブルを1 floatずれて読んでいた試作側の不具合、8bit・縮小画像での比較。画素単位のゲート判定は幾何補正が揃ってから行い、それまでは領域平均で判定する（`scripts/lr_measure/compare_renders.py`）。
+
+**Adobe Colorのポイントカーブの適用方法は未確定。** 試作3案の差は0.3 ΔE以内で位置ずれのノイズ以下。round0の`only-pointcurve`と、次回計測の「Adobe Standard（Look無し）」で確定する。フェーズ1の実装契約は[PHASE1_BASE_RENDERING.md](PHASE1_BASE_RENDERING.md)。
 
 **デコーダの判断材料:** DCPの行列はカメラRGBへ掛けるので、Appleの色変換後しか取れないCore Image RAWでは仕様どおりに適用できない。色はLibRaw＋DCP経路、幾何（レンズ補正）はRW2内蔵データの自前適用が本線になる。Core Imageは比較基準と、DCPが無い機種のフォールバックとして残す。
 

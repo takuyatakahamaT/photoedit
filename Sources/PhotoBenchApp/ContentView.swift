@@ -73,14 +73,7 @@ struct ContentView: View {
                     .background(Color.orange.opacity(0.16), in: Capsule())
                     .foregroundStyle(.orange)
             }
-            if let lookName = model.activeBluesky2ReferenceLookDisplayName {
-                Text(lookName)
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(Color.green.opacity(0.16), in: Capsule())
-                    .foregroundStyle(.green)
-            } else if model.preset != nil {
+            if model.preset != nil {
                 Text("XMP近似・未校正")
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 9)
@@ -264,7 +257,7 @@ struct ContentView: View {
 
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Text(model.isBluesky2ReferenceLookActive ? "補正後の微調整" : "一発調整")
+                        Text("一発調整")
                             .font(.headline)
                         Spacer()
                         Button("戻る", systemImage: "arrow.uturn.backward", action: model.undo)
@@ -279,17 +272,10 @@ struct ContentView: View {
                             .buttonStyle(.link)
                             .disabled(!model.canEdit)
                     }
-                    if model.isBluesky2ReferenceLookActive {
-                        Text("露出などはプリセット適用後の追加調整です。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
                     adjustmentSlider("露出", keyPath: \.exposure, range: -5...5, format: "%.2f")
-                    if !model.isBluesky2ReferenceLookActive {
-                        Text("撮影時の色を基準にした微調整")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text("撮影時の色を基準にした微調整")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     adjustmentSlider(
                         "色温度",
                         keyPath: \.relativeTemperature,
@@ -326,54 +312,42 @@ struct ContentView: View {
                         Text("適用中のプリセット").font(.headline)
                         Text(model.appliedPresetDisplayName ?? preset.name)
                             .font(.subheadline.weight(.semibold))
-                        if model.isBluesky2ReferenceLookActive {
-                            Text("汎用XMP再現ではなく、保存済み編集を再現するため保持している過去の実験補正です。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            if model.canApplyXMPReferencePreset {
-                                Button("このプリセットのXMP設定で適用", action: model.applyXMPReferencePreset)
-                                    .buttonStyle(.link)
-                                    .font(.caption)
-                                    .disabled(!model.canEdit)
-                            }
-                        } else {
-                            Text("Process \(preset.processVersion ?? "不明") / Camera Raw \(preset.cameraRawVersion ?? "不明")")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            let supported = preset.compatibility.filter { $0.level == .supported }.count
-                            let approximate = preset.compatibility.filter { $0.level == .approximate }.count
-                            let unsupported = preset.compatibility.filter { $0.level == .unsupported }.count
-                            Text("対応 \(supported) ・ 近似 \(approximate) ・ 未対応 \(unsupported)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Toggle(
-                                "HSL・カーブ近似を適用（未校正）",
-                                isOn: Binding(
-                                    get: { model.applyApproximateXMPColor },
-                                    set: { enabled in model.setApproximateColorEnabled(enabled) }
-                                )
+                        Text("Process \(preset.processVersion ?? "不明") / Camera Raw \(preset.cameraRawVersion ?? "不明")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        let supported = preset.compatibility.filter { $0.level == .supported }.count
+                        let approximate = preset.compatibility.filter { $0.level == .approximate }.count
+                        let unsupported = preset.compatibility.filter { $0.level == .unsupported }.count
+                        Text("対応 \(supported) ・ 近似 \(approximate) ・ 未対応 \(unsupported)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Toggle(
+                            "HSL・カーブ近似を適用（未校正）",
+                            isOn: Binding(
+                                get: { model.applyApproximateXMPColor },
+                                set: { enabled in model.setApproximateColorEnabled(enabled) }
                             )
-                                .font(.caption)
-                                .disabled(!model.canEdit)
-                            DisclosureGroup("互換性の詳細") {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    ForEach(preset.compatibility.filter { $0.level != .metadata }) { item in
-                                        HStack(alignment: .firstTextBaseline) {
-                                            Text(item.level.rawValue)
-                                                .font(.caption2.weight(.bold))
-                                                .foregroundStyle(color(for: item.level))
-                                                .frame(width: 36, alignment: .leading)
-                                            VStack(alignment: .leading, spacing: 1) {
-                                                Text(item.property).font(.caption)
-                                                Text("\(item.value) — \(item.note)")
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.secondary)
-                                            }
+                        )
+                            .font(.caption)
+                            .disabled(!model.canEdit)
+                        DisclosureGroup("互換性の詳細") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(preset.compatibility.filter { $0.level != .metadata }) { item in
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text(item.level.rawValue)
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundStyle(color(for: item.level))
+                                            .frame(width: 36, alignment: .leading)
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(item.property).font(.caption)
+                                            Text("\(item.value) — \(item.note)")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
                                         }
                                     }
                                 }
-                                .padding(.top, 6)
                             }
+                            .padding(.top, 6)
                         }
                     }
                 }

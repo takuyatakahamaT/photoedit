@@ -165,36 +165,11 @@ final class EditorModel: ObservableObject {
     var settings: EditSettings { editSnapshot.settings }
     var preset: XMPPreset? { editSnapshot.appliedPreset }
     var applyApproximateXMPColor: Bool { editSnapshot.applyApproximateXMPColor }
-    var isBluesky2ReferenceLookActive: Bool {
-        guard let referenceLook = settings.referenceLook,
-              referenceLook == .bluesky2September2026
-                || referenceLook == .bluesky2September2026V3,
-              let decodeInfo
-        else {
-            return false
-        }
-        return BlueskyReferenceLook.supports(info: decodeInfo)
-    }
-    var activeBluesky2ReferenceLookDisplayName: String? {
-        guard isBluesky2ReferenceLookActive else { return nil }
-        return "bluesky2・過去の実験補正"
-    }
     var appliedPresetDisplayName: String? {
         guard let preset = editSnapshot.appliedPreset else { return nil }
-        if let activeBluesky2ReferenceLookDisplayName {
-            return activeBluesky2ReferenceLookDisplayName
-        }
         return editSnapshot.appliedPresetID == PhotoEditSnapshot.bluesky2ReferencePresetID
             ? "bluesky2（更新XMP）"
             : preset.name
-    }
-    var canApplyXMPReferencePreset: Bool {
-        guard isBluesky2ReferenceLookActive,
-              let id = editSnapshot.appliedPresetID
-        else {
-            return false
-        }
-        return presetLibrary.contains { $0.id == id }
     }
     var persistenceMessage: String { persistenceStatus.message }
     var unsavedEditCount: Int { unsavedEditStates.count }
@@ -421,13 +396,6 @@ final class EditorModel: ObservableObject {
 
     func applyPreset(id: String) {
         guard let stored = presetLibrary.first(where: { $0.id == id }) else { return }
-        applyPreset(stored)
-    }
-
-    func applyXMPReferencePreset() {
-        guard canApplyXMPReferencePreset,
-              let id = editSnapshot.appliedPresetID,
-              let stored = presetLibrary.first(where: { $0.id == id }) else { return }
         applyPreset(stored)
     }
 
