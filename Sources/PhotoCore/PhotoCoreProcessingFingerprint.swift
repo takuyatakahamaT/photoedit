@@ -65,10 +65,13 @@ public struct PhotoCoreProcessingFingerprint: Codable, Equatable, Sendable {
     // `colorMixer` keeps its field name (a `Codable` contract other JSON
     // consumers rely on) even though the deleted `PerceptualColorMixer`'s
     // OKLCh approximation is gone; it now identifies phase2 C2's measured
-    // `ColorOps` cube Q instead.
+    // `ColorOps` cube Q instead. `basicTone` keeps its field name the same
+    // way: phase2 C3 deleted `BasicToneModel` (Highlights/Shadows' clean-room
+    // approximation) in favor of `SpatialToneOps`'s measured local-Laplacian
+    // model, but the JSON field itself is an existing `Codable` contract.
     public static let current = PhotoCoreProcessingFingerprint(
         rawDecode: CoreImageDecoder.processingIdentifier,
-        basicTone: BasicToneModel.identifier,
+        basicTone: SpatialToneOps.identifier,
         toneCurve: ToneCurveModel.identifier,
         colorMixer: ColorOps.identifier,
         outputTransform: SRGBOutputTransform.identifier,
@@ -77,7 +80,7 @@ public struct PhotoCoreProcessingFingerprint: Codable, Equatable, Sendable {
 
     public static let legacyCurrentRawDecode = PhotoCoreProcessingFingerprint(
         rawDecode: CoreImageDecoder.processingIdentifier,
-        basicTone: BasicToneModel.identifier,
+        basicTone: SpatialToneOps.identifier,
         toneCurve: ToneCurveModel.identifier,
         colorMixer: ColorOps.identifier,
         outputTransform: SRGBOutputTransform.identifier,

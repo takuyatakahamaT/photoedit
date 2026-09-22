@@ -1,0 +1,509 @@
+import Foundation
+
+/// Phase2 C3: a faithful Swift port of `.photobench/phase2/spatial-v2/
+/// spatial_model_v2.py`'s `apply_highlights_shadows` -- the measured
+/// local-Laplacian model for `Highlights2012`/`Shadows2012`. See
+/// `.photobench/phase2/spatial-v2/model.md` for the derivation, the
+/// (a)/(b) global-curve-placement comparison, and every residual; every
+/// constant and formula below is transcribed verbatim from that reference,
+/// not re-derived.
+///
+/// Unlike every other Phase2 tone/color operation (`ToneOps`, `ColorOps`),
+/// this is fundamentally a **spatial** operation -- its Gaussian/Laplacian
+/// pyramid decomposition mixes neighboring pixels, so (unlike a `CIColorCube`)
+/// it cannot be baked into a per-pixel LUT. `applyHighlightsShadows` below is
+/// the CPU reference (`Double`, matching the Python reference's `float64`);
+/// `SpatialToneProcessor` is the GPU (`CIImageProcessorKernel`/Metal) version
+/// this CPU code is also the software-renderer fallback for.
+public enum SpatialToneOps {
+    public static let identifier = "spatial-v2-local-laplacian-highlights-shadows-v1"
+
+    /// Whether `settings` would do anything other than pass its input through
+    /// unchanged -- mirrors every other Phase2 op's own `needsXxx` gate
+    /// (`ToneOps.needsPostOps`, `ColorOps.needsColorOps`).
+    public static func needsSpatial(_ settings: EditSettings) -> Bool {
+        settings.highlights != 0 || settings.shadows != 0
+    }
+
+    /// `spatial_model_v2.py` was fit at a 1500x1000 analysis resolution with
+    /// `scale_px = 32`. Every caller (RAW, non-RAW, preview, and export --
+    /// they may all run this op at different actual pixel dimensions,
+    /// depending on decode intent) converts its own image's long edge (in the
+    /// resolution it is *actually* processing at -- already reflecting any
+    /// decode-time downscale, so `appliedScaleFactor` must not be multiplied
+    /// in again) through this one function, so every path fits the same
+    /// physical detail scale.
+    public static func scalePx(forLongEdge longEdge: Double) -> Double {
+        32.0 * (longEdge / 1500.0)
+    }
+
+    // MARK: - Luminance (`PP_LUMA`/`EPS`, identical to v1's `spatial_model.py`)
+
+    static let ppLuma = SIMD3<Double>(0.2880402, 0.7118741, 0.0000857)
+    /// 16bit ProPhoto gamma-1.8 representation's floor, roughly -15 stops.
+    static let eps = 3e-5
+
+    // MARK: - Gain curve grid (`_GRID = np.linspace(-14.0, 0.0, 29)`)
+
+    /// `numpy.linspace(-14.0, 0.0, 29)`: 29 points, step exactly 0.5, so this
+    /// closed form is bit-exact with the reference (every value is exactly
+    /// representable in binary floating point; verified against the actual
+    /// `numpy.linspace` output while porting).
+    static let grid: [Double] = (0..<29).map { -14.0 + Double($0) * 0.5 }
+
+    // MARK: - Gain tables (verbatim copies of `spatial_model_v2.py`'s
+    // `GAIN_TABLE_100`/`GAIN_TABLE_50`, derived from
+    // `c1_ramp_{Highlights2012,Shadows2012}_{±50,±100}.tif` -- not
+    // re-measured for this port).
+
+    static let gainTable100HighlightsNeg: [Double] = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.0285, -0.0361, -0.0548, -0.0905, -0.1057,
+        -0.1355, -0.1683, -0.1982, -0.2291, -0.2523, -0.2719, -0.2833, -0.292, -0.3017, -0.321,
+        -0.3621, -0.6364, -0.9061, -1.0604, -1.0853, -0.618
+    ]
+    static let gainTable100HighlightsPos: [Double] = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0749, 0.0476, 0.0265, 0.0343, 0.0832, 0.0925, 0.1134,
+        0.1403, 0.1735, 0.2056, 0.2326, 0.2548, 0.2697, 0.2794, 0.2885, 0.2988, 0.3188, 0.3603,
+        0.554, 0.6777, 0.6751, 0.4355, 0.0
+    ]
+    static let gainTable100ShadowsNeg: [Double] = [
+        -1.0247, -1.5247, -2.0247, -2.5247, -3.0247, -3.5247, -4.0, -3.7774, -3.4303, -3.2054,
+        -2.5716, -2.4087, -2.1987, -2.1127, -2.1691, -2.1106, -2.0646, -1.9637, -1.8008, -1.5945,
+        -1.197, -0.8621, -0.5819, -0.2478, -0.2117, -0.1516, -0.0945, -0.0418, 0.0
+    ]
+    static let gainTable100ShadowsPos: [Double] = [
+        4.202, 3.7756, 3.3491, 2.9366, 2.5562, 2.1978, 2.1055, 2.2045, 2.3594, 2.7803, 3.2581,
+        3.2836, 3.2459, 3.1226, 2.9496, 2.6903, 2.4299, 2.1085, 1.7869, 1.5143, 1.1335, 0.8335,
+        0.5719, 0.2465, 0.1988, 0.1432, 0.0897, 0.0402, 0.0
+    ]
+    static let gainTable50HighlightsNeg: [Double] = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.0285, -0.0239, -0.0283, -0.0401, -0.0523,
+        -0.067, -0.0839, -0.0998, -0.1159, -0.1274, -0.1358, -0.1409, -0.1453, -0.1503, -0.16,
+        -0.1807, -0.3145, -0.4234, -0.475, -0.4585, -0.2147
+    ]
+    static let gainTable50HighlightsPos: [Double] = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0119, 0.0399, 0.0473, 0.0549, 0.0699,
+        0.0849, 0.1026, 0.1154, 0.1268, 0.135, 0.1405, 0.1449, 0.1498, 0.1598, 0.1807, 0.2902,
+        0.3676, 0.3831, 0.3343, 0.0
+    ]
+    static let gainTable50ShadowsNeg: [Double] = [
+        -1.0247, -1.5247, -2.0247, -2.5247, -3.0131, -3.5, -3.0, -2.9301, -2.4531, -1.9154,
+        -1.2042, -1.1572, -1.2147, -1.1986, -1.1703, -1.1533, -1.1329, -1.0504, -0.9306, -0.8011,
+        -0.59, -0.4268, -0.2894, -0.1237, -0.1043, -0.0748, -0.0466, -0.0207, 0.0
+    ]
+    static let gainTable50ShadowsPos: [Double] = [
+        2.9829, 2.6344, 2.2858, 1.9612, 1.6822, 1.4101, 1.3076, 1.1292, 0.9768, 1.1936, 1.4409,
+        1.4263, 1.4515, 1.457, 1.4308, 1.3421, 1.2334, 1.078, 0.9121, 0.7692, 0.5726, 0.4194,
+        0.2869, 0.1235, 0.101, 0.0727, 0.0454, 0.0203, 0.0
+    ]
+
+    /// `_interp_table`: blends `GAIN_TABLE_50`/`GAIN_TABLE_100` by `|value|`
+    /// (linear 0...50, linear extrapolation-by-difference 50...100), picking
+    /// the `_neg`/`_pos` table by `value`'s sign.
+    static func interpTable(_ value: Double, neg50: [Double], neg100: [Double], pos50: [Double], pos100: [Double]) -> [Double] {
+        guard value != 0 else { return [Double](repeating: 0, count: grid.count) }
+        let g50 = value > 0 ? pos50 : neg50
+        let g100 = value > 0 ? pos100 : neg100
+        let v = abs(value)
+        if v <= 50 {
+            let scale = v / 50.0
+            return g50.map { $0 * scale }
+        }
+        let t = (v - 50.0) / 50.0
+        return zip(g50, g100).map { lo, hi in lo + (hi - lo) * t }
+    }
+
+    static func highlightsGainCurve(_ value: Double) -> [Double] {
+        interpTable(
+            value,
+            neg50: gainTable50HighlightsNeg, neg100: gainTable100HighlightsNeg,
+            pos50: gainTable50HighlightsPos, pos100: gainTable100HighlightsPos
+        )
+    }
+
+    static func shadowsGainCurve(_ value: Double) -> [Double] {
+        interpTable(
+            value,
+            neg50: gainTable50ShadowsNeg, neg100: gainTable100ShadowsNeg,
+            pos50: gainTable50ShadowsPos, pos100: gainTable100ShadowsPos
+        )
+    }
+
+    /// `np.interp(x, _GRID, curve)`: clamps outside `grid`'s range, exact
+    /// linear interpolation between knots (identical algorithm to
+    /// `ToneOps`'s private `piecewiseLinear`, duplicated here so this file
+    /// has no dependency on `ToneOps`'s internals).
+    static func interpCurve(_ x: Double, _ curve: [Double]) -> Double {
+        if x <= grid[0] { return curve[0] }
+        let last = grid.count - 1
+        if x >= grid[last] { return curve[last] }
+        for index in 1...last where x <= grid[index] {
+            let t = (x - grid[index - 1]) / (grid[index] - grid[index - 1])
+            return curve[index - 1] + (curve[index] - curve[index - 1]) * t
+        }
+        return curve[last]
+    }
+
+    // MARK: - detail/edge remapping shape parameters (`OP_PARAMS`)
+
+    struct OpParams {
+        let alpha: Double
+        let beta: Double
+        let sigmaR: Double
+    }
+
+    static let highlightsParams = OpParams(alpha: 1.0, beta: 1.0, sigmaR: 1.0)
+    static let shadowsParams = OpParams(alpha: 1.0, beta: 0.85, sigmaR: 0.5)
+    /// `OP_PARAMS["shadows"]["levels_offset"]`.
+    static let shadowsLevelsOffset = -3
+
+    // MARK: - Burt-Adelson pyramid (5-tap binomial, separable, reflect pad)
+
+    static let binom5: [Double] = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0]
+
+    /// `numpy.pad(..., mode="reflect")`'s index mapping for an arbitrary
+    /// (possibly out-of-range) integer coordinate: mirrors without repeating
+    /// the edge sample (period `2*(n-1)`). `n <= 1` has no reflection target
+    /// in real `numpy` (it raises) -- this returns the sole index instead, a
+    /// deliberate leniency for degenerate (1px-wide/tall) synthetic images
+    /// that real photos never produce.
+    static func reflectIndex(_ i: Int, _ n: Int) -> Int {
+        guard n > 1 else { return 0 }
+        let period = 2 * (n - 1)
+        var r = i % period
+        if r < 0 { r += period }
+        return r < n ? r : period - r
+    }
+
+    /// `_blur5_axis(x, axis=0)`: blurs along the vertical (row) axis.
+    static func blur5Vertical(_ p: SpatialPlane) -> SpatialPlane {
+        var out = SpatialPlane(width: p.width, height: p.height)
+        for y in 0..<p.height {
+            for x in 0..<p.width {
+                var sum = 0.0
+                for k in 0..<5 {
+                    let sy = reflectIndex(y + k - 2, p.height)
+                    sum += binom5[k] * p[x, sy]
+                }
+                out[x, y] = sum
+            }
+        }
+        return out
+    }
+
+    /// `_blur5_axis(x, axis=1)`: blurs along the horizontal (column) axis.
+    static func blur5Horizontal(_ p: SpatialPlane) -> SpatialPlane {
+        var out = SpatialPlane(width: p.width, height: p.height)
+        for y in 0..<p.height {
+            for x in 0..<p.width {
+                var sum = 0.0
+                for k in 0..<5 {
+                    let sx = reflectIndex(x + k - 2, p.width)
+                    sum += binom5[k] * p[sx, y]
+                }
+                out[x, y] = sum
+            }
+        }
+        return out
+    }
+
+    /// `_blur5(x) = _blur5_axis(_blur5_axis(x, 0), 1)`: axis 0 (vertical)
+    /// first, then axis 1 (horizontal).
+    static func blur5(_ p: SpatialPlane) -> SpatialPlane {
+        blur5Horizontal(blur5Vertical(p))
+    }
+
+    /// `_pyr_down`: blur, then take every other row/column (`ceil(n/2)`
+    /// output size per axis).
+    static func pyrDown(_ p: SpatialPlane) -> SpatialPlane {
+        let blurred = blur5(p)
+        let outWidth = (p.width + 1) / 2
+        let outHeight = (p.height + 1) / 2
+        var out = SpatialPlane(width: outWidth, height: outHeight)
+        for y in 0..<outHeight {
+            for x in 0..<outWidth {
+                out[x, y] = blurred[2 * x, 2 * y]
+            }
+        }
+        return out
+    }
+
+    /// `_pyr_up`: zero-insert to `2h x 2w`, blur (`x4` gain), then crop (or,
+    /// in the unreachable-in-practice case documented at its call site, edge
+    /// pad) to `(outWidth, outHeight)`.
+    static func pyrUp(_ p: SpatialPlane, outWidth: Int, outHeight: Int) -> SpatialPlane {
+        let width2 = p.width * 2
+        let height2 = p.height * 2
+        var upsampled = SpatialPlane(width: width2, height: height2)
+        for y in 0..<p.height {
+            for x in 0..<p.width {
+                upsampled[2 * x, 2 * y] = p[x, y]
+            }
+        }
+        var blurred = blur5(upsampled)
+        for i in 0..<blurred.values.count { blurred.values[i] *= 4.0 }
+        if blurred.width == outWidth && blurred.height == outHeight { return blurred }
+        // `2*ceil(n/2) >= n` always holds for the shapes this is actually
+        // called with, so this branch (crop when larger, edge-pad via
+        // `min()` clamp when -- unreachably -- smaller) never runs in
+        // practice; kept only because the Python reference keeps it.
+        var out = SpatialPlane(width: outWidth, height: outHeight)
+        for y in 0..<outHeight {
+            let sy = min(y, blurred.height - 1)
+            for x in 0..<outWidth {
+                let sx = min(x, blurred.width - 1)
+                out[x, y] = blurred[sx, sy]
+            }
+        }
+        return out
+    }
+
+    static func gaussianPyramid(_ x: SpatialPlane, levels: Int) -> [SpatialPlane] {
+        var g = [x]
+        for _ in 0..<levels { g.append(pyrDown(g[g.count - 1])) }
+        return g
+    }
+
+    /// `_laplacian_from_gaussian`: `lap[i] = G[i] - pyrUp(G[i+1])` for every
+    /// level but the last, then the coarsest Gaussian level itself
+    /// (`lap[levels] == G[levels]`, the "base").
+    static func laplacianPyramid(from g: [SpatialPlane]) -> [SpatialPlane] {
+        var lap: [SpatialPlane] = []
+        lap.reserveCapacity(g.count)
+        for i in 0..<(g.count - 1) {
+            let up = pyrUp(g[i + 1], outWidth: g[i].width, outHeight: g[i].height)
+            lap.append(g[i] - up)
+        }
+        lap.append(g[g.count - 1])
+        return lap
+    }
+
+    static func reconstruct(_ lap: [SpatialPlane]) -> SpatialPlane {
+        var x = lap[lap.count - 1]
+        var i = lap.count - 2
+        while i >= 0 {
+            x = pyrUp(x, outWidth: lap[i].width, outHeight: lap[i].height) + lap[i]
+            i -= 1
+        }
+        return x
+    }
+
+    /// `_remap_magnitude`: `|I-g0| -> `unsigned post-remap distance, `alpha`
+    /// for the detail term (`<= sigma_r`), `beta` for the edge term (`>
+    /// sigma_r`), continuous at `sigma_r`.
+    static func remapMagnitude(_ ad: Double, sigmaR: Double, alpha: Double, beta: Double) -> Double {
+        if ad <= sigmaR {
+            return sigmaR * pow(max(ad / sigmaR, 0.0), alpha)
+        }
+        return beta * (ad - sigmaR) + sigmaR
+    }
+
+    /// `np.searchsorted(grid, v, side="left") - 1`: the index `i` such that
+    /// `grid[i] < v <= grid[i+1]` (before the caller's own clip to
+    /// `[0, n-2]`).
+    static func bracketIndex(_ grid: [Double], _ v: Double) -> Int {
+        var lo = 0
+        var hi = grid.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if grid[mid] < v { lo = mid + 1 } else { hi = mid }
+        }
+        return lo - 1
+    }
+
+    /// `_apply_single_op_llf`: one operation's local Laplacian filter pass.
+    /// `alpha == beta == 1` (Highlights) takes the identity-remap fast path
+    /// (no discretization sweep, global curve added straight to the coarsest
+    /// base level); otherwise (Shadows) runs the full `n_disc`-point `g0`
+    /// discretization sweep, gathering each pixel's two bracketing `g0`
+    /// Laplacian coefficients by linear interpolation (Aubry 2014).
+    static func applySingleOpLLF(
+        _ ln: SpatialPlane,
+        curve: (Double) -> Double,
+        alpha: Double,
+        beta: Double,
+        sigmaR: Double,
+        levels: Int,
+        nDisc: Int = 10
+    ) -> SpatialPlane {
+        let g = gaussianPyramid(ln, levels: levels)
+        if alpha == 1.0 && beta == 1.0 {
+            var lap = laplacianPyramid(from: g)
+            let lastIndex = lap.count - 1
+            lap[lastIndex] = lap[lastIndex].mapValues { $0 + curve($0) }
+            return reconstruct(lap)
+        }
+
+        let gmin = ln.values.min() ?? 0
+        let gmax = ln.values.max() ?? 0
+        let pad = 0.05 * (gmax - gmin + 1e-6)
+        let lo = gmin - pad
+        let hi = gmax + pad
+        let n = nDisc
+        let g0Grid: [Double] = n <= 1
+            ? [lo]
+            : (0..<n).map { i in lo + (hi - lo) * Double(i) / Double(n - 1) }
+
+        // Per level (0..<levels), each pixel's bracketing `g0Grid` index and
+        // fractional position, from that level's own Gaussian value `G[l]`
+        // (fixed for this op -- computed once, reused across all `k`).
+        var idxByLevel: [[Int]] = []
+        var fracByLevel: [[Double]] = []
+        idxByLevel.reserveCapacity(levels)
+        fracByLevel.reserveCapacity(levels)
+        for l in 0..<levels {
+            let plane = g[l]
+            var idxArr = [Int](repeating: 0, count: plane.values.count)
+            var fracArr = [Double](repeating: 0, count: plane.values.count)
+            for i in 0..<plane.values.count {
+                let v = plane.values[i]
+                let idx = min(max(bracketIndex(g0Grid, v), 0), n - 2)
+                let gLo = g0Grid[idx]
+                let gHi = g0Grid[idx + 1]
+                idxArr[i] = idx
+                fracArr[i] = min(max((v - gLo) / (gHi - gLo + 1e-12), 0.0), 1.0)
+            }
+            idxByLevel.append(idxArr)
+            fracByLevel.append(fracArr)
+        }
+
+        var acc: [SpatialPlane] = (0..<levels).map { SpatialPlane(width: g[$0].width, height: g[$0].height) }
+
+        for k in 0..<n {
+            let g0 = g0Grid[k]
+            var remapped = SpatialPlane(width: ln.width, height: ln.height)
+            for i in 0..<ln.values.count {
+                let d = ln.values[i] - g0
+                let ad = abs(d)
+                let sgn: Double = d > 0 ? 1.0 : (d < 0 ? -1.0 : 0.0)
+                remapped.values[i] = g0 + sgn * remapMagnitude(ad, sigmaR: sigmaR, alpha: alpha, beta: beta)
+            }
+            let gk = gaussianPyramid(remapped, levels: levels)
+            let lk = laplacianPyramid(from: gk)
+            for l in 0..<levels {
+                let idxArr = idxByLevel[l]
+                let fracArr = fracByLevel[l]
+                for i in 0..<acc[l].values.count {
+                    let idx = idxArr[i]
+                    let w: Double
+                    if idx == k { w = 1.0 - fracArr[i] } else if idx + 1 == k { w = fracArr[i] } else { w = 0.0 }
+                    if w != 0 { acc[l].values[i] += w * lk[l].values[i] }
+                }
+            }
+        }
+
+        var baseFinal = g[levels]
+        for i in 0..<baseFinal.values.count {
+            baseFinal.values[i] = g[levels].values[i] + curve(g[levels].values[i])
+        }
+        acc.append(baseFinal)
+        return reconstruct(acc)
+    }
+
+    // MARK: - Public entry point
+
+    /// `apply_highlights_shadows(rgb_linear, highlights, shadows, scale_px,
+    /// order="highlights_first")`. Fixed at the production `order` (the only
+    /// one the pipeline calls with -- `model.md` §4 measured it as slightly
+    /// but consistently better than `"shadows_first"`), so there is no
+    /// `order` parameter here.
+    ///
+    /// - Parameters:
+    ///   - rgb: linear ProPhoto RGB, row-major, `width * height` elements.
+    ///   - scalePx: see `scalePx(forLongEdge:)`.
+    /// - Returns: linear ProPhoto RGB, same shape. Not clipped to `[0,1]`
+    ///   (neither is the Python reference -- the caller's next cube clips).
+    public static func applyHighlightsShadows(
+        rgb: [SIMD3<Double>],
+        width: Int,
+        height: Int,
+        highlights: Double,
+        shadows: Double,
+        scalePx: Double
+    ) -> [SIMD3<Double>] {
+        precondition(rgb.count == width * height, "SpatialToneOps: rgb.count must equal width*height")
+        guard highlights != 0 || shadows != 0 else { return rgb }
+
+        var lnValues = [Double](repeating: 0, count: rgb.count)
+        for i in 0..<rgb.count {
+            let sample = rgb[i]
+            let y = sample.x * ppLuma.x + sample.y * ppLuma.y + sample.z * ppLuma.z
+            lnValues[i] = log2(max(y, eps))
+        }
+        let ln0 = SpatialPlane(width: width, height: height, values: lnValues)
+        let levelsH = max(1, Int(log2(max(scalePx, 2.0)).rounded(.toNearestOrEven)))
+
+        var ln = ln0
+        if highlights != 0 {
+            let curveTable = highlightsGainCurve(highlights)
+            ln = applySingleOpLLF(
+                ln, curve: { interpCurve($0, curveTable) },
+                alpha: highlightsParams.alpha, beta: highlightsParams.beta, sigmaR: highlightsParams.sigmaR,
+                levels: levelsH
+            )
+        }
+        if shadows != 0 {
+            let levelsS = max(1, levelsH + shadowsLevelsOffset)
+            let curveTable = shadowsGainCurve(shadows)
+            ln = applySingleOpLLF(
+                ln, curve: { interpCurve($0, curveTable) },
+                alpha: shadowsParams.alpha, beta: shadowsParams.beta, sigmaR: shadowsParams.sigmaR,
+                levels: levelsS
+            )
+        }
+
+        var out = [SIMD3<Double>](repeating: .zero, count: rgb.count)
+        for i in 0..<rgb.count {
+            let ratio = exp2(ln.values[i] - ln0.values[i])
+            out[i] = rgb[i] * ratio
+        }
+        return out
+    }
+}
+
+/// A single-channel `width x height` row-major plane of `Double`s -- the
+/// working representation for `SpatialToneOps`'s luminance/pyramid math
+/// (kept internal: it is an implementation detail of the port, not part of
+/// the op's public surface, but left directly testable via `@testable
+/// import PhotoCore`, matching every other internal pyramid function above).
+struct SpatialPlane {
+    var width: Int
+    var height: Int
+    var values: [Double]
+
+    init(width: Int, height: Int, values: [Double]) {
+        precondition(values.count == width * height, "SpatialPlane: values.count must equal width*height")
+        self.width = width
+        self.height = height
+        self.values = values
+    }
+
+    init(width: Int, height: Int, repeating: Double = 0) {
+        self.width = width
+        self.height = height
+        self.values = [Double](repeating: repeating, count: width * height)
+    }
+
+    @inline(__always) subscript(x: Int, y: Int) -> Double {
+        get { values[y * width + x] }
+        set { values[y * width + x] = newValue }
+    }
+
+    func mapValues(_ transform: (Double) -> Double) -> SpatialPlane {
+        SpatialPlane(width: width, height: height, values: values.map(transform))
+    }
+
+    static func + (lhs: SpatialPlane, rhs: SpatialPlane) -> SpatialPlane {
+        precondition(lhs.width == rhs.width && lhs.height == rhs.height)
+        var out = lhs
+        for i in 0..<out.values.count { out.values[i] += rhs.values[i] }
+        return out
+    }
+
+    static func - (lhs: SpatialPlane, rhs: SpatialPlane) -> SpatialPlane {
+        precondition(lhs.width == rhs.width && lhs.height == rhs.height)
+        var out = lhs
+        for i in 0..<out.values.count { out.values[i] -= rhs.values[i] }
+        return out
+    }
+}

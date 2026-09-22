@@ -908,15 +908,16 @@ public final class RenderEngine: @unchecked Sendable {
     /// linear sRGB) image with no Adobe base pipeline behind it (a decoded
     /// JPEG/HEIC/PNG/TIFF, or a synthetic test image). `docs/
     /// PHASE2_DEVELOP_PIPELINE.md`'s "非RAW" path -- Exposure/Contrast/
-    /// Whites/Blacks/Parametric/Point curve (`applyNonRAWStageP`) and
-    /// Vibrance/Saturation/HSL/Color Grading/Calibration (`applyNonRAWStageQ`)
-    /// all run through `ToneOps`/`ColorOps` here instead of the legacy
+    /// Whites/Blacks/Parametric/Point curve/Highlights2012/Shadows2012
+    /// (`applyNonRAWStageP`) and Vibrance/Saturation/HSL/Color Grading/
+    /// Calibration (`applyNonRAWStageQ`) all run through `ToneOps`/
+    /// `SpatialToneOps`/`ColorOps` here instead of the legacy
     /// `CIExposureAdjust`/`BasicToneModel`/`toneCurveKernel`/`CIVibrance`/
     /// `CIColorControls`/`PerceptualColorMixer` approximations. RAW photos
-    /// (`decoded.adobeBase != nil`) never reach this function for those
-    /// controls -- see `baseImage(decoded:settings:)`, which calls
-    /// `AdobeBaseRenderer.Handle.image(settings:)` instead and only reuses
-    /// `applyLegacyToneApproximations` (Highlights/Shadows) from here.
+    /// (`decoded.adobeBase != nil`) never reach this function -- see
+    /// `baseImage(decoded:settings:)`, which calls `AdobeBaseRenderer.
+    /// Handle.image(settings:)` instead (that RAW path's own Stage P
+    /// mirrors this one, including the H/S spatial split).
     func apply(
         settings: EditSettings,
         to source: CIImage
@@ -928,25 +929,51 @@ public final class RenderEngine: @unchecked Sendable {
         )
         image = applyNonRAWStageP(settings: settings, to: image)
         image = applyNonRAWStageQ(settings: settings, to: image)
-        image = applyLegacyToneApproximations(settings: settings, to: image)
         return image
     }
 
     /// `docs/PHASE2_DEVELOP_PIPELINE.md`'s non-RAW Stage P: working space ->
     /// ProPhoto -> `ToneOps.exposureNonRaw` -> cube P
     /// (`ToneOps.applyPostOps`) -> working space, baked as a single cube via
-    /// `AdobeBaseRenderer.postOpsCube`. No-ops (returns `image` unchanged,
-    /// not just numerically close to it) when neither exposure nor any P-op
-    /// is active, so `.neutral` settings keep the exact bypass
-    /// `RelativeColorAdjustmentTests.zeroIsAnExactBypassAndKeepsThe
+    /// `AdobeBaseRenderer.postOpsCube` -- unless Highlights2012/Shadows2012's
+    /// spatial pass is active (`SpatialToneOps.needsSpatial`), per
+    /// `docs/PHASE2_C2_C3.md`'s C3 section: then cube P splits into P1
+    /// (exposureNonRaw -> Contrast) -> [S] (`AdobeBaseRenderer.
+    /// applySpatialToneOps`, linear ProPhoto, cube-free) -> P2 (Whites ->
+    /// Blacks -> Parametric -> Point curve), mirroring `AdobeBaseRenderer.
+    /// Handle.image(settings:)`'s RAW-path branch exactly -- both share
+    /// `postOpsCubeP1`/`postOpsCubeP2`/`applySpatialToneOps`, so this is the
+    /// only place that logic is written twice at the call-site level (never
+    /// duplicated at the cube-baking level). No-ops (returns `image`
+    /// unchanged, not just numerically close to it) when neither exposure
+    /// nor any P-op nor H/S is active, so `.neutral` settings keep the exact
+    /// bypass `RelativeColorAdjustmentTests.zeroIsAnExactBypassAndKeepsThe
     /// ExistingPipelineFingerprint` (and this function's own callers) rely on.
     private func applyNonRAWStageP(settings: EditSettings, to image: CIImage) -> CIImage {
-        guard settings.exposure != 0 || ToneOps.needsPostOps(settings) else { return image }
+        guard settings.exposure != 0 || ToneOps.needsPostOps(settings) || SpatialToneOps.needsSpatial(settings) else {
+            return image
+        }
         let proPhoto = AdobeBaseRenderer.applyMatrix(DNGColorSpace.srgbLinearToProPhoto, to: image)
-        let cubed = AdobeBaseRenderer.applyCube(
-            AdobeBaseRenderer.postOpsCube(exposureNonRaw: settings.exposure, settings: settings), to: proPhoto
-        )
-        return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: cubed)
+        let result: CIImage
+        if SpatialToneOps.needsSpatial(settings) {
+            var stage = proPhoto
+            if settings.exposure != 0 || settings.contrast != 0 {
+                stage = AdobeBaseRenderer.applyCube(
+                    AdobeBaseRenderer.postOpsCubeP1(exposureNonRaw: settings.exposure, contrast: settings.contrast),
+                    to: stage
+                )
+            }
+            stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage)
+            if ToneOps.needsPostOpsAfterContrast(settings) {
+                stage = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCubeP2(settings: settings), to: stage)
+            }
+            result = stage
+        } else {
+            result = AdobeBaseRenderer.applyCube(
+                AdobeBaseRenderer.postOpsCube(exposureNonRaw: settings.exposure, settings: settings), to: proPhoto
+            )
+        }
+        return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: result)
     }
 
     /// `docs/PHASE2_C2_C3.md`'s non-RAW Stage Q: working space -> ProPhoto ->
@@ -971,46 +998,24 @@ public final class RenderEngine: @unchecked Sendable {
         return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: proPhoto)
     }
 
-    /// The one legacy approximation phase2 C2 still leaves in place:
-    /// Highlights/Shadows (`BasicToneModel`) -- C3's spatial (local-Laplacian)
-    /// rework is not implemented yet. Shared by both the non-RAW path
-    /// (`apply(settings:to:)`) and the RAW path
-    /// (`baseImage(decoded:settings:)`), applied on top of each path's own
-    /// fully-tone-and-color-mapped image.
-    private func applyLegacyToneApproximations(settings: EditSettings, to source: CIImage) -> CIImage {
-        var image = source
-        if BasicToneModel.isActive(settings) {
-            guard let output = BasicToneModel.kernel.apply(extent: image.extent, arguments: [
-               image,
-               Float(settings.highlights),
-               Float(settings.shadows)
-            ]) else {
-                preconditionFailure("Photo Benchの基本階調カーネルを画像へ適用できませんでした。")
-            }
-            image = output
-        }
-        return image
-    }
-
     /// Picks the RAW (`AdobeBaseRenderer.Handle.image(settings:)`) or non-RAW
     /// (`apply(settings:to:)`) path per `decoded.adobeBase`'s presence, per
     /// `docs/PHASE2_DEVELOP_PIPELINE.md` C1 item 5 / `docs/PHASE2_C2_C3.md`
-    /// C2 item 3. The RAW branch mirrors `apply(settings:to:)`'s own step
-    /// order (`RelativeColorAdjustment` then the legacy Highlights/Shadows
-    /// approximation) on top of the Handle's fully-rendered (WB + Stage
-    /// M...P...Q + Calibration) image, instead of `decoded.image` (which is
-    /// always the neutral-settings baseline -- see `LibRawDecoder`).
+    /// C2 item 3. The RAW branch applies `RelativeColorAdjustment` on top of
+    /// the Handle's fully-rendered (WB + Stage M...P...Q + Calibration,
+    /// including phase2 C3's H/S spatial pass) image, instead of
+    /// `decoded.image` (which is always the neutral-settings baseline --
+    /// see `LibRawDecoder`).
     private func baseImage(decoded: DecodedPhoto, settings: EditSettings) -> CIImage {
         guard let handle = decoded.adobeBase else {
             return apply(settings: settings, to: decoded.image)
         }
         let rendered = handle.image(settings: settings)
-        let adjusted = RelativeColorAdjustment.apply(
+        return RelativeColorAdjustment.apply(
             to: rendered,
             relativeTemperature: settings.relativeTemperature,
             relativeTint: settings.relativeTint
         )
-        return applyLegacyToneApproximations(settings: settings, to: adjusted)
     }
 
     /// Kept module-internal so tests can exercise the real RAW/raster branch

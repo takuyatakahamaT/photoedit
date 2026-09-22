@@ -143,7 +143,7 @@ public enum WhiteBalanceObservationManifestLoader {
     public static let requiredSourceFiles = [
         "Package.swift",
         "Sources/PhotoCore/PhotoCoreProcessingFingerprint.swift",
-        "Sources/PhotoCore/BasicToneModel.swift",
+        "Sources/PhotoCore/Spatial/SpatialToneOps.swift",
         "Sources/PhotoCore/CoreImageDecoder.swift",
         "Sources/PhotoCore/RAWWhiteBalanceDecoder.swift",
         "Sources/PhotoCore/EditSettings.swift",

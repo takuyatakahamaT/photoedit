@@ -180,7 +180,17 @@ public enum AdobeBaseRenderer {
                 to: stageM, assets: effectiveAssets, cubes: effectiveCubes,
                 userEV: settings.exposure, variant: variant, through: .tone
             )
-            if ToneOps.needsPostOps(settings) {
+            if SpatialToneOps.needsSpatial(settings) {
+                if settings.contrast != 0 {
+                    image = AdobeBaseRenderer.applyCube(
+                        AdobeBaseRenderer.postOpsCubeP1(exposureNonRaw: 0, contrast: settings.contrast), to: image
+                    )
+                }
+                image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image)
+                if ToneOps.needsPostOpsAfterContrast(settings) {
+                    image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCubeP2(settings: settings), to: image)
+                }
+            } else if ToneOps.needsPostOps(settings) {
                 image = AdobeBaseRenderer.applyCube(
                     AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image
                 )
@@ -245,6 +255,38 @@ public enum AdobeBaseRenderer {
     private static let postOpsCacheLock = NSLock()
     nonisolated(unsafe) private static var postOpsCache: [PostOpsCacheKey: Data] = [:]
 
+    /// Phase2 C3: cube P1's key when Highlights2012/Shadows2012's spatial
+    /// pass (`SpatialToneOps`/`SpatialToneProcessor`) is active and cube P
+    /// must therefore be split (`docs/PHASE2_C2_C3.md`'s C3 section) --
+    /// exposure (non-RAW only) and contrast are the only two `ToneOps` P
+    /// steps that run *before* the spatial pass.
+    private struct PostOpsP1CacheKey: Hashable {
+        var exposureNonRaw: Double
+        var contrast: Double
+    }
+
+    private static let postOpsP1CacheLock = NSLock()
+    nonisolated(unsafe) private static var postOpsP1Cache: [PostOpsP1CacheKey: Data] = [:]
+
+    /// Cube P2's key: `PostOpsCacheKey` minus `exposureNonRaw`/`contrast`
+    /// (cube P1's own key) -- Whites/Blacks/Parametric/Point curve, which
+    /// run *after* the spatial pass.
+    private struct PostOpsP2CacheKey: Hashable {
+        var whites: Double
+        var blacks: Double
+        var parametricShadows: Double
+        var parametricDarks: Double
+        var parametricLights: Double
+        var parametricHighlights: Double
+        var parametricShadowSplit: Double
+        var parametricMidtoneSplit: Double
+        var parametricHighlightSplit: Double
+        var toneCurves: [ToneCurve]
+    }
+
+    private static let postOpsP2CacheLock = NSLock()
+    nonisolated(unsafe) private static var postOpsP2Cache: [PostOpsP2CacheKey: Data] = [:]
+
     /// Phase2 C2 Stage Q cube key: every `ColorOps.applyColorOps` input.
     /// Camera Calibration is deliberately **not** part of this key (or this
     /// cube) -- it is applied afterward as its own `CIColorMatrix`
@@ -288,6 +330,12 @@ public enum AdobeBaseRenderer {
         postOpsCacheLock.lock()
         postOpsCache.removeAll()
         postOpsCacheLock.unlock()
+        postOpsP1CacheLock.lock()
+        postOpsP1Cache.removeAll()
+        postOpsP1CacheLock.unlock()
+        postOpsP2CacheLock.lock()
+        postOpsP2Cache.removeAll()
+        postOpsP2CacheLock.unlock()
         colorOpsCacheLock.lock()
         colorOpsCache.removeAll()
         colorOpsCacheLock.unlock()
@@ -323,6 +371,56 @@ public enum AdobeBaseRenderer {
         postOpsCacheLock.lock()
         postOpsCache[key] = data
         postOpsCacheLock.unlock()
+        return data
+    }
+
+    /// Phase2 C3: cube P1 (exposureNonRaw -> Contrast only), used instead of
+    /// the single `postOpsCube` when `SpatialToneOps.needsSpatial(settings)`
+    /// -- Highlights2012/Shadows2012's spatial pass runs on cube P1's
+    /// (linear ProPhoto) output, before cube P2 (`postOpsCubeP2`). Bakes to
+    /// the exact same values `postOpsCube`'s own leading `contrast(
+    /// exposureNonRaw(...))` computation would, so splitting the cube never
+    /// changes the H=S=0 (single-cube) path's numeric result --
+    /// `ToneOpsTests`/`AdobeBaseRendererTests` cover this equivalence.
+    static func postOpsCubeP1(exposureNonRaw: Double, contrast: Double) -> Data {
+        let key = PostOpsP1CacheKey(exposureNonRaw: exposureNonRaw, contrast: contrast)
+        postOpsP1CacheLock.lock()
+        let cached = postOpsP1Cache[key]
+        postOpsP1CacheLock.unlock()
+        if let cached { return cached }
+
+        let data = buildCubeData { value in
+            let afterExposure = exposureNonRaw == 0 ? value : ToneOps.exposureNonRaw(value, ev: exposureNonRaw)
+            return ToneOps.contrast(afterExposure, amount: contrast)
+        }
+        postOpsP1CacheLock.lock()
+        postOpsP1Cache[key] = data
+        postOpsP1CacheLock.unlock()
+        return data
+    }
+
+    /// Phase2 C3: cube P2 (Whites -> Blacks -> Parametric -> Point curve),
+    /// the other half of the H/S-spatial-active split -- see
+    /// `postOpsCubeP1`'s doc comment.
+    static func postOpsCubeP2(settings: EditSettings) -> Data {
+        let key = PostOpsP2CacheKey(
+            whites: settings.whites, blacks: settings.blacks,
+            parametricShadows: settings.parametricShadows, parametricDarks: settings.parametricDarks,
+            parametricLights: settings.parametricLights, parametricHighlights: settings.parametricHighlights,
+            parametricShadowSplit: settings.parametricShadowSplit,
+            parametricMidtoneSplit: settings.parametricMidtoneSplit,
+            parametricHighlightSplit: settings.parametricHighlightSplit,
+            toneCurves: settings.toneCurves
+        )
+        postOpsP2CacheLock.lock()
+        let cached = postOpsP2Cache[key]
+        postOpsP2CacheLock.unlock()
+        if let cached { return cached }
+
+        let data = buildCubeData { value in ToneOps.applyPostOpsAfterContrast(value, settings: settings) }
+        postOpsP2CacheLock.lock()
+        postOpsP2Cache[key] = data
+        postOpsP2CacheLock.unlock()
         return data
     }
 
@@ -562,6 +660,31 @@ public enum AdobeBaseRenderer {
             "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
             "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1)
         ])
+    }
+
+    /// Phase2 C3: Highlights2012 -> Shadows2012's spatial (local-Laplacian)
+    /// pass, run between cube P1 and cube P2 (`docs/PHASE2_C2_C3.md`'s C3
+    /// section) whenever `SpatialToneOps.needsSpatial(settings)`. `image`
+    /// must already be **linear ProPhoto** -- cube P1's own `applyCube`
+    /// output (which itself decodes/re-encodes the cube's internal gamma),
+    /// or, on the non-RAW path, the working-space -> ProPhoto matrix's
+    /// direct output. `scalePx` is derived from `image`'s own extent (the
+    /// resolution this call is *actually* processing at, already reflecting
+    /// any decode-time downscale -- see `SpatialToneOps.scalePx(
+    /// forLongEdge:)`'s doc comment on why no separate
+    /// `appliedScaleFactor` correction is needed), so the RAW path here, the
+    /// non-RAW path (`RenderEngine.applyNonRAWStageP`), preview decodes, and
+    /// export decodes all agree on the same physical detail scale through
+    /// this one shared call site.
+    static func applySpatialToneOps(settings: EditSettings, to image: CIImage) -> CIImage {
+        let longEdge = max(image.extent.width, image.extent.height)
+        let scalePx = SpatialToneOps.scalePx(forLongEdge: Double(longEdge))
+        guard let output = try? SpatialToneProcessor.apply(
+            to: image, highlights: settings.highlights, shadows: settings.shadows, scalePx: scalePx
+        ) else {
+            preconditionFailure("Photo BenchのHighlights/Shadows空間処理カーネルを画像へ適用できませんでした。")
+        }
+        return output
     }
 }
 

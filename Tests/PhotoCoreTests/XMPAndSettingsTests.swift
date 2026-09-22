@@ -21,10 +21,12 @@ struct XMPAndSettingsTests {
         #expect(preset.settings.whiteBalance.temperature == nil)
         #expect(preset.settings.whiteBalance.tint == nil)
         #expect(preset.compatibility.contains {
+            // Phase2 C3: Highlights2012/Shadows2012 moved from clean-room
+            // approximation to `SpatialToneOps`'s measured local-Laplacian
+            // model -- see `docs/PHASE2_C2_C3.md`'s C3 section.
             $0.property == "Highlights2012"
-                && $0.level == .approximate
-                && $0.note.contains("単調性保証済み")
-                && $0.note.contains("2画像")
+                && $0.level == .supported
+                && $0.note.contains("局所ラプラシアン")
         })
         #expect(preset.compatibility.contains {
             // Phase2 C1: Exposure2012 moved from clean-room approximation to

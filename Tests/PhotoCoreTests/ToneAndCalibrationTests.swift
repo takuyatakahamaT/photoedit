@@ -20,118 +20,21 @@ struct ToneAndCalibrationTests {
         #expect(unknown == .generic)
     }
 
-    @Test func analyticToneIsIdentityAtNeutralSettings() {
-        for luminance in [0.0, 0.0001, 0.01, 0.18, 0.5, 1, 4] {
-            let output = BasicToneModel.outputLuminance(luminance, settings: .neutral)
-            #expect(output == luminance)
-        }
-    }
-
-    @Test func analyticToneKeepsExtremeControlsFiniteAndMonotonicWithoutHiddenScaling() {
-        let cases = [
-            EditSettings(contrast: -100),
-            EditSettings(contrast: 100),
-            EditSettings(highlights: -100),
-            EditSettings(highlights: 100),
-            EditSettings(shadows: -100),
-            EditSettings(shadows: 100),
-            EditSettings(whites: -100),
-            EditSettings(whites: 100),
-            EditSettings(blacks: -100),
-            EditSettings(blacks: 100),
-            EditSettings(
-                contrast: -100,
-                highlights: -100,
-                shadows: 100,
-                whites: -100,
-                blacks: 100
-            )
-        ]
-
-        for settings in cases {
-            var previous = -Double.infinity
-            for index in 0...16_384 {
-                let luminance = Double(index) * 4 / 16_384
-                let output = BasicToneModel.outputLuminance(luminance, settings: settings)
-                #expect(output.isFinite)
-                #expect(output + 1e-12 >= previous)
-                previous = output
-            }
-        }
-    }
-
-    @Test func coreImageToneKernelMatchesCPUAndRemainsMonotonic() throws {
-        // Phase2 C1 moved Contrast/Whites/Blacks to `ToneOps`; `BasicToneModel`
-        // (and its kernel) now only reads Highlights/Shadows.
-        let settings = EditSettings(
-            highlights: -88,
-            shadows: 37
-        )
-        let sampleCount = 4_097
-        var input = [Float](repeating: 0, count: sampleCount * 4)
-        for index in 0..<sampleCount {
-            let luminance = Float(index) * 4 / Float(sampleCount - 1)
-            input[index * 4] = luminance
-            input[index * 4 + 1] = luminance
-            input[index * 4 + 2] = luminance
-            input[index * 4 + 3] = 1
-        }
-
-        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
-        let inputData = input.withUnsafeBytes { Data($0) }
-        let image = CIImage(
-            bitmapData: inputData,
-            bytesPerRow: sampleCount * 4 * MemoryLayout<Float>.size,
-            size: CGSize(width: sampleCount, height: 1),
-            format: .RGBAf,
-            colorSpace: colorSpace
-        )
-        let output = try #require(BasicToneModel.kernel.apply(extent: image.extent, arguments: [
-            image,
-            Float(settings.highlights),
-            Float(settings.shadows)
-        ]))
-        let softwareContext = CIContext(options: [
-            .workingColorSpace: colorSpace,
-            .outputColorSpace: colorSpace,
-            .useSoftwareRenderer: true
-        ])
-        let device = try #require(MTLCreateSystemDefaultDevice())
-        let metalContext = CIContext(mtlDevice: device, options: [
-            .workingColorSpace: colorSpace,
-            .outputColorSpace: colorSpace
-        ])
-
-        func render(using context: CIContext) -> [Float] {
-            var rendered = [Float](repeating: 0, count: input.count)
-            context.render(
-                output,
-                toBitmap: &rendered,
-                rowBytes: sampleCount * 4 * MemoryLayout<Float>.size,
-                bounds: image.extent,
-                format: .RGBAf,
-                colorSpace: colorSpace
-            )
-            return rendered
-        }
-
-        let softwareRendered = render(using: softwareContext)
-        let metalRendered = render(using: metalContext)
-
-        var previous = -Float.infinity
-        for index in 0..<sampleCount {
-            let inputLuminance = Double(input[index * 4])
-            let software = softwareRendered[index * 4]
-            let actual = metalRendered[index * 4]
-            let expected = Float(BasicToneModel.outputLuminance(inputLuminance, settings: settings))
-            #expect(actual.isFinite)
-            #expect(abs(actual - expected) < 0.000_02)
-            #expect(abs(software - expected) < 0.000_02)
-            #expect(abs(actual - software) < 0.000_02)
-            #expect(actual + 0.000_001 >= previous)
-            previous = actual
-        }
-    }
+    // Phase2 C3 deleted `BasicToneModel` (Highlights/Shadows' clean-room,
+    // pointwise-monotonic approximation) in favor of `SpatialToneOps`'s
+    // measured local-Laplacian model. A genuinely spatial (neighbor-mixing)
+    // operator has no "per-pixel monotonic curve" guarantee to test the way
+    // `BasicToneModel.outputLuminance`/`.kernel` did here, so those three
+    // tests (`analyticToneIsIdentityAtNeutralSettings`,
+    // `analyticToneKeepsExtremeControlsFiniteAndMonotonicWithoutHiddenScaling`,
+    // `coreImageToneKernelMatchesCPUAndRemainsMonotonic`) are gone; their
+    // closest surviving equivalents are `SpatialToneOpsTests.
+    // identityWhenNeutral` (H=S=0 identity),
+    // `SpatialToneOpsTests.flatImageOnlyMovesWithTheGlobalCurve` (the
+    // model-level invariant a texture-free input actually has), and
+    // `SpatialToneOpsTests.gpuProcessorMatchesCPUReferenceOnHardwareContext`/
+    // `...OnSoftwareContext` (GPU-vs-CPU parity, this file's own
+    // `MTLCreateSystemDefaultDevice`/software-`CIContext` pattern).
 
     @Test func colorMixerLeavesNeutralRampNeutral() throws {
         let sampleCount = 257
@@ -532,17 +435,31 @@ struct ToneAndCalibrationTests {
         #expect(stressMaximumChromaDrop < 0.003)
     }
 
-    @Test func basicTonePreservesStraightColorAcrossPremultipliedAlpha() throws {
+    /// Still meaningful post-C3: the straight color here is spatially
+    /// uniform (only alpha varies, one value per row), and
+    /// `SpatialToneOpsTests.flatImageOnlyMovesWithTheGlobalCurve`/
+    /// `cpuBufferPathPreservesStraightColorAcrossPremultipliedAlpha` show a
+    /// spatially-uniform straight-color input stays uniform through
+    /// `SpatialToneOps`/`SpatialToneProcessor` regardless of its alpha
+    /// pattern -- so this end-to-end check (full non-RAW Stage P: cube P1 ->
+    /// spatial S -> cube P2, not just the spatial step alone) should still
+    /// hold with the C3 engine, and it does.
+    ///
+    /// Deliberately a `width x height` (not this file's usual 1-row
+    /// `image(from:)`) fixture: `SpatialToneProcessor`'s doc comment records
+    /// an empirical Core Image limitation where a `height == 1` image never
+    /// reaches a `CIImageProcessorKernel`'s `process(with:...)` at all
+    /// (silent all-zero output) on this OS/hardware -- this test hit exactly
+    /// that before switching to `rectangularImage`.
+    @Test func highlightsShadowsPreserveStraightColorAcrossPremultipliedAlpha() throws {
         let straight = SIMD3<Double>(0.8, 0.4, 0.2)
         let alphas: [Double] = [1, 0.5, 0.1]
-        let source = image(from: alphas.map { alpha in
-            SIMD4<Float>(
-                Float(straight.x * alpha),
-                Float(straight.y * alpha),
-                Float(straight.z * alpha),
-                Float(alpha)
-            )
-        })
+        let width = 4
+        let height = alphas.count
+        let source = rectangularImage(width: width, height: height) { _, y in
+            let alpha = Float(alphas[y])
+            return SIMD4<Float>(Float(straight.x) * alpha, Float(straight.y) * alpha, Float(straight.z) * alpha, alpha)
+        }
         let settings = EditSettings(
             contrast: -37,
             highlights: -88,
@@ -556,14 +473,18 @@ struct ToneAndCalibrationTests {
             Double(rendered[0].y),
             Double(rendered[0].z)
         )
-        for (index, alpha) in alphas.enumerated() {
-            let actual = SIMD3(
-                Double(rendered[index].x) / alpha,
-                Double(rendered[index].y) / alpha,
-                Double(rendered[index].z) / alpha
-            )
-            #expect(maximumAbsoluteDifference(actual, expected) < 0.000_02)
-            #expect(abs(Double(rendered[index].w) - alpha) < 0.000_001)
+        for y in 0..<height {
+            let alpha = alphas[y]
+            for x in 0..<width {
+                let index = y * width + x
+                let actual = SIMD3(
+                    Double(rendered[index].x) / alpha,
+                    Double(rendered[index].y) / alpha,
+                    Double(rendered[index].z) / alpha
+                )
+                #expect(maximumAbsoluteDifference(actual, expected) < 0.000_02)
+                #expect(abs(Double(rendered[index].w) - alpha) < 0.000_001)
+            }
         }
     }
 

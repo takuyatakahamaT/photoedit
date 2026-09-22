@@ -513,9 +513,11 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
             "SplitToningHighlightHue", "SplitToningHighlightSaturation",
             "SplitToningBalance"
         ])
-        // Still clean-room approximations pending phase3 (spatial processing).
+        // Phase2 C3 promoted Highlights2012/Shadows2012 out of this set (see
+        // the dedicated branch above) -- only the tone-curve preset name
+        // itself (never a rendering input) remains a "近似" placeholder.
         let approximate = Set([
-            "ToneCurveName2012", "Highlights2012", "Shadows2012"
+            "ToneCurveName2012"
         ])
         // Retained (parsed, kept on `EditSettings`) but never applied to rendering.
         let unsupported = Set([
@@ -560,6 +562,13 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
             } else if key == "ColorGradeMidtoneLum" || key == "ColorGradeGlobalLum" {
                 level = .unsupported
                 note = "参照実装に測定式が無いため値を保持するのみ（Photo Bench未実装）"
+            } else if key == "Highlights2012" || key == "Shadows2012" {
+                // Phase2 C3: real, measured local-Laplacian model
+                // (`SpatialToneOps`/`SpatialToneProcessor`) -- promoted out
+                // of "approximate" now that it is a fitted model (with a
+                // reported residual) rather than a clean-room guess.
+                level = .supported
+                note = "実測局所ラプラシアンフィルタ（リニアProPhoto空間、cube外の空間処理）で対応"
             } else if supportedScalars.contains(key) {
                 level = .supported
                 note = key.hasPrefix("Parametric")
@@ -573,9 +582,7 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
                 note = "実測8帯モデル（cos²クロスフェード、リニアProPhoto、cube Q）で対応"
             } else if approximate.contains(key) {
                 level = .approximate
-                note = Self.toneKeys.contains(key)
-                    ? "単調性保証済み・2画像で暫定検証のトーン近似"
-                    : "Photo Benchの処理へ近似変換"
+                note = "Photo Benchの処理へ近似変換"
             } else if unsupported.contains(key) {
                 level = .unsupported
                 note = "値を保持するのみ（Photo Bench未実装）"
@@ -614,10 +621,6 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
         "crs:ToneCurvePV2012Red": .red,
         "crs:ToneCurvePV2012Green": .green,
         "crs:ToneCurvePV2012Blue": .blue
-    ]
-
-    private static let toneKeys: Set<String> = [
-        "Highlights2012", "Shadows2012"
     ]
 
     private static let metadataKeys: Set<String> = [

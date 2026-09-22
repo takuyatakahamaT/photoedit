@@ -247,9 +247,26 @@ public enum ToneOps {
     /// here -- RAW applies it at Stage E (a plain linear gain, unrelated to
     /// `exposureNonRaw`), and the non-RAW caller applies `exposureNonRaw`
     /// itself immediately before this function (`RenderEngine`).
+    ///
+    /// Expressed as `contrast` followed by `applyPostOpsAfterContrast` (not
+    /// its own independent copy of the four ops) so that, when phase2 C3's
+    /// spatial Highlights/Shadows pass needs to split cube P into P1
+    /// (contrast only) and P2 (everything after), `postOpsCubeP1 ∘
+    /// postOpsCubeP2 == postOpsCube` *exactly* -- same order, same
+    /// computation, just with an `S` (`SpatialToneOps`) step inserted
+    /// between the two halves by `AdobeBaseRenderer`/`RenderEngine`, never a
+    /// second implementation of Contrast/Whites/Blacks/Parametric/point
+    /// curve that could quietly drift from this one.
     public static func applyPostOps(_ value: SIMD3<Double>, settings: EditSettings) -> SIMD3<Double> {
+        applyPostOpsAfterContrast(contrast(value, amount: settings.contrast), settings: settings)
+    }
+
+    /// `applyPostOps` minus its leading `contrast` call: Whites -> Blacks ->
+    /// Parametric -> Point curve. This is cube P2 in the C3 spatial-active
+    /// pipeline (`docs/PHASE2_C2_C3.md`'s C3 section); `contrast` alone
+    /// (called directly, it is already `public`) is cube P1.
+    public static func applyPostOpsAfterContrast(_ value: SIMD3<Double>, settings: EditSettings) -> SIMD3<Double> {
         var result = value
-        result = contrast(result, amount: settings.contrast)
         result = whites(result, amount: settings.whites)
         result = blacks(result, amount: settings.blacks)
         result = parametric(
@@ -268,8 +285,14 @@ public enum ToneOps {
     /// the identity, exactly like every individual op's own `amount == 0`
     /// no-op guard above.
     public static func needsPostOps(_ settings: EditSettings) -> Bool {
-        settings.contrast != 0
-            || settings.whites != 0
+        settings.contrast != 0 || needsPostOpsAfterContrast(settings)
+    }
+
+    /// As `needsPostOps`, but for `applyPostOpsAfterContrast` alone (cube
+    /// P2) -- `settings.contrast` deliberately excluded, since that is cube
+    /// P1's own gate.
+    public static func needsPostOpsAfterContrast(_ settings: EditSettings) -> Bool {
+        settings.whites != 0
             || settings.blacks != 0
             || settings.parametricShadows != 0
             || settings.parametricDarks != 0
