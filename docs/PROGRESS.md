@@ -43,6 +43,7 @@
 - 追加調査の結論: Adobeの現像数式はほぼ非公開で、任意XMPの完全互換を達成した他製品も無い。一方、カメラプロファイルの数式は公開仕様で、このMacのLightroom内にDC-S5用DCPとAdobe Color定義があり、ルックテーブルのデコードも確認できた。
 
 - フェーズ1の事前検証（Python試作）: 公開仕様＋Lightroom同梱のDC-S5用DCP＋Adobe Colorだけで、LRのプリセット無し現像を領域平均で平均ΔE00 1.2〜1.6まで再現できた（現行Core Image土台は2.4〜3.0で、LRより明るく彩度が8〜22%高い）。基準露出はカメラ定数として扱える。レンズ補正の一致が残課題。
+- **フェーズ1完了:** RAWの基準現像を LibRaw + Adobe Standard DCP + Adobe Color（Lightroom同梱の資産を実行時に読む）へ切り替え、プリセット無しでLR既定と平均ΔE00 1.2〜1.9（旧: 2.4〜3.0、明るく高彩度）。アプリの写真情報に「現像: Adobe Standard + Adobe Color（LibRaw）」が出る。`photobench-render` CLI で GUI 無しに書き出せる。
 - LR計測のround0パッケージ（30枚）を生成済み。オーナーの書き出し待ち。
 
 根拠・方式比較・出典は[ENGINE_ROADMAP.md](ENGINE_ROADMAP.md)。過去の調査は[汎用XMPエンジン設計](GENERIC_XMP_ENGINE.md)、[エンジン比較・根拠](ENGINE_RESEARCH.md)。
@@ -52,7 +53,7 @@
 | フェーズ | 作業 | 合格条件 |
 |---|---|---|
 | 0 | ~~チェックポイントcommit、bluesky2専用補正の撤去~~（完了）、計測リグ（round0生成・判定は済み）、LRローカルタブのXMP往復確認（オーナーの書き出し待ち） | 往復が確認でき、リグが再現可能 |
-| 1 | RAW基準現像（DCP＋Adobe Color＋ACR既定カーブ＋基準露出）。設計は[PHASE1_BASE_RENDERING.md](PHASE1_BASE_RENDERING.md)。B1（数学・パーサ・CPU参照実装）は `781bd49` で完了（テスト17件、Python試作と照合済み）→ B2（LibRaw・3D LUT描画・CLI・アプリ接続）実装中 | プリセット無しでLR既定と平均ΔE00 ≤ 2、平均EV差 ≤ 0.05（`compare_renders.py`） |
+| 1 | ~~RAW基準現像（DCP＋Adobe Color＋ACR既定カーブ＋基準露出）~~ **完了（`ce91bfc`）。** 設計は[PHASE1_BASE_RENDERING.md](PHASE1_BASE_RENDERING.md)。3枚とも平均ΔE00 1.2〜1.9、EV差 ±0.03 で合格。旧土台は 2.4〜3.0 | プリセット無しでLR既定と平均ΔE00 ≤ 2、平均EV差 ≤ 0.05（`compare_renders.py`） |
 | 2 | 画素単位の色操作（カーブ、HSL、Calibration、Color Grading、Vibrance／Saturation、増分WB） | チャートで操作ごとに平均ΔE00 ≤ 1、p95 ≤ 2.5 |
 | 3 | 空間操作（ハイライト／シャドウ／白／黒／露出の肩／コントラスト→Texture／Clarity／Dehaze） | 未使用の実写で平均 ≤ 2、p95 ≤ 5、局所コントラスト比±10%以内 |
 | 4 | 既定シャープ／NR、レンズ補正、周辺光量・粒子、速度 | 100%表示の解像感がLRと同等 |
@@ -63,8 +64,8 @@
 
 ## オーナーにお願いする作業
 
-1. **Lightroomでの一括書き出し（3〜4回、各10分程度）。** こちらで生成したフォルダをLRのローカルタブで開き、全選択して指定の設定で書き出す。最初は数枚の往復確認だけ。Claudeによる画面操作での代行も可能（その都度の許可が必要）。
-2. **未commit作業のcommit許可**と、bluesky2専用補正で保存した編集を残す必要があるかの判断（不要ならコードごと撤去する）。
+1. **Lightroomでの一括書き出し（3〜4回、各10分程度）。** こちらで生成したフォルダをLRのローカルタブで開き、全選択して指定の設定で書き出す。最初はround0（`exports/lr-measure/round0/README.md`、絶対パス記載）。Claudeによる画面操作での代行も可能（その都度の許可が必要）。
+2. **新エンジンの目視確認。** `dist/Photo Bench.app` でRAWを開き、写真情報に「現像: Adobe Standard + Adobe Color（LibRaw）」が出ること、プリセット無しの見た目がLRの既定に近いことを確認する。
 3. 教師データを作れるのはLR契約中だけ。フェーズ2〜3の書き出しが済むまで契約を継続する。
 
 ## 成果物・履歴
