@@ -36,6 +36,29 @@ public enum RGBTone {
     /// where the macro's `(hi - lo)` divisor could be zero) gets exactly
     /// the SDK's separate, division-free handling; every other branch is
     /// algebraically guaranteed `hi > lo`.
+    /// `apply` performed in an encoded domain: the input is clipped to [0,1]
+    /// and encoded with `encode`, `curve` is evaluated on the encoded max
+    /// and min channels, the middle channel is interpolated by its encoded
+    /// position, and the result is decoded again. This is the point-curve
+    /// application that matched Lightroom best on the round1 HALD charts
+    /// (2026-09-22: "RGBTone in sRGB-encoded space", ~1/255 RMS for point,
+    /// parametric and contrast curves; also consistent with Adobe Color's
+    /// look curve on RAW when combined with the DC-S5 baseline EV).
+    public static func applyEncoded(
+        _ rgb: SIMD3<Double>,
+        curve: (Double) -> Double,
+        encode: (Double) -> Double,
+        decode: (Double) -> Double
+    ) -> SIMD3<Double> {
+        let encoded = SIMD3(
+            encode(min(max(rgb.x, 0.0), 1.0)),
+            encode(min(max(rgb.y, 0.0), 1.0)),
+            encode(min(max(rgb.z, 0.0), 1.0))
+        )
+        let curved = apply(encoded, curve: curve)
+        return SIMD3(decode(curved.x), decode(curved.y), decode(curved.z))
+    }
+
     public static func apply(_ rgb: SIMD3<Double>, curve: (Double) -> Double) -> SIMD3<Double> {
         let r = min(max(rgb.x, 0.0), 1.0)
         let g = min(max(rgb.y, 0.0), 1.0)

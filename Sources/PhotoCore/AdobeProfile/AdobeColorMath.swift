@@ -25,6 +25,48 @@ public enum ToneCurveVariant: String, Sendable, Equatable, CaseIterable {
     case b
     /// Not applied at all.
     case c
+    /// Applied hue-preserving (`RGBTone.applyEncoded`) in the sRGB-encoded
+    /// domain: the curve's 0...255 axis is read as sRGB-encoded tone. The
+    /// production default since 2026-09-22 (round1 measurement; together
+    /// with the DC-S5 baseline EV of -0.135 it reproduces both Lightroom's
+    /// "Adobe Color" default and "Adobe Standard" renders within +/-0.03 EV).
+    case d
+
+    /// The variant `RenderStage.final` and the production renderer use.
+    public static let production: ToneCurveVariant = .d
+
+    /// Applies Adobe Color's look point curve (`spline`, [0,1] domain) to
+    /// linear ProPhoto `value` per this variant.
+    public func apply(_ value: SIMD3<Double>, spline: DNGSpline) -> SIMD3<Double> {
+        switch self {
+        case .c:
+            return value
+        case .b:
+            return RGBTone.apply(value, curve: spline.evaluate)
+        case .a:
+            let clipped = SIMD3(
+                min(max(value.x, 0.0), 1.0),
+                min(max(value.y, 0.0), 1.0),
+                min(max(value.z, 0.0), 1.0)
+            )
+            let encoded = SIMD3(
+                DNGColorSpace.srgbEncode(clipped.x),
+                DNGColorSpace.srgbEncode(clipped.y),
+                DNGColorSpace.srgbEncode(clipped.z)
+            )
+            let curved = SIMD3(spline.evaluate(encoded.x), spline.evaluate(encoded.y), spline.evaluate(encoded.z))
+            return SIMD3(
+                DNGColorSpace.srgbDecode(curved.x),
+                DNGColorSpace.srgbDecode(curved.y),
+                DNGColorSpace.srgbDecode(curved.z)
+            )
+        case .d:
+            return RGBTone.applyEncoded(
+                value, curve: spline.evaluate,
+                encode: DNGColorSpace.srgbEncode, decode: DNGColorSpace.srgbDecode
+            )
+        }
+    }
 }
 
 /// A stage boundary in the phase1 base-rendering pipeline (see
@@ -48,7 +90,7 @@ public enum RenderStage: Sendable, Equatable {
     case acr3Tone
     /// After Adobe Color's `ToneCurvePV2012` point curve, applied per `ToneCurveVariant`.
     case lookToneCurve(ToneCurveVariant)
-    /// `lookToneCurve(.b)` (the phase1 default), then converted to linear
+    /// `lookToneCurve(ToneCurveVariant.production)`, then converted to linear
     /// sRGB (`docs/PHASE1_BASE_RENDERING.md` 注3: extended range, NOT
     /// clipped and NOT gamma-encoded -- negative/over-1 values are kept for
     /// the existing terminal gamut compression downstream in
@@ -180,17 +222,11 @@ public enum AdobeColorMath {
         if stage == .acr3Tone { return value }
 
         switch stage {
-        case .lookToneCurve(.c):
-            return value
-
-        case .lookToneCurve(.b):
-            return RGBTone.apply(value, curve: assets.toneCurveSpline.evaluate)
-
-        case .lookToneCurve(.a):
-            return applyToneCurveVariantA(value, spline: assets.toneCurveSpline)
+        case .lookToneCurve(let variant):
+            return variant.apply(value, spline: assets.toneCurveSpline)
 
         case .final:
-            let afterCurve = RGBTone.apply(value, curve: assets.toneCurveSpline.evaluate)
+            let afterCurve = ToneCurveVariant.production.apply(value, spline: assets.toneCurveSpline)
             return DNGColorSpace.proPhotoToSRGBLinear * afterCurve
 
         case .matrix, .hueSat, .exposure, .lookDCP, .lookAdobe, .acr3Tone:
@@ -200,24 +236,4 @@ public enum AdobeColorMath {
         }
     }
 
-    /// Stage C variant "a": clip to [0,1], sRGB-OETF-encode, apply the
-    /// point curve per channel, then decode back to linear so the shared
-    /// `.final` step (linear ProPhoto -> linear sRGB) stays common to every
-    /// variant -- mirroring `pipeline.py`'s `render_stage` variant "a".
-    private static func applyToneCurveVariantA(_ value: SIMD3<Double>, spline: DNGSpline) -> SIMD3<Double> {
-        let clipped = SIMD3(
-            min(max(value.x, 0.0), 1.0), min(max(value.y, 0.0), 1.0), min(max(value.z, 0.0), 1.0)
-        )
-        let encoded = SIMD3(
-            DNGColorSpace.srgbEncode(clipped.x),
-            DNGColorSpace.srgbEncode(clipped.y),
-            DNGColorSpace.srgbEncode(clipped.z)
-        )
-        let curved = SIMD3(spline.evaluate(encoded.x), spline.evaluate(encoded.y), spline.evaluate(encoded.z))
-        return SIMD3(
-            DNGColorSpace.srgbDecode(curved.x),
-            DNGColorSpace.srgbDecode(curved.y),
-            DNGColorSpace.srgbDecode(curved.z)
-        )
-    }
 }

@@ -286,7 +286,11 @@ struct AdobeProfileTests {
                 AdobeColorMath.evaluate(cameraRGB: input, through: .lookToneCurve(.c), assets: assets), sample.C_c, "\(tag) C_c"
             )
 
-            let final = AdobeColorMath.evaluate(cameraRGB: input, through: .final, assets: assets)
+            // The fixture's finished 8-bit value was produced with variant b;
+            // production now uses `ToneCurveVariant.production` (d), so
+            // reproduce the fixture's variant explicitly here.
+            let afterCurve = AdobeColorMath.evaluate(cameraRGB: input, through: .lookToneCurve(.b), assets: assets)
+            let final = DNGColorSpace.proPhotoToSRGBLinear * afterCurve
             let clipped = SIMD3(min(max(final.x, 0), 1), min(max(final.y, 0), 1), min(max(final.z, 0), 1))
             let encoded = SIMD3(
                 DNGColorSpace.srgbEncode(clipped.x), DNGColorSpace.srgbEncode(clipped.y), DNGColorSpace.srgbEncode(clipped.z)
@@ -456,7 +460,7 @@ struct AdobeProfileTests {
 
     @Test func adobeBaseCalibrationKnownAndUnknownModels() {
         expectApproxEqual(
-            AdobeBaseCalibration.baselineEV(uniqueCameraModel: "Panasonic DC-S5"), 0.0,
+            AdobeBaseCalibration.baselineEV(uniqueCameraModel: "Panasonic DC-S5"), -0.135,
             relTol: 1e-9, absTol: 1e-12, "DC-S5 baselineEV"
         )
         #expect(AdobeBaseCalibration.baselineEV(uniqueCameraModel: "Some Unknown Camera") == 0.0)

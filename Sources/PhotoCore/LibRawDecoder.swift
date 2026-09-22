@@ -48,7 +48,7 @@ public struct LibRawDecoder: ImageDecoding {
 
     public init(
         profileLocator: AdobeProfileLocator = AdobeProfileLocator(),
-        toneCurveVariant: ToneCurveVariant = .b
+        toneCurveVariant: ToneCurveVariant = .production
     ) {
         self.profileLocator = profileLocator
         self.toneCurveVariant = toneCurveVariant

@@ -10,20 +10,18 @@ public enum AdobeBaseCalibration {
     /// `UniqueCameraModel` (case-sensitive, matching the DCP's own string)
     /// -> baseline EV in stops.
     ///
-    /// "Panasonic DC-S5": 0. History (2026-09-22): the Python prototype in
-    /// `.photobench/engine-research-20260922/dcp-base-prototype/` fitted
-    /// +0.058 / +0.041 / +0.071 EV per photo (mean +0.057) against LibRaw
-    /// 0.21.4 output, but that prototype still misread the Adobe Color look
-    /// table and lacked the HueSatMap clamp. With the corrected Swift
-    /// pipeline the same three Lightroom-default JPEGs measured a residual
-    /// of +0.041 / +0.050 / +0.053 EV at 0.057, i.e. the true offset is
-    /// about +0.009 EV -- within the alignment noise of the region-average
-    /// comparison, so it is treated as zero (LibRaw's white normalization
-    /// matches Adobe's scale for this camera). Re-fit only with a
-    /// pixel-aligned comparison after lens correction (phase 4). The RW2
-    /// files carry no `BaselineExposure` tag for this camera.
+    /// "Panasonic DC-S5": -0.135 EV. Fitted 2026-09-22 against LibRaw 0.21.4
+    /// output on three Lightroom exports of the same RAWs rendered with BOTH
+    /// "Adobe Color" (default look) and "Adobe Standard" (no look): with this
+    /// offset and `ToneCurveVariant.d` for the look curve, every render lands
+    /// within -0.03...0 EV of Lightroom on a region-average comparison
+    /// (`scripts/lr_measure/compare_renders.py`). Earlier values (+0.057 from
+    /// the Python prototype, then 0) only fit one profile at a time because
+    /// the look curve was being applied on linear values. The RW2 files carry
+    /// no `BaselineExposure` tag; re-fit with a pixel-aligned comparison once
+    /// lens corrections exist (phase 4).
     private static let baselineEVByModel: [String: Double] = [
-        "Panasonic DC-S5": 0.0,
+        "Panasonic DC-S5": -0.135,
     ]
 
     /// Baseline EV for `uniqueCameraModel`, or 0 for any unknown model.

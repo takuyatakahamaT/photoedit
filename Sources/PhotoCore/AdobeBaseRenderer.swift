@@ -161,7 +161,7 @@ public enum AdobeBaseRenderer {
         cameraImage: CIImage,
         assets: AdobeBaseAssets,
         cacheKey: CacheKey,
-        variant: ToneCurveVariant = .b
+        variant: ToneCurveVariant = .production
     ) -> Handle {
         let stageMImage = applyStageM(to: cameraImage, matrix: assets.combinedMatrix)
         let cubes = cachedCubes(for: assets, key: cacheKey, variant: variant)
@@ -257,31 +257,7 @@ public enum AdobeBaseRenderer {
     static func applyToneCurveVariant(
         _ value: SIMD3<Double>, variant: ToneCurveVariant, spline: DNGSpline
     ) -> SIMD3<Double> {
-        switch variant {
-        case .c:
-            return value
-        case .b:
-            return RGBTone.apply(value, curve: spline.evaluate)
-        case .a:
-            let clipped = SIMD3(
-                min(max(value.x, 0.0), 1.0),
-                min(max(value.y, 0.0), 1.0),
-                min(max(value.z, 0.0), 1.0)
-            )
-            let encoded = SIMD3(
-                DNGColorSpace.srgbEncode(clipped.x),
-                DNGColorSpace.srgbEncode(clipped.y),
-                DNGColorSpace.srgbEncode(clipped.z)
-            )
-            let curved = SIMD3(
-                spline.evaluate(encoded.x), spline.evaluate(encoded.y), spline.evaluate(encoded.z)
-            )
-            return SIMD3(
-                DNGColorSpace.srgbDecode(curved.x),
-                DNGColorSpace.srgbDecode(curved.y),
-                DNGColorSpace.srgbDecode(curved.z)
-            )
-        }
+        variant.apply(value, spline: spline)
     }
 
     /// Bakes one `cubeDimension`^3 `CIColorCube` `inputCubeData` blob: for
