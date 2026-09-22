@@ -159,7 +159,8 @@ public struct LibRawDecoder: ImageDecoding {
                 requestedMaximumDimension: intent.requestedMaximumDimension,
                 nativeWidth: nativeWidth > 0 ? nativeWidth : width,
                 nativeHeight: nativeHeight > 0 ? nativeHeight : height,
-                appliedScaleFactor: appliedHalfSize ? 0.5 : 1.0
+                appliedScaleFactor: appliedHalfSize ? 0.5 : 1.0,
+                asShotWhiteXY: assets.whiteXY
             ),
             adobeBase: handle
         )

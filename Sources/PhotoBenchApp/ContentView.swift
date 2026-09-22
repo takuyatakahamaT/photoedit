@@ -10,6 +10,7 @@ import os
 struct ContentView: View {
     @EnvironmentObject private var model: EditorModel
     @State private var presetPendingDeletion: StoredXMPPreset?
+    @State private var isBasicSectionExpanded = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -255,53 +256,90 @@ struct ContentView: View {
 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("一発調整")
-                            .font(.headline)
-                        Spacer()
-                        Button("戻る", systemImage: "arrow.uturn.backward", action: model.undo)
-                            .labelStyle(.iconOnly)
-                            .help("編集を戻す (⌘Z)")
-                            .disabled(!model.canUndo || !model.canEdit)
-                        Button("やり直す", systemImage: "arrow.uturn.forward", action: model.redo)
-                            .labelStyle(.iconOnly)
-                            .help("編集をやり直す (⇧⌘Z)")
-                            .disabled(!model.canRedo || !model.canEdit)
-                        Button("リセット", action: model.resetAdjustments)
-                            .buttonStyle(.link)
-                            .disabled(!model.canEdit)
-                    }
-                    adjustmentSlider("露出", keyPath: \.exposure, range: -5...5, format: "%.2f")
-                    Text("撮影時の色を基準にした微調整")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    adjustmentSlider(
-                        "色温度",
-                        keyPath: \.relativeTemperature,
-                        range: -100...100,
-                        format: "%.0f",
-                        guidance: "寒色 ←→ 暖色"
-                    )
-                    adjustmentSlider(
-                        "色かぶり",
-                        keyPath: \.relativeTint,
-                        range: -100...100,
-                        format: "%.0f",
-                        guidance: "緑 ←→ マゼンタ"
-                    )
-                    adjustmentSlider("彩度", keyPath: \.saturation, range: -100...100, format: "%.0f")
+                HStack {
+                    Text("編集").font(.headline)
+                    Spacer()
+                    Button("戻る", systemImage: "arrow.uturn.backward", action: model.undo)
+                        .labelStyle(.iconOnly)
+                        .help("編集を戻す (⌘Z)")
+                        .disabled(!model.canUndo || !model.canEdit)
+                    Button("やり直す", systemImage: "arrow.uturn.forward", action: model.redo)
+                        .labelStyle(.iconOnly)
+                        .help("編集をやり直す (⇧⌘Z)")
+                        .disabled(!model.canRedo || !model.canEdit)
+                    Button("全てリセット", action: model.resetAdjustments)
+                        .buttonStyle(.link)
+                        .disabled(!model.canEdit)
+                }
+                .disabled(!model.canEdit)
 
-                    DisclosureGroup("詳細な明るさ・彩度") {
-                        VStack(alignment: .leading, spacing: 12) {
-                            adjustmentSlider("コントラスト", keyPath: \.contrast, range: -100...100, format: "%.0f")
-                            adjustmentSlider("ハイライト", keyPath: \.highlights, range: -100...100, format: "%.0f")
-                            adjustmentSlider("シャドウ", keyPath: \.shadows, range: -100...100, format: "%.0f")
-                            adjustmentSlider("白レベル", keyPath: \.whites, range: -100...100, format: "%.0f")
-                            adjustmentSlider("黒レベル", keyPath: \.blacks, range: -100...100, format: "%.0f")
-                            adjustmentSlider("自然な彩度", keyPath: \.vibrance, range: -100...100, format: "%.0f")
+                Group {
+                    DisclosureGroup(isExpanded: $isBasicSectionExpanded) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            WhiteBalanceSection()
+                            Divider()
+                            AdjustmentSliderView(label: "露光量", keyPath: \.exposure, range: -5...5, format: "%.2f")
+                            AdjustmentSliderView(label: "コントラスト", keyPath: \.contrast, range: -100...100, format: "%.0f")
+                            AdjustmentSliderView(label: "ハイライト", keyPath: \.highlights, range: -100...100, format: "%.0f")
+                            AdjustmentSliderView(label: "シャドウ", keyPath: \.shadows, range: -100...100, format: "%.0f")
+                            AdjustmentSliderView(label: "白レベル", keyPath: \.whites, range: -100...100, format: "%.0f")
+                            AdjustmentSliderView(label: "黒レベル", keyPath: \.blacks, range: -100...100, format: "%.0f")
+                            Divider()
+                            AdjustmentSliderView(label: "テクスチャ", keyPath: \.texture, range: -100...100, format: "%.0f")
+                                .disabled(true)
+                            AdjustmentSliderView(label: "明瞭度", keyPath: \.clarity, range: -100...100, format: "%.0f")
+                                .disabled(true)
+                            AdjustmentSliderView(label: "かすみの除去", keyPath: \.dehaze, range: -100...100, format: "%.0f")
+                                .disabled(true)
+                            Text("描画は次の更新で対応")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Divider()
+                            AdjustmentSliderView(label: "自然な彩度", keyPath: \.vibrance, range: -100...100, format: "%.0f")
+                            AdjustmentSliderView(label: "彩度", keyPath: \.saturation, range: -100...100, format: "%.0f")
                         }
                         .padding(.top, 8)
+                    } label: {
+                        SectionHeader(title: "基本補正") {
+                            model.resetSection(.basic)
+                            model.resetSection(.detail)
+                        }
+                    }
+
+                    Divider()
+
+                    DisclosureGroup {
+                        ToneCurveSection()
+                            .padding(.top, 8)
+                    } label: {
+                        SectionHeader(title: "トーンカーブ") { model.resetSection(.toneCurve) }
+                    }
+
+                    Divider()
+
+                    DisclosureGroup {
+                        HSLSection()
+                            .padding(.top, 8)
+                    } label: {
+                        SectionHeader(title: "HSL") { model.resetSection(.hsl) }
+                    }
+
+                    Divider()
+
+                    DisclosureGroup {
+                        ColorGradingSection()
+                            .padding(.top, 8)
+                    } label: {
+                        SectionHeader(title: "カラーグレーディング") { model.resetSection(.colorGrading) }
+                    }
+
+                    Divider()
+
+                    DisclosureGroup {
+                        CalibrationSection()
+                            .padding(.top, 8)
+                    } label: {
+                        SectionHeader(title: "キャリブレーション") { model.resetSection(.calibration) }
                     }
                 }
                 .disabled(!model.canEdit)
@@ -321,15 +359,6 @@ struct ContentView: View {
                         Text("対応 \(supported) ・ 近似 \(approximate) ・ 未対応 \(unsupported)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Toggle(
-                            "HSL・カーブ近似を適用（未校正）",
-                            isOn: Binding(
-                                get: { model.applyApproximateXMPColor },
-                                set: { enabled in model.setApproximateColorEnabled(enabled) }
-                            )
-                        )
-                            .font(.caption)
-                            .disabled(!model.canEdit)
                         DisclosureGroup("互換性の詳細") {
                             VStack(alignment: .leading, spacing: 6) {
                                 ForEach(preset.compatibility.filter { $0.level != .metadata }) { item in
@@ -382,7 +411,7 @@ struct ContentView: View {
             }
             .padding(14)
         }
-        .frame(width: 318)
+        .frame(width: 340)
     }
 
     private var statusBar: some View {
@@ -421,38 +450,6 @@ struct ContentView: View {
         }
         .padding(.horizontal, 12)
         .frame(minHeight: 34)
-    }
-
-    private func adjustmentSlider(
-        _ label: String,
-        keyPath: WritableKeyPath<EditSettings, Double>,
-        range: ClosedRange<Double>,
-        format: String,
-        guidance: String? = nil
-    ) -> some View {
-        let value = Binding<Double>(
-            get: { model.settings[keyPath: keyPath] },
-            set: { model.updateSetting($0, at: keyPath) }
-        )
-        return VStack(spacing: 4) {
-            HStack {
-                Text(label).font(.subheadline)
-                Spacer()
-                Text(String(format: format, value.wrappedValue))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 48, alignment: .trailing)
-            }
-            Slider(value: value, in: range, onEditingChanged: { editing in
-                model.sliderEditingChanged(editing)
-            })
-            if let guidance {
-                Text(guidance)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-        }
     }
 
     private func color(for level: CompatibilityLevel) -> Color {

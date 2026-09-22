@@ -56,6 +56,19 @@ enum EditPersistenceStatus: Equatable {
     }
 }
 
+/// The inspector's Lightroom-equivalent panels, for `EditorModel.resetSection`.
+/// `.basic` and `.detail` both live under the single "基本補正" disclosure
+/// header (see that method's doc comment); the rest map 1:1 to their own
+/// header.
+enum EditSection {
+    case basic
+    case toneCurve
+    case hsl
+    case colorGrading
+    case calibration
+    case detail
+}
+
 @MainActor
 final class EditorModel: ObservableObject {
     private static let presentationLog = OSLog(
@@ -211,12 +224,69 @@ final class EditorModel: ObservableObject {
             : storedPreset.name
     }
 
+    /// General-purpose entry point for every inspector control: sliders keyed
+    /// by a `Double` keypath (`updateSetting(_:at:)` below), point-curve drag
+    /// handles, HSL/Color Grading/Calibration bands, and white balance mode
+    /// switches all go through this so they share one undo/autosave/render
+    /// path (`mutateEditSnapshot`).
+    func updateSettings(_ mutation: (inout EditSettings) -> Void) {
+        mutateEditSnapshot { snapshot in
+            mutation(&snapshot.settings)
+        }
+    }
+
     func updateSetting(_ value: Double, at keyPath: WritableKeyPath<EditSettings, Double>) {
-        mutateEditSnapshot { $0.settings[keyPath: keyPath] = value }
+        updateSettings { $0[keyPath: keyPath] = value }
     }
 
     func setApproximateColorEnabled(_ enabled: Bool) {
         mutateEditSnapshot { $0.applyApproximateXMPColor = enabled }
+    }
+
+    /// Resets one inspector panel's fields to `EditSettings.neutral`, as a
+    /// single undo step (one `mutateEditSnapshot` call, not wrapped in a
+    /// slider-editing group). `.basic` and `.detail` are split so the visible
+    /// "基本補正" header's reset button can restore both the always-on tone/
+    /// presence/white-balance sliders (`.basic`) and the not-yet-rendered
+    /// Texture/Clarity/Dehaze trio (`.detail`) together, while still letting
+    /// either be reset independently through this API.
+    func resetSection(_ section: EditSection) {
+        let neutral = EditSettings.neutral
+        updateSettings { settings in
+            switch section {
+            case .basic:
+                settings.exposure = neutral.exposure
+                settings.contrast = neutral.contrast
+                settings.highlights = neutral.highlights
+                settings.shadows = neutral.shadows
+                settings.whites = neutral.whites
+                settings.blacks = neutral.blacks
+                settings.vibrance = neutral.vibrance
+                settings.saturation = neutral.saturation
+                settings.relativeTemperature = neutral.relativeTemperature
+                settings.relativeTint = neutral.relativeTint
+                settings.whiteBalance = neutral.whiteBalance
+            case .toneCurve:
+                settings.toneCurves = neutral.toneCurves
+                settings.parametricShadows = neutral.parametricShadows
+                settings.parametricDarks = neutral.parametricDarks
+                settings.parametricLights = neutral.parametricLights
+                settings.parametricHighlights = neutral.parametricHighlights
+                settings.parametricShadowSplit = neutral.parametricShadowSplit
+                settings.parametricMidtoneSplit = neutral.parametricMidtoneSplit
+                settings.parametricHighlightSplit = neutral.parametricHighlightSplit
+            case .hsl:
+                settings.hsl = neutral.hsl
+            case .colorGrading:
+                settings.colorGrading = neutral.colorGrading
+            case .calibration:
+                settings.calibration = neutral.calibration
+            case .detail:
+                settings.texture = neutral.texture
+                settings.clarity = neutral.clarity
+                settings.dehaze = neutral.dehaze
+            }
+        }
     }
 
     func sliderEditingChanged(_ isEditing: Bool) {
@@ -740,13 +810,14 @@ final class EditorModel: ObservableObject {
         return "JPEGを読み込みました。"
     }
 
-    private var renderSettings: EditSettings {
-        guard !editSnapshot.applyApproximateXMPColor else { return editSnapshot.settings }
-        var safe = editSnapshot.settings
-        safe.toneCurves = []
-        safe.hsl = [:]
-        return safe
-    }
+    /// Phase2 C1/C2 made every field in `EditSettings` (tone curves, HSL,
+    /// Color Grading, Calibration, absolute white balance) a measured model,
+    /// so there is no longer a "near-approximate, needs a gate" tier to hide
+    /// behind `applyApproximateXMPColor` -- the CLI (`photobench-render`)
+    /// already always applies everything. `applyApproximateXMPColor` is kept
+    /// only as a `PhotoEditSnapshot` Codable field for old saved edits/XMP
+    /// round-tripping; it no longer affects what gets rendered here.
+    private var renderSettings: EditSettings { editSnapshot.settings }
 
     private func loadPresetLibrary() {
         do {
@@ -792,10 +863,7 @@ final class EditorModel: ObservableObject {
             $0 = $0.applying(preset: stored)
         }
         let unsupported = stored.preset.compatibility.filter { $0.level == .unsupported }.count
-        let colorApproximation = editSnapshot.applyApproximateXMPColor
-            ? "HSL/カーブ近似を適用中"
-            : "HSL/カーブ近似はOFF"
-        statusMessage = "\(presetDisplayName(for: stored))を適用しました（未対応 \(unsupported)項目、\(colorApproximation)）。"
+        statusMessage = "\(presetDisplayName(for: stored))を適用しました（未対応 \(unsupported)項目）。"
     }
 
     private func mutateEditSnapshot(_ mutation: (inout PhotoEditSnapshot) -> Void) {

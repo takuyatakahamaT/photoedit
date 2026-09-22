@@ -358,6 +358,86 @@ public enum DNGTemperature {
     }
 }
 
+extension DNGTemperature {
+    /// Port of `dng_temperature::Set_xy_coord`: the two-output companion to
+    /// `xyToTemperature` (`LegacySetXY`) over the same Robertson isotherm
+    /// table, adding the perpendicular "tint" component `xyToTemperature`
+    /// discards. Shares `xyToTemperature`'s exact search loop (same `u`/`v`
+    /// conversion, same `dt`/`lastDt`/`f` interpolation), then projects the
+    /// residual between the measured `(u, v)` and the interpolated isotherm
+    /// base point onto that isotherm's normalized direction -- the same
+    /// construction `xy(fromTemperature:tint:)` (`LegacyGetXY`) uses in
+    /// reverse to turn a `tint` into a `(u, v)` offset -- and rescales by
+    /// `kTintScale` to invert that function's own
+    /// `offset = tint * (1 / kTintScale)`. Phase2 C1's absolute white
+    /// balance UI (RAW "as shot" temperature/tint display) is the only
+    /// caller; see `ColorSpec.temperatureAndTint(fromXY:)` for the public
+    /// entry point.
+    static func temperatureAndTint(fromXY xy: ChromaticityXY) -> (temperature: Double, tint: Double) {
+        let u = 2.0 * xy.x / (1.5 - xy.x + 6.0 * xy.y)
+        let v = 3.0 * xy.y / (1.5 - xy.x + 6.0 * xy.y)
+
+        var lastDt = 0.0
+        let n = table.count
+
+        for index in 1..<n {
+            var du = 1.0
+            var dv = table[index].slope
+            let length = (du * du + dv * dv).squareRoot()
+            du /= length
+            dv /= length
+
+            let uu = u - table[index].u
+            let vv = v - table[index].v
+
+            var dt = -uu * dv + vv * du
+
+            if dt <= 0.0 || index == n - 1 {
+                if dt > 0.0 { dt = 0.0 }
+                dt = -dt
+
+                let f = index == 1 ? 0.0 : dt / (lastDt + dt)
+
+                let temperature = 1.0e6 / (table[index - 1].mired * f + table[index].mired * (1.0 - f))
+
+                // Interpolate the isotherm's base point and normalized
+                // direction exactly as `xy(fromTemperature:tint:)` does when
+                // going the other way (that function's `(index, index + 1)`
+                // is this loop's `(index - 1, index)` for the same
+                // segment), then project the residual onto that direction
+                // to recover `tint`.
+                let uBase = table[index - 1].u * f + table[index].u * (1.0 - f)
+                let vBase = table[index - 1].v * f + table[index].v * (1.0 - f)
+
+                var uu1 = 1.0
+                var vv1 = table[index - 1].slope
+                var uu2 = 1.0
+                var vv2 = table[index].slope
+                let len1 = (1.0 + vv1 * vv1).squareRoot()
+                let len2 = (1.0 + vv2 * vv2).squareRoot()
+                uu1 /= len1; vv1 /= len1
+                uu2 /= len2; vv2 /= len2
+
+                var duBase = uu1 * f + uu2 * (1.0 - f)
+                var dvBase = vv1 * f + vv2 * (1.0 - f)
+                let lenBase = (duBase * duBase + dvBase * dvBase).squareRoot()
+                duBase /= lenBase
+                dvBase /= lenBase
+
+                let residualU = u - uBase
+                let residualV = v - vBase
+                let tint = (residualU * duBase + residualV * dvBase) * kTintScale
+
+                return (temperature, tint)
+            }
+
+            lastDt = dt
+        }
+        // Unreachable: the loop above always returns at index == n-1.
+        return (1.0e6 / table[n - 1].mired, 0.0)
+    }
+}
+
 /// Dual-illuminant camera colorimetry (`dng_color_spec`'s two-illuminant
 /// path). The Panasonic DC-S5 Adobe Standard DCP has exactly two
 /// calibration illuminants (StandardLightA, D65), so only this path is
@@ -506,5 +586,17 @@ public enum AdobeColorSpec {
             let correction = Matrix3x3.diagonal(neutralG1 / camWhite)
             return combined * correction
         }
+    }
+}
+
+public extension ColorSpec {
+    /// `dng_temperature::Set_xy_coord`, exposed here for callers (phase2's
+    /// absolute-white-balance UI, which reads a RAW's as-shot chromaticity
+    /// to seed its temperature/tint sliders) that only need the
+    /// xy -> (CCT, tint) direction, not a full dual-illuminant `ColorSpec`
+    /// instance. Delegates to `DNGTemperature.temperatureAndTint(fromXY:)`,
+    /// the inverse of `DNGTemperature.xy(fromTemperature:tint:)`.
+    static func temperatureAndTint(fromXY xy: ChromaticityXY) -> (temperature: Double, tint: Double) {
+        DNGTemperature.temperatureAndTint(fromXY: xy)
     }
 }

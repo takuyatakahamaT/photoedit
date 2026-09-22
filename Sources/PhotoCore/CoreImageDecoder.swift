@@ -46,6 +46,15 @@ public struct DecodeInfo: Equatable, Sendable {
     /// The scale applied by CIRAWFilter. Raster inputs use nil because this
     /// slice deliberately does not change their ImageIO decode behavior.
     public let appliedScaleFactor: Float?
+    /// The RAW's as-shot white point, in the same camera-neutral-derived xy
+    /// this project's `ColorSpec`/`DNGTemperature` already work in. Only
+    /// `LibRawDecoder`'s Adobe-DCP path populates this (it already computes
+    /// `AdobeBaseAssets.whiteXY` for its own base rendering); every other
+    /// decode path -- non-RAW, and `CoreImageDecoder`'s own RAW fallback --
+    /// leaves it nil, since the UI's absolute-white-balance controls
+    /// (`ColorSpec.temperatureAndTint(fromXY:)`) are gated on this being
+    /// non-nil rather than on `isRAW` alone.
+    public let asShotWhiteXY: ChromaticityXY?
 
     public init(
         backend: String,
@@ -62,7 +71,8 @@ public struct DecodeInfo: Equatable, Sendable {
         requestedMaximumDimension: Int? = nil,
         nativeWidth: Int? = nil,
         nativeHeight: Int? = nil,
-        appliedScaleFactor: Float? = nil
+        appliedScaleFactor: Float? = nil,
+        asShotWhiteXY: ChromaticityXY? = nil
     ) {
         self.backend = backend
         self.width = width
@@ -79,6 +89,7 @@ public struct DecodeInfo: Equatable, Sendable {
         self.nativeWidth = nativeWidth ?? width
         self.nativeHeight = nativeHeight ?? height
         self.appliedScaleFactor = appliedScaleFactor
+        self.asShotWhiteXY = asShotWhiteXY
     }
 }
 

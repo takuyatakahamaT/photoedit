@@ -31,6 +31,19 @@ public struct ToneCurve: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+public extension ToneCurve {
+    /// True when this curve is a no-op in `ToneCurveModel`'s normalized
+    /// (sorted, deduplicated, 0...1-clamped) sense -- every point lies on the
+    /// identity diagonal. Exposed so UI code in a different module (the point
+    /// curve editor) can drop a curve that a user edit brought back onto the
+    /// diagonal from `EditSettings.toneCurves`, keeping `settings ==
+    /// EditSettings.neutral` the same way `EditSettings.hasActiveColorEdits`
+    /// already treats such a curve as inert.
+    var isIdentity: Bool {
+        ToneCurveModel.isIdentity([self])
+    }
+}
+
 public enum HSLBand: String, Codable, CaseIterable, Hashable, Sendable {
     case red, orange, yellow, green, aqua, blue, purple, magenta
 }

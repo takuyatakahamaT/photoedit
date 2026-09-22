@@ -66,7 +66,8 @@ public struct PhotoDecoder: ImageDecoding {
             requestedMaximumDimension: info.requestedMaximumDimension,
             nativeWidth: info.nativeWidth,
             nativeHeight: info.nativeHeight,
-            appliedScaleFactor: info.appliedScaleFactor
+            appliedScaleFactor: info.appliedScaleFactor,
+            asShotWhiteXY: info.asShotWhiteXY
         )
         return DecodedPhoto(
             sourceURL: decoded.sourceURL,

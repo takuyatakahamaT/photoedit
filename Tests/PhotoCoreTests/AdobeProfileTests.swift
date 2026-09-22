@@ -465,6 +465,33 @@ struct AdobeProfileTests {
         )
         #expect(AdobeBaseCalibration.baselineEV(uniqueCameraModel: "Some Unknown Camera") == 0.0)
     }
+
+    // MARK: - ColorSpec.temperatureAndTint(fromXY:) round trip
+
+    /// `ColorSpec.temperatureAndTint(fromXY:)` (phase2's RAW absolute white
+    /// balance UI) must invert `DNGTemperature.xy(fromTemperature:tint:)`
+    /// over the app's expected slider range (2000...50000K). There is no
+    /// independent DNG SDK fixture for this pair, so this is a round-trip
+    /// check rather than a fixture comparison, per the UI brief's own
+    /// tolerance (temperature within 0.5% relative, tint within +/-0.5).
+    @Test func temperatureAndTintRoundTripsWithinTolerance() {
+        let cases: [(temperature: Double, tint: Double)] = [
+            (2_000, 0), (3_200, -40), (5_000, 0), (5_500, 13),
+            (6_500, 30), (8_000, -100), (20_000, 50), (50_000, 0)
+        ]
+        for testCase in cases {
+            let xy = DNGTemperature.xy(fromTemperature: testCase.temperature, tint: testCase.tint)
+            let roundTripped = ColorSpec.temperatureAndTint(fromXY: xy)
+            expectApproxEqual(
+                roundTripped.temperature, testCase.temperature, relTol: 0.005, absTol: 0,
+                "T=\(testCase.temperature) tint=\(testCase.tint) temperature"
+            )
+            expectApproxEqual(
+                roundTripped.tint, testCase.tint, relTol: 0, absTol: 0.5,
+                "T=\(testCase.temperature) tint=\(testCase.tint) tint"
+            )
+        }
+    }
 }
 
 // MARK: - Fixture JSON shapes (test-only Decodable mirrors of Tests/Fixtures/phase1/*.json)
