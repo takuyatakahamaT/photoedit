@@ -65,7 +65,12 @@ enum ToneCurveModel {
         """)
     }
 
-    private static func normalizedPoints(_ curve: ToneCurve?) -> [CurvePoint] {
+    /// Not `private`: `ToneOps.pointCurve` (phase2 C1's Stage P point-curve
+    /// application) reuses this exact sanitization (0...1 clamp, sort by x,
+    /// last-authored-wins on duplicate x) so a malformed/duplicate-x XMP
+    /// curve behaves identically whether it reaches the CPU reference or the
+    /// GPU cube, rather than reimplementing the same policy twice.
+    static func normalizedPoints(_ curve: ToneCurve?) -> [CurvePoint] {
         guard let curve else { return [] }
         // XMPPresetParser normalizes authored 0...255 points to 0...1. Keep
         // that bounded authoring contract here as a defensive invariant;
@@ -100,7 +105,7 @@ enum ToneCurveModel {
         return result.count >= 2 ? result.map(\.point) : []
     }
 
-    private static func normalizedPoints(_ curve: ToneCurve) -> [CurvePoint] {
+    static func normalizedPoints(_ curve: ToneCurve) -> [CurvePoint] {
         normalizedPoints(Optional(curve))
     }
 

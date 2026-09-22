@@ -110,6 +110,27 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
     public var whiteBalance: WhiteBalanceSettings
     public var toneCurves: [ToneCurve]
     public var hsl: [HSLBand: HSLAdjustment]
+    /// Phase2 C1 `Parametric{Shadows,Darks,Lights,Highlights}` (-100...100)
+    /// and their split points (0...100, Adobe defaults 25/50/75). Applied by
+    /// `ToneOps.parametric` at Stage P (`docs/PHASE2_DEVELOP_PIPELINE.md`).
+    public var parametricShadows: Double
+    public var parametricDarks: Double
+    public var parametricLights: Double
+    public var parametricHighlights: Double
+    public var parametricShadowSplit: Double
+    public var parametricMidtoneSplit: Double
+    public var parametricHighlightSplit: Double
+    /// `CurveRefineSaturation` (0...100, Adobe default 100). Only the default
+    /// (100, DNGSpline + RGBTone hue-preserving point curve) is modeled; a
+    /// non-100 value is retained but rendered as if it were 100
+    /// (`.photobench/phase2/tone/model.md`'s Q3 "未解決" note).
+    public var curveRefineSaturation: Double
+    /// `Texture`/`Clarity2012`/`Dehaze` (-100...100). Retained only -- no
+    /// rendering operation reads these yet (phase3, per
+    /// `docs/PHASE2_DEVELOP_PIPELINE.md`'s "範囲外").
+    public var texture: Double
+    public var clarity: Double
+    public var dehaze: Double
 
     public init(
         exposure: Double = 0,
@@ -124,7 +145,18 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         toneCurves: [ToneCurve] = [],
         hsl: [HSLBand: HSLAdjustment] = [:],
         relativeTemperature: Double = 0,
-        relativeTint: Double = 0
+        relativeTint: Double = 0,
+        parametricShadows: Double = 0,
+        parametricDarks: Double = 0,
+        parametricLights: Double = 0,
+        parametricHighlights: Double = 0,
+        parametricShadowSplit: Double = 25,
+        parametricMidtoneSplit: Double = 50,
+        parametricHighlightSplit: Double = 75,
+        curveRefineSaturation: Double = 100,
+        texture: Double = 0,
+        clarity: Double = 0,
+        dehaze: Double = 0
     ) {
         self.exposure = exposure
         self.contrast = contrast
@@ -139,6 +171,17 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         self.whiteBalance = whiteBalance
         self.toneCurves = toneCurves
         self.hsl = hsl
+        self.parametricShadows = parametricShadows
+        self.parametricDarks = parametricDarks
+        self.parametricLights = parametricLights
+        self.parametricHighlights = parametricHighlights
+        self.parametricShadowSplit = parametricShadowSplit
+        self.parametricMidtoneSplit = parametricMidtoneSplit
+        self.parametricHighlightSplit = parametricHighlightSplit
+        self.curveRefineSaturation = curveRefineSaturation
+        self.texture = texture
+        self.clarity = clarity
+        self.dehaze = dehaze
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -155,6 +198,17 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         case whiteBalance
         case toneCurves
         case hsl
+        case parametricShadows
+        case parametricDarks
+        case parametricLights
+        case parametricHighlights
+        case parametricShadowSplit
+        case parametricMidtoneSplit
+        case parametricHighlightSplit
+        case curveRefineSaturation
+        case texture
+        case clarity
+        case dehaze
     }
 
     public init(from decoder: any Decoder) throws {
@@ -176,6 +230,17 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         whiteBalance = try container.decodeIfPresent(WhiteBalanceSettings.self, forKey: .whiteBalance) ?? .asShot
         toneCurves = try container.decodeIfPresent([ToneCurve].self, forKey: .toneCurves) ?? []
         hsl = try container.decodeIfPresent([HSLBand: HSLAdjustment].self, forKey: .hsl) ?? [:]
+        parametricShadows = try container.decodeIfPresent(Double.self, forKey: .parametricShadows) ?? 0
+        parametricDarks = try container.decodeIfPresent(Double.self, forKey: .parametricDarks) ?? 0
+        parametricLights = try container.decodeIfPresent(Double.self, forKey: .parametricLights) ?? 0
+        parametricHighlights = try container.decodeIfPresent(Double.self, forKey: .parametricHighlights) ?? 0
+        parametricShadowSplit = try container.decodeIfPresent(Double.self, forKey: .parametricShadowSplit) ?? 25
+        parametricMidtoneSplit = try container.decodeIfPresent(Double.self, forKey: .parametricMidtoneSplit) ?? 50
+        parametricHighlightSplit = try container.decodeIfPresent(Double.self, forKey: .parametricHighlightSplit) ?? 75
+        curveRefineSaturation = try container.decodeIfPresent(Double.self, forKey: .curveRefineSaturation) ?? 100
+        texture = try container.decodeIfPresent(Double.self, forKey: .texture) ?? 0
+        clarity = try container.decodeIfPresent(Double.self, forKey: .clarity) ?? 0
+        dehaze = try container.decodeIfPresent(Double.self, forKey: .dehaze) ?? 0
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -193,6 +258,17 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         try container.encode(whiteBalance, forKey: .whiteBalance)
         try container.encode(toneCurves, forKey: .toneCurves)
         try container.encode(hsl, forKey: .hsl)
+        try container.encode(parametricShadows, forKey: .parametricShadows)
+        try container.encode(parametricDarks, forKey: .parametricDarks)
+        try container.encode(parametricLights, forKey: .parametricLights)
+        try container.encode(parametricHighlights, forKey: .parametricHighlights)
+        try container.encode(parametricShadowSplit, forKey: .parametricShadowSplit)
+        try container.encode(parametricMidtoneSplit, forKey: .parametricMidtoneSplit)
+        try container.encode(parametricHighlightSplit, forKey: .parametricHighlightSplit)
+        try container.encode(curveRefineSaturation, forKey: .curveRefineSaturation)
+        try container.encode(texture, forKey: .texture)
+        try container.encode(clarity, forKey: .clarity)
+        try container.encode(dehaze, forKey: .dehaze)
     }
 
     public static let neutral = EditSettings()
@@ -212,7 +288,11 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
             vibrance,
             saturation,
             relativeTemperature,
-            relativeTint
+            relativeTint,
+            parametricShadows,
+            parametricDarks,
+            parametricLights,
+            parametricHighlights
         ]
         return scalarControls.contains { abs($0) > tolerance }
             || !ToneCurveModel.isIdentity(toneCurves, tolerance: tolerance)

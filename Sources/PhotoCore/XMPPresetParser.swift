@@ -66,6 +66,25 @@ public struct XMPPreset: Codable, Equatable, Sendable {
         if hasFiniteNumber("Blacks2012") { result.blacks = settings.blacks }
         if hasFiniteNumber("Vibrance") { result.vibrance = settings.vibrance }
         if hasFiniteNumber("Saturation") { result.saturation = settings.saturation }
+        if hasFiniteNumber("ParametricShadows") { result.parametricShadows = settings.parametricShadows }
+        if hasFiniteNumber("ParametricDarks") { result.parametricDarks = settings.parametricDarks }
+        if hasFiniteNumber("ParametricLights") { result.parametricLights = settings.parametricLights }
+        if hasFiniteNumber("ParametricHighlights") { result.parametricHighlights = settings.parametricHighlights }
+        if hasFiniteNumber("ParametricShadowSplit") {
+            result.parametricShadowSplit = settings.parametricShadowSplit
+        }
+        if hasFiniteNumber("ParametricMidtoneSplit") {
+            result.parametricMidtoneSplit = settings.parametricMidtoneSplit
+        }
+        if hasFiniteNumber("ParametricHighlightSplit") {
+            result.parametricHighlightSplit = settings.parametricHighlightSplit
+        }
+        if hasFiniteNumber("CurveRefineSaturation") {
+            result.curveRefineSaturation = settings.curveRefineSaturation
+        }
+        if hasFiniteNumber("Texture") { result.texture = settings.texture }
+        if hasFiniteNumber("Clarity2012") { result.clarity = settings.clarity }
+        if hasFiniteNumber("Dehaze") { result.dehaze = settings.dehaze }
 
         if rawProperties["WhiteBalance"] != nil {
             result.whiteBalance.mode = settings.whiteBalance.mode
@@ -282,6 +301,17 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
         settings.blacks = number("Blacks2012", range: -100...100)
         settings.vibrance = number("Vibrance", range: -100...100)
         settings.saturation = number("Saturation", range: -100...100)
+        settings.parametricShadows = number("ParametricShadows", range: -100...100)
+        settings.parametricDarks = number("ParametricDarks", range: -100...100)
+        settings.parametricLights = number("ParametricLights", range: -100...100)
+        settings.parametricHighlights = number("ParametricHighlights", range: -100...100)
+        settings.parametricShadowSplit = number("ParametricShadowSplit", default: 25, range: 0...100)
+        settings.parametricMidtoneSplit = number("ParametricMidtoneSplit", default: 50, range: 0...100)
+        settings.parametricHighlightSplit = number("ParametricHighlightSplit", default: 75, range: 0...100)
+        settings.curveRefineSaturation = number("CurveRefineSaturation", default: 100, range: 0...100)
+        settings.texture = number("Texture", range: -100...100)
+        settings.clarity = number("Clarity2012", range: -100...100)
+        settings.dehaze = number("Dehaze", range: -100...100)
         settings.whiteBalance = WhiteBalanceSettings(
             mode: whiteBalanceMode(properties["WhiteBalance"]),
             temperature: optionalNumber("Temperature"),
@@ -318,7 +348,14 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
     }
 
     private func number(_ key: String, range: ClosedRange<Double>? = nil) -> Double {
-        guard let value = Double(properties[key] ?? ""), value.isFinite else { return 0 }
+        number(key, default: 0, range: range)
+    }
+
+    /// Like `number(_:range:)`, but for XMP properties whose Adobe default is
+    /// not 0 (the parametric split points, `CurveRefineSaturation`) -- an
+    /// absent tag means "Adobe's own default", not "zero".
+    private func number(_ key: String, default defaultValue: Double, range: ClosedRange<Double>? = nil) -> Double {
+        guard let value = Double(properties[key] ?? ""), value.isFinite else { return defaultValue }
         guard let range else { return value }
         return min(max(value, range.lowerBound), range.upperBound)
     }
@@ -343,19 +380,29 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
         }
     }
 
+    /// `docs/PHASE2_DEVELOP_PIPELINE.md`'s "対応状況の表示" table.
     private func compatibilityItems() -> [CompatibilityItem] {
-        let approximate = Set([
-            "Exposure2012", "Contrast2012", "Vibrance", "Saturation",
-            "ToneCurveName2012",
-            "Highlights2012", "Shadows2012", "Whites2012", "Blacks2012"
+        // Phase2 C1: real, measured models (`ToneOps`) -- promoted out of
+        // "approximate" now that they are no longer clean-room guesses.
+        let supportedScalars = Set([
+            "Exposure2012", "Contrast2012", "Whites2012", "Blacks2012",
+            "ParametricShadows", "ParametricDarks", "ParametricLights", "ParametricHighlights",
+            "ParametricShadowSplit", "ParametricMidtoneSplit", "ParametricHighlightSplit"
         ])
+        // Still clean-room approximations pending phase3 (spatial) / C2 (HSL/Vibrance/Saturation).
+        let approximate = Set([
+            "Vibrance", "Saturation", "ToneCurveName2012",
+            "Highlights2012", "Shadows2012"
+        ])
+        // Retained (parsed, kept on `EditSettings`) but never applied to rendering.
         let unsupported = Set([
-            "WhiteBalance", "Temperature", "Tint", "IncrementalTemperature", "IncrementalTint",
+            "IncrementalTemperature", "IncrementalTint",
             "Texture", "Clarity2012", "Dehaze", "Sharpness", "SharpenRadius",
             "SharpenDetail", "SharpenEdgeMasking", "LuminanceSmoothing",
             "ColorNoiseReduction", "ColorNoiseReductionDetail", "ColorNoiseReductionSmoothness",
             "AutoLateralCA", "LensProfileEnable", "LensProfileSetup"
         ])
+        let absoluteWhiteBalanceKeys = Set(["WhiteBalance", "Temperature", "Tint"])
 
         var items: [CompatibilityItem] = []
         for (key, value) in properties.sorted(by: { $0.key < $1.key }) {
@@ -365,12 +412,34 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
             if key == "ToneCurveName2012", sequences.isEmpty {
                 level = .metadata
                 note = "名称のみ保持（曲線点なし）"
+            } else if key == "CameraProfile" {
+                if value == "Adobe Standard" || value == "Adobe Color" {
+                    level = .supported
+                    note = "Adobe DCP + Adobe Colorのベースレンダリングに対応"
+                } else {
+                    level = .unsupported
+                    note = "Adobe Standard/Adobe Color以外のカメラプロファイルは未対応"
+                }
+            } else if key == "CurveRefineSaturation" {
+                if let parsed = Double(value), abs(parsed - 100) <= 1e-9 {
+                    level = .supported
+                    note = "既定値100に対応（DNGスプライン点カーブ＋RGBTone色相保持）"
+                } else {
+                    level = .unsupported
+                    note = "100以外は式が未同定のため値を保持するのみ（100として描画）"
+                }
+            } else if absoluteWhiteBalanceKeys.contains(key) {
+                level = .supported
+                note = "RAWの絶対ホワイトバランスとして適用（非RAWは値の保持のみ）"
+            } else if supportedScalars.contains(key) {
+                level = .supported
+                note = key.hasPrefix("Parametric")
+                    ? "実測フィットの窓関数（sRGB符号化空間）で対応"
+                    : "実測フィット式（sRGB符号化空間、Exposureのみリニア）で対応"
             } else if approximate.contains(key) || isHSL {
                 level = .approximate
                 if isHSL {
                     note = "OKLCh 8色バンド・低彩度保護で近似（初期OFF）"
-                } else if key == "Exposure2012" {
-                    note = "EV値を近似適用（Adobe PV2012と同一式ではない）"
                 } else if Self.toneKeys.contains(key) {
                     note = "単調性保証済み・2画像で暫定検証のトーン近似"
                 } else {
@@ -378,9 +447,7 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
                 }
             } else if unsupported.contains(key) {
                 level = .unsupported
-                note = Self.whiteBalanceKeys.contains(key)
-                    ? "値を保持（レンダー未実装）"
-                    : "Phase 0では適用しない"
+                note = "値を保持するのみ（Photo Bench未実装）"
             } else if Self.metadataKeys.contains(key) {
                 level = .metadata
                 note = "値を保持"
@@ -404,8 +471,8 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
             items.append(CompatibilityItem(
                 property: key.replacingOccurrences(of: "crs:", with: ""),
                 value: "\(points.count) points",
-                level: .approximate,
-                note: "encoded-sRGB 1D曲線・HDR端点外挿で近似（初期OFF）"
+                level: .supported,
+                note: "DNGスプライン＋RGBTone色相保持（sRGB符号化空間）で対応"
             ))
         }
         return items
@@ -419,11 +486,7 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
     ]
 
     private static let toneKeys: Set<String> = [
-        "Highlights2012", "Shadows2012", "Whites2012", "Blacks2012"
-    ]
-
-    private static let whiteBalanceKeys: Set<String> = [
-        "WhiteBalance", "Temperature", "Tint", "IncrementalTemperature", "IncrementalTint"
+        "Highlights2012", "Shadows2012"
     ]
 
     private static let metadataKeys: Set<String> = [

@@ -378,7 +378,6 @@ public final class RenderEngine: @unchecked Sendable {
     private let exportContext: CIContext
     private let outputColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     private let kernelCacheLock = NSLock()
-    private var cachedCurveKernel: (key: [ToneCurve], kernel: CIColorKernel)?
     private var cachedMixerKernel: (key: [HSLBand: HSLAdjustment], kernel: CIColorKernel)?
 
     public init() {
@@ -907,6 +906,17 @@ public final class RenderEngine: @unchecked Sendable {
         return result
     }
 
+    /// Non-RAW entry point: `source` is a plain working-space (extended
+    /// linear sRGB) image with no Adobe base pipeline behind it (a decoded
+    /// JPEG/HEIC/PNG/TIFF, or a synthetic test image). `docs/
+    /// PHASE2_DEVELOP_PIPELINE.md`'s "非RAW" path -- Exposure/Contrast/
+    /// Whites/Blacks/Parametric/Point curve all run through `ToneOps` here
+    /// (`applyNonRAWStageP`) instead of the legacy `CIExposureAdjust`/
+    /// `BasicToneModel`/`toneCurveKernel` approximations. RAW photos
+    /// (`decoded.adobeBase != nil`) never reach this function for those
+    /// controls -- see `baseImage(decoded:settings:)`, which calls
+    /// `AdobeBaseRenderer.Handle.image(settings:)` instead and only reuses
+    /// `applyLegacyToneApproximations` from here.
     func apply(
         settings: EditSettings,
         to source: CIImage
@@ -916,33 +926,43 @@ public final class RenderEngine: @unchecked Sendable {
             relativeTemperature: settings.relativeTemperature,
             relativeTint: settings.relativeTint
         )
+        image = applyNonRAWStageP(settings: settings, to: image)
+        image = applyLegacyToneApproximations(settings: settings, to: image)
+        return image
+    }
 
-        if settings.exposure != 0,
-           let filter = CIFilter(name: "CIExposureAdjust", parameters: [
-               kCIInputImageKey: image,
-               kCIInputEVKey: settings.exposure
-           ]), let output = filter.outputImage {
-            image = output
-        }
+    /// `docs/PHASE2_DEVELOP_PIPELINE.md`'s non-RAW Stage P: working space ->
+    /// ProPhoto -> `ToneOps.exposureNonRaw` -> cube P
+    /// (`ToneOps.applyPostOps`) -> working space, baked as a single cube via
+    /// `AdobeBaseRenderer.postOpsCube`. No-ops (returns `image` unchanged,
+    /// not just numerically close to it) when neither exposure nor any P-op
+    /// is active, so `.neutral` settings keep the exact bypass
+    /// `RelativeColorAdjustmentTests.zeroIsAnExactBypassAndKeepsThe
+    /// ExistingPipelineFingerprint` (and this function's own callers) rely on.
+    private func applyNonRAWStageP(settings: EditSettings, to image: CIImage) -> CIImage {
+        guard settings.exposure != 0 || ToneOps.needsPostOps(settings) else { return image }
+        let proPhoto = AdobeBaseRenderer.applyMatrix(DNGColorSpace.srgbLinearToProPhoto, to: image)
+        let cubed = AdobeBaseRenderer.applyCube(
+            AdobeBaseRenderer.postOpsCube(exposureNonRaw: settings.exposure, settings: settings), to: proPhoto
+        )
+        return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: cubed)
+    }
 
+    /// The legacy approximations phase2 C1 leaves in place: Highlights/
+    /// Shadows (`BasicToneModel`, now Highlights/Shadows-only), HSL
+    /// (`PerceptualColorMixer`), Vibrance, and Saturation. Shared by both the
+    /// non-RAW path (`apply(settings:to:)`) and the RAW path
+    /// (`baseImage(decoded:settings:)`), applied on top of each path's own
+    /// fully-tone-mapped image.
+    private func applyLegacyToneApproximations(settings: EditSettings, to source: CIImage) -> CIImage {
+        var image = source
         if BasicToneModel.isActive(settings) {
             guard let output = BasicToneModel.kernel.apply(extent: image.extent, arguments: [
                image,
-               Float(settings.contrast),
                Float(settings.highlights),
-               Float(settings.shadows),
-               Float(settings.whites),
-               Float(settings.blacks)
+               Float(settings.shadows)
             ]) else {
                 preconditionFailure("Photo Benchの基本階調カーネルを画像へ適用できませんでした。")
-            }
-            image = output
-        }
-
-        if !settings.toneCurves.isEmpty {
-            let kernel = toneCurveKernel(for: settings.toneCurves)
-            guard let output = kernel.apply(extent: image.extent, arguments: [image]) else {
-                preconditionFailure("Photo Benchのトーンカーブを画像へ適用できませんでした。")
             }
             image = output
         }
@@ -975,10 +995,30 @@ public final class RenderEngine: @unchecked Sendable {
         return image
     }
 
+    /// Picks the RAW (`AdobeBaseRenderer.Handle.image(settings:)`) or non-RAW
+    /// (`apply(settings:to:)`) path per `decoded.adobeBase`'s presence, per
+    /// `docs/PHASE2_DEVELOP_PIPELINE.md` C1 item 5. The RAW branch mirrors
+    /// `apply(settings:to:)`'s own step order (`RelativeColorAdjustment` then
+    /// the legacy approximations) on top of the Handle's fully-rendered
+    /// (WB + Stage M...P) image, instead of `decoded.image` (which is always
+    /// the neutral-settings baseline -- see `LibRawDecoder`).
+    private func baseImage(decoded: DecodedPhoto, settings: EditSettings) -> CIImage {
+        guard let handle = decoded.adobeBase else {
+            return apply(settings: settings, to: decoded.image)
+        }
+        let rendered = handle.image(settings: settings)
+        let adjusted = RelativeColorAdjustment.apply(
+            to: rendered,
+            relativeTemperature: settings.relativeTemperature,
+            relativeTint: settings.relativeTint
+        )
+        return applyLegacyToneApproximations(settings: settings, to: adjusted)
+    }
+
     /// Kept module-internal so tests can exercise the real RAW/raster branch
     /// together with the final shoulder and gamut transform.
     func applyForOutput(decoded: DecodedPhoto, settings: EditSettings) -> CIImage {
-        let working = apply(settings: settings, to: decoded.image)
+        let working = baseImage(decoded: decoded, settings: settings)
         return applyOutputTransformIfRequired(
             to: working,
             info: decoded.info,
@@ -1002,7 +1042,7 @@ public final class RenderEngine: @unchecked Sendable {
             }
         }
 
-        var image = apply(settings: settings, to: decoded.image)
+        var image = baseImage(decoded: decoded, settings: settings)
         if outputTransformPlacement == .legacyBeforeDownsampling {
             image = applyOutputTransformIfRequired(
                 to: image,
@@ -1093,21 +1133,6 @@ public final class RenderEngine: @unchecked Sendable {
         info.isRAW
             || !info.isBoundedSRGBRaster
             || settings.hasActiveColorEdits()
-    }
-
-    private func toneCurveKernel(for curves: [ToneCurve]) -> CIColorKernel {
-        kernelCacheLock.lock()
-        let cached = cachedCurveKernel
-        kernelCacheLock.unlock()
-        if cached?.key == curves { return cached!.kernel }
-
-        guard let kernel = ToneCurveModel.makeKernel(curves: curves) else {
-            preconditionFailure("Photo Benchのトーンカーブカーネルをコンパイルできませんでした。")
-        }
-        kernelCacheLock.lock()
-        cachedCurveKernel = (curves, kernel)
-        kernelCacheLock.unlock()
-        return kernel
     }
 
     private func mixerKernel(for hsl: [HSLBand: HSLAdjustment]) -> CIColorKernel {

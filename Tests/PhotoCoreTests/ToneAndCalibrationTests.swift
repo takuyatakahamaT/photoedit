@@ -61,12 +61,11 @@ struct ToneAndCalibrationTests {
     }
 
     @Test func coreImageToneKernelMatchesCPUAndRemainsMonotonic() throws {
+        // Phase2 C1 moved Contrast/Whites/Blacks to `ToneOps`; `BasicToneModel`
+        // (and its kernel) now only reads Highlights/Shadows.
         let settings = EditSettings(
-            contrast: -37,
             highlights: -88,
-            shadows: 37,
-            whites: -53,
-            blacks: 95
+            shadows: 37
         )
         let sampleCount = 4_097
         var input = [Float](repeating: 0, count: sampleCount * 4)
@@ -89,11 +88,8 @@ struct ToneAndCalibrationTests {
         )
         let output = try #require(BasicToneModel.kernel.apply(extent: image.extent, arguments: [
             image,
-            Float(settings.contrast),
             Float(settings.highlights),
-            Float(settings.shadows),
-            Float(settings.whites),
-            Float(settings.blacks)
+            Float(settings.shadows)
         ]))
         let softwareContext = CIContext(options: [
             .workingColorSpace: colorSpace,

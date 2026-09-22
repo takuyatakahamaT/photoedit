@@ -111,10 +111,10 @@ public enum RenderStage: Sendable, Equatable {
 /// pixels.
 public struct AdobeBaseAssets: Sendable {
     /// Camera(as-shot-white-balanced) -> linear ProPhoto.
-    public let combinedMatrix: Matrix3x3
+    public internal(set) var combinedMatrix: Matrix3x3
     /// CCT-interpolated `ProfileHueSatMap`, or `nil` if the DCP has none
     /// (Stage H becomes a no-op in that case).
-    public let huesatTable: DCPProfile.HueSatTable?
+    public internal(set) var huesatTable: DCPProfile.HueSatTable?
     /// The DCP's own embedded `ProfileLookTableData`, or `nil` if absent
     /// (Stage L(dcp) becomes a no-op in that case).
     public let dcpLookTable: DCPProfile.HueSatTable?
@@ -124,12 +124,25 @@ public struct AdobeBaseAssets: Sendable {
     public let toneCurveSpline: DNGSpline
     /// `AdobeBaseCalibration.baselineEV(uniqueCameraModel:)` for this DCP's camera.
     public let baselineEV: Double
-    /// The converged as-shot white chromaticity (`ColorSpec.neutralToXY`).
-    public let whiteXY: ChromaticityXY
-    public let temperatureKelvin: Double
+    /// The converged as-shot white chromaticity (`ColorSpec.neutralToXY`), or
+    /// (after `rebalanced(toWhiteXY:)`) the phase2 C1 absolute-white-balance
+    /// override's chromaticity.
+    public internal(set) var whiteXY: ChromaticityXY
+    public internal(set) var temperatureKelvin: Double
     /// Dual-illuminant interpolation weight at `whiteXY` (1 == fully the
     /// lower-temperature calibration).
-    public let gFraction: Double
+    public internal(set) var gFraction: Double
+
+    /// Retained (not just consumed by `init`) so `rebalanced(toWhiteXY:)` can
+    /// re-derive `combinedMatrix`/`huesatTable` for a different white point
+    /// -- phase2 C1's absolute white balance (XMP `WhiteBalance == Custom`) --
+    /// without needing the caller to hold on to the original `DCPProfile`/
+    /// `AdobeLookXMP`/`neutralG1` themselves.
+    let spec: ColorSpec
+    let neutralG1: SIMD3<Double>
+    let rawHueSatMapData1: DCPProfile.HueSatTable?
+    let rawHueSatMapData2: DCPProfile.HueSatTable?
+    let colorSpecVariant: ColorSpecVariant
 
     /// - Parameters:
     ///   - neutralG1: the as-shot neutral camera-space RGB ratio, normalized
@@ -181,6 +194,41 @@ public struct AdobeBaseAssets: Sendable {
         self.whiteXY = whiteXY
         self.temperatureKelvin = DNGTemperature.xyToTemperature(whiteXY)
         self.gFraction = spec.gFraction(white: whiteXY)
+        self.spec = spec
+        self.neutralG1 = neutralG1
+        self.rawHueSatMapData1 = dcp.hueSatMapData1
+        self.rawHueSatMapData2 = dcp.hueSatMapData2
+        self.colorSpecVariant = variant
+    }
+
+    /// Phase2 C1 absolute white balance (XMP `WhiteBalance == Custom`):
+    /// recomputes Stage M's `combinedMatrix` and Stage H's `huesatTable` for
+    /// `newWhiteXY` instead of the as-shot white this instance was built
+    /// with. `baselineEV`/`dcpLookTable`/`adobeLookTable`/`toneCurveSpline`
+    /// never depend on white point, so they carry over unchanged.
+    ///
+    /// Reuses the *original* `neutralG1` (the physical as-shot calibration
+    /// ratio) rather than deriving a fresh "neutral for `newWhiteXY`" and
+    /// pre-rebalancing the camera image by `neutralG1/neutral'` before Stage
+    /// M, as `docs/PHASE2_DEVELOP_PIPELINE.md`'s prose describes: substituting
+    /// `rawRGB = cameraRGB_asShotWB * neutralG1` into the DNG SDK's own
+    /// `XYZ = ForwardMatrix(xy) @ diag(1/CameraWhite(xy)) @ rawRGB` shows the
+    /// two are algebraically identical for any `xy` (the `neutral'` factor
+    /// cancels), so this calls the already-validated
+    /// `AdobeColorSpec.combinedCameraToLinearProPhoto` directly at the new
+    /// white point instead of introducing a second, redundant diagonal.
+    func rebalanced(toWhiteXY newWhiteXY: ChromaticityXY) throws -> AdobeBaseAssets {
+        var copy = self
+        copy.combinedMatrix = try AdobeColorSpec.combinedCameraToLinearProPhoto(
+            spec: spec, white: newWhiteXY, neutralG1: neutralG1, variant: colorSpecVariant
+        )
+        if let data1 = rawHueSatMapData1, let data2 = rawHueSatMapData2 {
+            copy.huesatTable = try HueSatMap.interpolated(data1, data2, g: spec.gFraction(white: newWhiteXY))
+        }
+        copy.whiteXY = newWhiteXY
+        copy.temperatureKelvin = DNGTemperature.xyToTemperature(newWhiteXY)
+        copy.gFraction = spec.gFraction(white: newWhiteXY)
+        return copy
     }
 }
 

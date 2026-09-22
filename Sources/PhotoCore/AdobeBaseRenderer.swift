@@ -106,9 +106,20 @@ public enum AdobeBaseRenderer {
         /// exposure/final-matrix stages `image(userExposureEV:)` appends) are
         /// shared across every photo using the same camera profile.
         public let stageMImage: CIImage
+        /// Camera RGB (as-shot-white-balanced, pre-Stage-M) straight from the
+        /// decoder. Retained (rather than only `stageMImage`) so
+        /// `image(settings:)` can redo Stage M with a different
+        /// `combinedMatrix` when phase2 C1's absolute white balance (XMP
+        /// `WhiteBalance == Custom`) picks a white point other than as-shot.
+        let cameraImage: CIImage
         let assets: AdobeBaseAssets
         let cubes: CubeSet
         let variant: ToneCurveVariant
+        /// This handle's cache identity, retained so `image(settings:)` can
+        /// look up (or bake) a *different* white point's H/L/TC cubes
+        /// through the same `dcpIdentity`/`lookIdentity`-keyed cache
+        /// `makeHandle` used, rather than introducing a second cache.
+        let cacheKey: CacheKey
 
         /// Stage H -> Stage E (exposure) -> Stage L -> Stage T+C -> Stage M's
         /// ProPhoto -> the app's extended-linear-sRGB working space (negative
@@ -125,6 +136,51 @@ public enum AdobeBaseRenderer {
                 to: stageMImage, assets: assets, cubes: cubes,
                 userEV: userExposureEV, variant: variant, through: stage
             )
+        }
+
+        /// Phase2 C1's full RAW edit pipeline: WB rebalance (Custom only) ->
+        /// Stage M/H (re-interpolated at the new white point, Custom only) ->
+        /// Stage E (`baselineEV + settings.exposure`) -> Stage L -> Stage T+C
+        /// -> **cube P** (`ToneOps.applyPostOps`, Contrast/Whites/Blacks/
+        /// Parametric/Point curve) -> ProPhoto -> the app's working space.
+        /// `docs/PHASE2_DEVELOP_PIPELINE.md` C1 item 4.
+        ///
+        /// When `settings.whiteBalance` is not a valid `.custom` (missing
+        /// temperature/tint, or a degenerate xy `AdobeColorSpec`/`HueSatMap`
+        /// can't re-derive a matrix/table for), this silently falls back to
+        /// the as-shot white this handle was built with rather than throwing
+        /// -- a renderer has no good way to surface a mid-slider XMP error,
+        /// and as-shot is always a safe answer.
+        public func image(settings: EditSettings) -> CIImage {
+            var effectiveAssets = assets
+            if settings.whiteBalance.mode == .custom,
+               let temperature = settings.whiteBalance.temperature,
+               let tint = settings.whiteBalance.tint {
+                let newWhiteXY = DNGTemperature.xy(fromTemperature: temperature, tint: tint)
+                if let rebalanced = try? assets.rebalanced(toWhiteXY: newWhiteXY) {
+                    effectiveAssets = rebalanced
+                }
+            }
+
+            let stageM = AdobeBaseRenderer.applyStageM(to: cameraImage, matrix: effectiveAssets.combinedMatrix)
+            let effectiveCubes = AdobeBaseRenderer.cachedCubes(
+                for: effectiveAssets,
+                key: CacheKey(
+                    dcpIdentity: cacheKey.dcpIdentity, lookIdentity: cacheKey.lookIdentity,
+                    whiteXY: effectiveAssets.whiteXY, exposureEV: effectiveAssets.baselineEV, variant: variant
+                ),
+                variant: variant
+            )
+            var image = AdobeBaseRenderer.applyRemainingStages(
+                to: stageM, assets: effectiveAssets, cubes: effectiveCubes,
+                userEV: settings.exposure, variant: variant, through: .tone
+            )
+            if ToneOps.needsPostOps(settings) {
+                image = AdobeBaseRenderer.applyCube(
+                    AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image
+                )
+            }
+            return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: image)
         }
     }
 
@@ -154,6 +210,30 @@ public enum AdobeBaseRenderer {
     nonisolated(unsafe) private static var hueSatCache: [HueSatCacheKey: HueSatCube] = [:]
     nonisolated(unsafe) private static var lookToneCache: [LookToneCacheKey: LookToneCubes] = [:]
 
+    /// Phase2 C1 Stage P cube key: every `ToneOps.applyPostOps` input plus
+    /// the non-RAW-only `exposureNonRaw` EV (always 0 for the RAW path,
+    /// which applies its own `Exposure2012` at Stage E instead) --
+    /// `docs/PHASE2_DEVELOP_PIPELINE.md` C1 item 4's "P に関わる設定値の
+    /// ハッシュ". A RAW photo and a non-RAW photo with the same P-relevant
+    /// settings and `exposureNonRaw == 0` legitimately share one cube.
+    private struct PostOpsCacheKey: Hashable {
+        var exposureNonRaw: Double
+        var contrast: Double
+        var whites: Double
+        var blacks: Double
+        var parametricShadows: Double
+        var parametricDarks: Double
+        var parametricLights: Double
+        var parametricHighlights: Double
+        var parametricShadowSplit: Double
+        var parametricMidtoneSplit: Double
+        var parametricHighlightSplit: Double
+        var toneCurves: [ToneCurve]
+    }
+
+    private static let postOpsCacheLock = NSLock()
+    nonisolated(unsafe) private static var postOpsCache: [PostOpsCacheKey: Data] = [:]
+
     /// Builds a `Handle` for one decoded photo: applies Stage M to
     /// `cameraImage` immediately, and looks up (or bakes and caches) the
     /// shared H/L/TC cube set for `cacheKey`.
@@ -165,7 +245,10 @@ public enum AdobeBaseRenderer {
     ) -> Handle {
         let stageMImage = applyStageM(to: cameraImage, matrix: assets.combinedMatrix)
         let cubes = cachedCubes(for: assets, key: cacheKey, variant: variant)
-        return Handle(stageMImage: stageMImage, assets: assets, cubes: cubes, variant: variant)
+        return Handle(
+            stageMImage: stageMImage, cameraImage: cameraImage, assets: assets, cubes: cubes,
+            variant: variant, cacheKey: cacheKey
+        )
     }
 
     /// Clears every cached cube. Exposed for tests/tools; production code
@@ -176,6 +259,42 @@ public enum AdobeBaseRenderer {
         hueSatCache.removeAll()
         lookToneCache.removeAll()
         cacheLock.unlock()
+        postOpsCacheLock.lock()
+        postOpsCache.removeAll()
+        postOpsCacheLock.unlock()
+    }
+
+    /// Bakes (or reuses) cube P: `ToneOps.applyPostOps(settings:)`, optionally
+    /// preceded by `ToneOps.exposureNonRaw` (`exposureNonRaw != 0`, non-RAW
+    /// callers only -- `Handle.image(settings:)` always passes 0, since RAW's
+    /// `Exposure2012` is the separate Stage E linear gain). Composing both
+    /// into one cube, rather than baking/applying two cubes in sequence, is
+    /// both cheaper (one `concurrentPerform` bake, one `CIColorCube` pass)
+    /// and more accurate (one quantization round trip instead of two).
+    static func postOpsCube(exposureNonRaw: Double, settings: EditSettings) -> Data {
+        let key = PostOpsCacheKey(
+            exposureNonRaw: exposureNonRaw,
+            contrast: settings.contrast, whites: settings.whites, blacks: settings.blacks,
+            parametricShadows: settings.parametricShadows, parametricDarks: settings.parametricDarks,
+            parametricLights: settings.parametricLights, parametricHighlights: settings.parametricHighlights,
+            parametricShadowSplit: settings.parametricShadowSplit,
+            parametricMidtoneSplit: settings.parametricMidtoneSplit,
+            parametricHighlightSplit: settings.parametricHighlightSplit,
+            toneCurves: settings.toneCurves
+        )
+        postOpsCacheLock.lock()
+        let cached = postOpsCache[key]
+        postOpsCacheLock.unlock()
+        if let cached { return cached }
+
+        let data = buildCubeData { value in
+            let afterExposure = exposureNonRaw == 0 ? value : ToneOps.exposureNonRaw(value, ev: exposureNonRaw)
+            return ToneOps.applyPostOps(afterExposure, settings: settings)
+        }
+        postOpsCacheLock.lock()
+        postOpsCache[key] = data
+        postOpsCacheLock.unlock()
+        return data
     }
 
     private static func cachedCubes(
@@ -367,7 +486,10 @@ public enum AdobeBaseRenderer {
         return cubed.applyingFilter("CIGammaAdjust", parameters: ["inputPower": cubeGammaPower])
     }
 
-    private static func applyMatrix(_ matrix: Matrix3x3, to image: CIImage) -> CIImage {
+    /// Not `private`: `RenderEngine`'s non-RAW Stage P path (a different file
+    /// in this module) reuses this for its working-space <-> ProPhoto round
+    /// trip instead of duplicating the `CIColorMatrix` parameter plumbing.
+    static func applyMatrix(_ matrix: Matrix3x3, to image: CIImage) -> CIImage {
         image.applyingFilter("CIColorMatrix", parameters: [
             "inputRVector": CIVector(x: matrix[0, 0], y: matrix[0, 1], z: matrix[0, 2], w: 0),
             "inputGVector": CIVector(x: matrix[1, 0], y: matrix[1, 1], z: matrix[1, 2], w: 0),

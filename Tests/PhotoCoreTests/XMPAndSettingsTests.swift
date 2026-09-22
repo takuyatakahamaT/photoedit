@@ -27,11 +27,17 @@ struct XMPAndSettingsTests {
                 && $0.note.contains("2画像")
         })
         #expect(preset.compatibility.contains {
+            // Phase2 C1: Exposure2012 moved from clean-room approximation to
+            // `ToneOps`'s measured model -- see `docs/PHASE2_DEVELOP_PIPELINE.md`.
             $0.property == "Exposure2012"
-                && $0.level == .approximate
+                && $0.level == .supported
         })
         #expect(preset.compatibility.contains {
-            $0.property == "WhiteBalance" && $0.level == .unsupported
+            // Phase2 C1: absolute white balance (RAW) is now implemented, so
+            // the "WhiteBalance" mode key itself is reported supported
+            // regardless of whether this particular preset is As Shot or
+            // Custom (`XMPPresetParser.compatibilityItems`).
+            $0.property == "WhiteBalance" && $0.level == .supported
         })
     }
 
@@ -66,9 +72,11 @@ struct XMPAndSettingsTests {
         #expect(preset.settings.blacks == 53)
         #expect(preset.settings.whiteBalance == .asShot)
         #expect(preset.compatibility.contains {
+            // Phase2 C1: ParametricShadows/Darks/Lights/Highlights moved to
+            // `ToneOps.parametric`, a measured model, so this is now supported.
             $0.property == "ParametricShadows"
                 && $0.value == "-43"
-                && $0.level == .unsupported
+                && $0.level == .supported
         })
     }
 

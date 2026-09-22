@@ -160,6 +160,13 @@ public enum DNGColorSpace {
     /// the renderer's `fRGBtoFinal` in phase1.
     public static let proPhotoToSRGBLinear = xyzD50ToSRGB * proPhotoToXYZD50
 
+    /// Inverse of `proPhotoToSRGBLinear`: linear sRGB (the app's working
+    /// space) -> linear ProPhoto. Phase2 C1's non-RAW path (`RenderEngine`)
+    /// uses this to hand a JPEG/HEIC/PNG/TIFF's already-decoded working-space
+    /// image to `ToneOps.exposureNonRaw`/`applyPostOps` (measured in ProPhoto)
+    /// and back.
+    public static let srgbLinearToProPhoto = try! proPhotoToSRGBLinear.inverted()
+
     /// `dng_function_GammaEncode_sRGB::Evaluate` -- the standard sRGB OETF.
     /// Not clamped to an upper bound of 1 (extended-range input encodes to
     /// an extended-range, still-monotonic output), matching
@@ -277,6 +284,58 @@ public enum DNGTemperature {
         // Unreachable: the loop above always returns at index == n-1.
         return 1.0e6 / table[n - 1].mired
     }
+
+    /// `dng_temperature.cpp`'s `LegacyGetXY`: the exact inverse of
+    /// `xyToTemperature` (`LegacySetXY`) over the same Robertson isotherm
+    /// table, used by phase2 C1's absolute white balance (XMP `WhiteBalance
+    /// == Custom`'s `Temperature`/`Tint`). `kTintScale == -3000` per the SDK.
+    ///
+    /// Only the "legacy" (non-extended) table is implemented -- matching
+    /// `xyToTemperature`'s own scope note -- so `temperature` is clamped to
+    /// >= 2000K before the table search: below that the legacy table's mired
+    /// domain (0...600, i.e. this table's own lowest entry is ~1667K) is
+    /// exceeded and the loop's last-segment extrapolation (`index == 29`)
+    /// becomes numerically unstable. This project's use (XMP Temperature
+    /// sliders in the ~2000...50000 range) never legitimately needs colors
+    /// below 2000K.
+    public static func xy(fromTemperature temperature: Double, tint: Double) -> ChromaticityXY {
+        let clampedTemperature = max(temperature, 2_000.0)
+        let r = 1.0e6 / clampedTemperature
+        let offset = tint * (1.0 / kTintScale)
+
+        for index in 0..<(table.count - 1) {
+            guard r < table[index + 1].mired || index == table.count - 2 else { continue }
+
+            let f = (table[index + 1].mired - r) / (table[index + 1].mired - table[index].mired)
+
+            var u = table[index].u * f + table[index + 1].u * (1.0 - f)
+            var v = table[index].v * f + table[index + 1].v * (1.0 - f)
+
+            var uu1 = 1.0
+            var vv1 = table[index].slope
+            var uu2 = 1.0
+            var vv2 = table[index + 1].slope
+
+            let len1 = (1.0 + vv1 * vv1).squareRoot()
+            let len2 = (1.0 + vv2 * vv2).squareRoot()
+            uu1 /= len1; vv1 /= len1
+            uu2 /= len2; vv2 /= len2
+
+            var uu3 = uu1 * f + uu2 * (1.0 - f)
+            var vv3 = vv1 * f + vv2 * (1.0 - f)
+            let len3 = (uu3 * uu3 + vv3 * vv3).squareRoot()
+            uu3 /= len3; vv3 /= len3
+
+            u += uu3 * offset
+            v += vv3 * offset
+
+            return ChromaticityXY(x: 1.5 * u / (u - 4.0 * v + 2.0), y: v / (u - 4.0 * v + 2.0))
+        }
+        // Unreachable: the loop above always returns by `index == table.count - 2`.
+        return .d50
+    }
+
+    private static let kTintScale = -3_000.0
 
     /// `dng_color_spec.cpp`'s `XYtoXYZ` (Y == 1), with the same
     /// near-degenerate-chromaticity clamping.
