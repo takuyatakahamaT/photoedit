@@ -44,7 +44,9 @@
 
 - フェーズ1の事前検証（Python試作）: 公開仕様＋Lightroom同梱のDC-S5用DCP＋Adobe Colorだけで、LRのプリセット無し現像を領域平均で平均ΔE00 1.2〜1.6まで再現できた（現行Core Image土台は2.4〜3.0で、LRより明るく彩度が8〜22%高い）。基準露出はカメラ定数として扱える。レンズ補正の一致が残課題。
 - **フェーズ1完了:** RAWの基準現像を LibRaw + Adobe Standard DCP + Adobe Color（Lightroom同梱の資産を実行時に読む）へ切り替え、プリセット無しでLR既定と平均ΔE00 1.2〜1.9（旧: 2.4〜3.0、明るく高彩度）。アプリの写真情報に「現像: Adobe Standard + Adobe Color（LibRaw）」が出る。`photobench-render` CLI で GUI 無しに書き出せる。
-- LR計測のround0パッケージ（30枚）を生成済み。オーナーの書き出し待ち。
+- **round0 / round1 の計測完了（2026-09-22）。** 機械生成XMPはLRが読み、手動適用と完全一致。チャート194枚・実写94枚から操作ごとの式を同定した（`.photobench/phase2/{tone,hsl,color,spatial}/model.md`）。RAW実写で確定: 露出＝トーンカーブ前のリニア倍率、絶対WB＝DNG SDKの式、基準露出 −0.135 EV、Adobe Colorの点カーブ＝sRGB符号化RGBTone、コントラスト／白／黒／parametric／点カーブ＝トーンカーブ後のsRGB符号化空間、HSLとCalibration＝出力参照。
+- ハイライト／シャドウは空間処理（HALDでは測れない）。同定した「大域カーブ＋ディテール保持」モデルの到達点は実写15ケース平均ΔE 3.1（大域のみと同程度）で、ここが最後まで残る残差。
+- 実装は3段: C1（露出・絶対WB・コントラスト・白黒・parametric・点カーブ、[PHASE2_DEVELOP_PIPELINE.md](PHASE2_DEVELOP_PIPELINE.md)）→ C2（HSL・Calibration・Color Grading・Vibrance／Saturation）→ C3（ハイライト／シャドウ）、[PHASE2_C2_C3.md](PHASE2_C2_C3.md)。C1 を Sonnet 5 が実装中。
 
 根拠・方式比較・出典は[ENGINE_ROADMAP.md](ENGINE_ROADMAP.md)。過去の調査は[汎用XMPエンジン設計](GENERIC_XMP_ENGINE.md)、[エンジン比較・根拠](ENGINE_RESEARCH.md)。
 
@@ -54,8 +56,8 @@
 |---|---|---|
 | 0 | ~~チェックポイントcommit、bluesky2専用補正の撤去~~（完了）、計測リグ（round0生成・判定は済み）、LRローカルタブのXMP往復確認（オーナーの書き出し待ち） | 往復が確認でき、リグが再現可能 |
 | 1 | ~~RAW基準現像（DCP＋Adobe Color＋ACR既定カーブ＋基準露出）~~ **完了（`ce91bfc`）。** 設計は[PHASE1_BASE_RENDERING.md](PHASE1_BASE_RENDERING.md)。3枚とも平均ΔE00 1.2〜1.9、EV差 ±0.03 で合格。旧土台は 2.4〜3.0 | プリセット無しでLR既定と平均ΔE00 ≤ 2、平均EV差 ≤ 0.05（`compare_renders.py`） |
-| 2 | 画素単位の色操作（カーブ、HSL、Calibration、Color Grading、Vibrance／Saturation、増分WB） | チャートで操作ごとに平均ΔE00 ≤ 1、p95 ≤ 2.5 |
-| 3 | 空間操作（ハイライト／シャドウ／白／黒／露出の肩／コントラスト→Texture／Clarity／Dehaze） | 未使用の実写で平均 ≤ 2、p95 ≤ 5、局所コントラスト比±10%以内 |
+| 2 | 画素単位の色操作。計測・同定は完了。実装 C1（進行中）→ C2 | 実写（round0/1の参照）で操作ごとに平均ΔE00 ≤ 2（基準現像 1.2〜1.4 と同水準） |
+| 3 | 空間操作（ハイライト／シャドウ→Texture／Clarity／Dehaze）。同定 v1 完了（大域＋ディテール保持、平均3.1）。実装 C3 | v1: 実写15ケース平均 ≤ 3.1。以降、局所モデルの改良で 2 以下を目指す |
 | 4 | 既定シャープ／NR、レンズ補正、周辺光量・粒子、速度 | 100%表示の解像感がLRと同等 |
 | 5 | 未使用プリセット×未使用写真の総合検証 | オーナーが普段使いできると判断 |
 | 6 | NIHO Desktop統合 | — |
@@ -64,7 +66,7 @@
 
 ## オーナーにお願いする作業
 
-1. **Lightroomでの一括書き出し（3〜4回、各10分程度）。** こちらで生成したフォルダをLRのローカルタブで開き、全選択して指定の設定で書き出す。最初はround0（`exports/lr-measure/round0/README.md`、絶対パス記載）。Claudeによる画面操作での代行も可能（その都度の許可が必要）。
+1. ~~Lightroomでの一括書き出し~~ round0 / round1 は完了。C1〜C3 の実装後、追加計測（スライダー値の細かい刻み、未使用プリセット）を依頼する可能性がある。
 2. **新エンジンの目視確認。** `dist/Photo Bench.app` でRAWを開き、写真情報に「現像: Adobe Standard + Adobe Color（LibRaw）」が出ること、プリセット無しの見た目がLRの既定に近いことを確認する。
 3. 教師データを作れるのはLR契約中だけ。フェーズ2〜3の書き出しが済むまで契約を継続する。
 
