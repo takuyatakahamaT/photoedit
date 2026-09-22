@@ -202,6 +202,14 @@ Swift実装（LibRaw 0.21.4 + Adobe Standard DCP + Adobe Color、CIColorCube 64�
 
 操作ファミリー別の数式同定（tone / hsl / color）は `.photobench/phase2/<family>/model.md` に記録し、確定したものからSwiftへ移す。
 
+### フェーズ2 C1 の結果（2026-09-22、`2df8f6a`）
+
+露出（RAW: トーンカーブ前のリニア倍率）、絶対WB、コントラスト、白／黒、parametric、ポイントカーブを計測モデルで実装。P1013558 の単一操作ゲート（LR書き出し比、領域平均ΔE）: exposure 1.18 / contrast 1.21 / whites 1.33 / blacks 2.05（EV −0.16、クリップ側の課題）/ parametric 1.36 / pointcurve 1.56 / Temp4000 1.32 / Temp7500 1.52 / Tint+30 1.34 / neutral 1.22。基準現像（1.2）とほぼ同水準。
+
+更新版bluesky2全体（HSL／彩度／グレーディング／Calibration／ハイライト／シャドウは旧近似のまま）: **5.03 / 7.10 / 6.55**（開始時 17〜22）。EV +0.17〜+0.36、彩度比 1.08〜1.37 で、残りは旧近似のハイライト／シャドウ（明るさ）と彩度系（C2／C3 で置換）。
+
+旧校正契約（`calibration/*.json`、7月の manifest）は歴史的証跡として変更しない。関連テスト9件は OS固定条件と processing fingerprint の変更で失敗する既知事項。フェーズ4/5 で契約を新ゲートへ置き換えて整理する。
+
 ## 8. リスクと見通し
 
 - **完全一致は約束できない。** 層2はAdobe非公開の画像適応処理で、極端な設定（オーナーのプリセットはまさにそれ）ほど差が残りやすい。到達点はゲートの数値と目視で判断する。
