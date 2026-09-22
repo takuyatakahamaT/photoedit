@@ -30,22 +30,21 @@
 
 ## C3: Highlights2012 / Shadows2012（空間処理、v1）
 
-参照: `spatial/model.md`、`spatial_model.py`（`apply_highlights_shadows(rgb_linear, highlights, shadows, whites, blacks, scale_px)`、モデル **B2**（採用）と A）。v1 は B2 を移植する。Whites / Blacks は C1 の P2 で扱うので C3 では **Highlights / Shadows だけ**。
+参照: **`spatial-v2/model.md`、`spatial-v2/spatial_model_v2.py`**（`apply_highlights_shadows(rgb_linear, highlights, shadows, scale_px=32, order="highlights_first")`。Burt–Adelson ピラミッド＋高速局所ラプラシアン（Paris–Hasinoff–Kautz の remapping、Aubry の離散化）。大域ゲイン表は最終ベース段にだけ加算。Highlights: α=β=1、5段。Shadows: α=1、β=0.85、σr=0.5段、2段。H→S の順）。v1（`spatial/`、単一スケールのぼかし＋適応ゲイン）は比較用。H/S 単体12ケースの画素ΔE00 2.37（v1 2.55）、領域平均 2.08。Whites / Blacks は C1 の P2 で扱うので C3 では **Highlights / Shadows だけ**。
 
-構造（log2 輝度、Y = ProPhoto の Y）:
-1. `base = blur(log2 Y)`（分離ガウシアン。半径は画像の長辺に比例。参照実装の `scale_px` の定義に合わせ、フル解像度 6000px 基準の半径を記録する）
-2. `detail = log2 Y − base`
-3. `base' = base + gain(op, value, base)`（`GAIN_TABLE_100` / `GAIN_TABLE_50` の区分線形、0→50 は比例、50→100 は表間の線形補間）
-4. `detail' = detail × k(slope)`（B2: 傾き比例の適応ゲイン。detail の大きい領域は大域カーブへ滑らかに合流）
-5. `Y' = 2^(base' + detail')`、RGB を `Y'/Y` でスケール（色相・彩度比を保持）
+構造（log2 輝度 `l = log2 Y`、Y = ProPhoto の Y。参照実装 `spatial_model_v2.py` のとおり）:
+1. ガウシアンピラミッド G0..Gn（Burt–Adelson 5×5、段数は操作ごと: Highlights 5、Shadows 2。`scale_px` は 1500×1000 解析時の基準で、原寸では画像の長辺比で換算する）
+2. 各段・各画素で局所平均 g0 に対する remapping `r(i; g0)`（|i−g0| ≤ σr: `g0 + sign·σr·(|i−g0|/σr)^α`、> σr: `g0 + sign·(β·(|i−g0|−σr)+σr)`）からラプラシアン係数を作る高速局所ラプラシアン（Aubry の離散化: g0 を σr 刻みでサンプルし補間）
+3. 最粗段のベースに大域ゲイン `gain(op, value, base)`（`GAIN_TABLE_100/50` の区分線形、0→50 比例、50→100 表間補間）を加算し、ピラミッドを再構成
+4. `Y' = 2^l'`、RGB を `Y'/Y` でスケール（色相・彩度比を保持）。Highlights → Shadows の順
 
-Core Image 実装: `CIColorMatrix` で Y を作る → log は `CIColorKernel`（CIKL）→ `CIGaussianBlur`（`clampedToExtent()` で境界を延長し、`cropped(to:)` で戻す。既存の resize と同じ流儀）→ 合成を `CIColorKernel`（引数: log Y、base、gain 表は 1×256 の CIImage を `CIKernel`（general）で sample する。CIKL で配列を持てないため）。プレビュー（縮小 decode）と原寸で半径がずれないよう、半径は **原寸換算**で決めて `appliedScaleFactor` で割る。
+Core Image / Metal 実装: ピラミッド（`CILanczosScaleTransform` ではなく 5×5 ガウシアン＋2倍縮小の `CIKernel`、または `MPSImageGaussianPyramid`）と remapping の合成を Metal compute（`MTLComputePipelineState`）で書き、CIImage との受け渡しは `CIImage(mtlTexture:)` / `CIRenderDestination` を使う。CIKL では配列（ゲイン表）とマルチスケールの合成が書きにくいので、C3 は **Metal compute を PhotoCore に導入する最初の箇所**とする（既存 `MetalPreviewRenderer` に MTLDevice/command queue の流儀がある）。プレビュー（縮小 decode）と原寸で半径がずれないよう、段数・σ は **原寸換算**で決めて `appliedScaleFactor` を反映する。処理時間の目安（参照実装、1500×1000 の numpy）は `spatial-v2/model.md` を参照。
 
 位置: P1（Contrast）の後、P2（Whites…）の前（v1 仮置き）。cube 間に挟むため、cube P は P1 と P2 の2つに分ける（P2 のキャッシュキーに Contrast は含めない）。
 
 ### C3 テスト・ゲート
 - CPU 参照（純Swift、縮小画像で）と CI 実装の一致（ΔE00 ≤ 0.3、1500×1000 で）。
-- 実写ゲート（P1013558 / P1013207 / P1012822、参照は round1 の `Highlights2012_-100/-50/+50`、`Shadows2012_-50/+50/+100`）: 平均ΔE の **15ケース平均 ≤ 3.1**（大域のみのモデルの到達点。参照実装 B2 は 3.08）、ハローの目視（比較画像を `exports/phase3/` へ）。
+- 実写ゲート（P1013558 / P1013207 / P1012822、参照は round1 の `Highlights2012_-100/-50/+50`、`Shadows2012_-50/+50/+100`。ゲート用 XMP は `.photobench/phase2/c3-gate/`）: H/S 単体 12 ケースの **領域平均ΔE ≤ 2.3、画素ΔE（1500×1000）≤ 2.6**（参照実装 v2 の到達点 2.08 / 2.37）、ハローの目視（比較画像を `exports/phase3/` へ）。
 - `tone-all_bluesky2`（3枚）: 参照 `p1_<scene>_tone-all_bluesky2.jpg`（P1013558 は round0 の `r0_raw_tone-all.jpg`）で平均ΔE を報告（合格条件は置かない。C1〜C3 を通した到達点の記録）。
 
 ## 完了後の総合確認（フェーズ2/3 の出口）
