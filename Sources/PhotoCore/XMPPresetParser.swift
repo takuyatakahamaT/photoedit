@@ -125,6 +125,54 @@ public struct XMPPreset: Codable, Equatable, Sendable {
                 result.hsl[band] = adjustment
             }
         }
+
+        if hasFiniteNumber("ShadowTint") { result.calibration.shadowTint = settings.calibration.shadowTint }
+        if hasFiniteNumber("RedHue") { result.calibration.redHue = settings.calibration.redHue }
+        if hasFiniteNumber("RedSaturation") { result.calibration.redSaturation = settings.calibration.redSaturation }
+        if hasFiniteNumber("GreenHue") { result.calibration.greenHue = settings.calibration.greenHue }
+        if hasFiniteNumber("GreenSaturation") {
+            result.calibration.greenSaturation = settings.calibration.greenSaturation
+        }
+        if hasFiniteNumber("BlueHue") { result.calibration.blueHue = settings.calibration.blueHue }
+        if hasFiniteNumber("BlueSaturation") { result.calibration.blueSaturation = settings.calibration.blueSaturation }
+
+        if hasFiniteNumber("ColorGradeShadowHue") || hasFiniteNumber("SplitToningShadowHue") {
+            result.colorGrading.shadow.hue = settings.colorGrading.shadow.hue
+        }
+        if hasFiniteNumber("ColorGradeShadowSat") || hasFiniteNumber("SplitToningShadowSaturation") {
+            result.colorGrading.shadow.saturation = settings.colorGrading.shadow.saturation
+        }
+        if hasFiniteNumber("ColorGradeShadowLum") {
+            result.colorGrading.shadow.luminance = settings.colorGrading.shadow.luminance
+        }
+        if hasFiniteNumber("ColorGradeMidtoneHue") {
+            result.colorGrading.midtone.hue = settings.colorGrading.midtone.hue
+        }
+        if hasFiniteNumber("ColorGradeMidtoneSat") {
+            result.colorGrading.midtone.saturation = settings.colorGrading.midtone.saturation
+        }
+        if hasFiniteNumber("ColorGradeMidtoneLum") {
+            result.colorGrading.midtone.luminance = settings.colorGrading.midtone.luminance
+        }
+        if hasFiniteNumber("ColorGradeHighlightHue") || hasFiniteNumber("SplitToningHighlightHue") {
+            result.colorGrading.highlight.hue = settings.colorGrading.highlight.hue
+        }
+        if hasFiniteNumber("ColorGradeHighlightSat") || hasFiniteNumber("SplitToningHighlightSaturation") {
+            result.colorGrading.highlight.saturation = settings.colorGrading.highlight.saturation
+        }
+        if hasFiniteNumber("ColorGradeHighlightLum") {
+            result.colorGrading.highlight.luminance = settings.colorGrading.highlight.luminance
+        }
+        if hasFiniteNumber("ColorGradeGlobalHue") { result.colorGrading.global.hue = settings.colorGrading.global.hue }
+        if hasFiniteNumber("ColorGradeGlobalSat") {
+            result.colorGrading.global.saturation = settings.colorGrading.global.saturation
+        }
+        if hasFiniteNumber("ColorGradeGlobalLum") {
+            result.colorGrading.global.luminance = settings.colorGrading.global.luminance
+        }
+        if hasFiniteNumber("ColorGradeBlending") { result.colorGrading.blending = settings.colorGrading.blending }
+        if hasFiniteNumber("SplitToningBalance") { result.colorGrading.balance = settings.colorGrading.balance }
+
         return result
     }
 }
@@ -334,6 +382,48 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
             if adjustment != HSLAdjustment() { settings.hsl[band] = adjustment }
         }
 
+        settings.calibration = CalibrationSettings(
+            shadowTint: number("ShadowTint", range: -100...100),
+            redHue: number("RedHue", range: -100...100),
+            redSaturation: number("RedSaturation", range: -100...100),
+            greenHue: number("GreenHue", range: -100...100),
+            greenSaturation: number("GreenSaturation", range: -100...100),
+            blueHue: number("BlueHue", range: -100...100),
+            blueSaturation: number("BlueSaturation", range: -100...100)
+        )
+        // `ColorGrade{Shadow,Highlight}{Hue,Sat}` are the modern Color Grading
+        // names; `SplitToning{Shadow,Highlight}{Hue,Saturation}` are the same
+        // sliders under their pre-Color-Grading XMP names (`docs/
+        // PHASE2_C2_C3.md`'s C2 item 1). Midtone/Global have no legacy name.
+        settings.colorGrading = ColorGradingSettings(
+            shadow: ColorGradeBand(
+                hue: numberPreferring(["ColorGradeShadowHue", "SplitToningShadowHue"], range: 0...359),
+                saturation: numberPreferring(
+                    ["ColorGradeShadowSat", "SplitToningShadowSaturation"], range: 0...100
+                ),
+                luminance: number("ColorGradeShadowLum", range: -100...100)
+            ),
+            midtone: ColorGradeBand(
+                hue: number("ColorGradeMidtoneHue", range: 0...359),
+                saturation: number("ColorGradeMidtoneSat", range: 0...100),
+                luminance: number("ColorGradeMidtoneLum", range: -100...100)
+            ),
+            highlight: ColorGradeBand(
+                hue: numberPreferring(["ColorGradeHighlightHue", "SplitToningHighlightHue"], range: 0...359),
+                saturation: numberPreferring(
+                    ["ColorGradeHighlightSat", "SplitToningHighlightSaturation"], range: 0...100
+                ),
+                luminance: number("ColorGradeHighlightLum", range: -100...100)
+            ),
+            global: ColorGradeBand(
+                hue: number("ColorGradeGlobalHue", range: 0...359),
+                saturation: number("ColorGradeGlobalSat", range: 0...100),
+                luminance: number("ColorGradeGlobalLum", range: -100...100)
+            ),
+            blending: number("ColorGradeBlending", default: 100, range: 0...100),
+            balance: number("SplitToningBalance", range: -100...100)
+        )
+
         return XMPPreset(
             // Adobe XMP may contain nested profile/look names (for example
             // "Adobe Color"). They are not the user preset's name, so the
@@ -358,6 +448,23 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
         guard let value = Double(properties[key] ?? ""), value.isFinite else { return defaultValue }
         guard let range else { return value }
         return min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    /// Like `number(_:default:range:)`, but tries several XMP property names
+    /// in order and returns the first one present -- for a slider that Adobe
+    /// has written under more than one name across versions (`docs/
+    /// PHASE2_C2_C3.md`'s C2 item 1: Color Grading's Shadow/Highlight
+    /// Hue/Saturation are the same values as the pre-Color-Grading Split
+    /// Toning tags).
+    private func numberPreferring(
+        _ keys: [String], default defaultValue: Double = 0, range: ClosedRange<Double>? = nil
+    ) -> Double {
+        for key in keys {
+            guard let value = Double(properties[key] ?? ""), value.isFinite else { continue }
+            guard let range else { return value }
+            return min(max(value, range.lowerBound), range.upperBound)
+        }
+        return defaultValue
     }
 
     private func optionalNumber(_ key: String) -> Double? {
@@ -389,10 +496,26 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
             "ParametricShadows", "ParametricDarks", "ParametricLights", "ParametricHighlights",
             "ParametricShadowSplit", "ParametricMidtoneSplit", "ParametricHighlightSplit"
         ])
-        // Still clean-room approximations pending phase3 (spatial) / C2 (HSL/Vibrance/Saturation).
+        // Phase2 C2: real, measured models (`ColorOps`, linear ProPhoto) --
+        // promoted out of "approximate" (Vibrance/Saturation) or out of the
+        // OKLCh clean-room guess (HSL, handled via `isHSL` below).
+        // `ShadowTint` and `ColorGrade{Midtone,Global}Lum` are handled by
+        // their own branches below, not this set.
+        let supportedColorScalars = Set([
+            "Vibrance", "Saturation",
+            "RedHue", "RedSaturation", "GreenHue", "GreenSaturation", "BlueHue", "BlueSaturation",
+            "ColorGradeShadowHue", "ColorGradeShadowSat", "ColorGradeShadowLum",
+            "ColorGradeMidtoneHue", "ColorGradeMidtoneSat",
+            "ColorGradeHighlightHue", "ColorGradeHighlightSat", "ColorGradeHighlightLum",
+            "ColorGradeGlobalHue", "ColorGradeGlobalSat",
+            "ColorGradeBlending",
+            "SplitToningShadowHue", "SplitToningShadowSaturation",
+            "SplitToningHighlightHue", "SplitToningHighlightSaturation",
+            "SplitToningBalance"
+        ])
+        // Still clean-room approximations pending phase3 (spatial processing).
         let approximate = Set([
-            "Vibrance", "Saturation", "ToneCurveName2012",
-            "Highlights2012", "Shadows2012"
+            "ToneCurveName2012", "Highlights2012", "Shadows2012"
         ])
         // Retained (parsed, kept on `EditSettings`) but never applied to rendering.
         let unsupported = Set([
@@ -431,20 +554,28 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
             } else if absoluteWhiteBalanceKeys.contains(key) {
                 level = .supported
                 note = "RAWの絶対ホワイトバランスとして適用（非RAWは値の保持のみ）"
+            } else if key == "ShadowTint" {
+                level = .supported
+                note = "実測で効果ゼロと確認済み（何もしない演算として対応）"
+            } else if key == "ColorGradeMidtoneLum" || key == "ColorGradeGlobalLum" {
+                level = .unsupported
+                note = "参照実装に測定式が無いため値を保持するのみ（Photo Bench未実装）"
             } else if supportedScalars.contains(key) {
                 level = .supported
                 note = key.hasPrefix("Parametric")
                     ? "実測フィットの窓関数（sRGB符号化空間）で対応"
                     : "実測フィット式（sRGB符号化空間、Exposureのみリニア）で対応"
-            } else if approximate.contains(key) || isHSL {
+            } else if supportedColorScalars.contains(key) {
+                level = .supported
+                note = "実測フィット式（リニアProPhoto空間、cube Q）で対応"
+            } else if isHSL {
+                level = .supported
+                note = "実測8帯モデル（cos²クロスフェード、リニアProPhoto、cube Q）で対応"
+            } else if approximate.contains(key) {
                 level = .approximate
-                if isHSL {
-                    note = "OKLCh 8色バンド・低彩度保護で近似（初期OFF）"
-                } else if Self.toneKeys.contains(key) {
-                    note = "単調性保証済み・2画像で暫定検証のトーン近似"
-                } else {
-                    note = "Photo Benchの処理へ近似変換"
-                }
+                note = Self.toneKeys.contains(key)
+                    ? "単調性保証済み・2画像で暫定検証のトーン近似"
+                    : "Photo Benchの処理へ近似変換"
             } else if unsupported.contains(key) {
                 level = .unsupported
                 note = "値を保持するのみ（Photo Bench未実装）"

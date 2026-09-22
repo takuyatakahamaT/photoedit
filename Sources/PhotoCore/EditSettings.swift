@@ -33,19 +33,6 @@ public struct ToneCurve: Codable, Equatable, Hashable, Sendable {
 
 public enum HSLBand: String, Codable, CaseIterable, Hashable, Sendable {
     case red, orange, yellow, green, aqua, blue, purple, magenta
-
-    public var centerHue: Double {
-        switch self {
-        case .red: 0
-        case .orange: 30
-        case .yellow: 60
-        case .green: 120
-        case .aqua: 180
-        case .blue: 240
-        case .purple: 280
-        case .magenta: 320
-        }
-    }
 }
 
 public struct HSLAdjustment: Codable, Equatable, Hashable, Sendable {
@@ -58,6 +45,101 @@ public struct HSLAdjustment: Codable, Equatable, Hashable, Sendable {
         self.saturation = saturation
         self.luminance = luminance
     }
+}
+
+/// Phase2 C2's Camera Calibration panel (`.photobench/phase2/color/model.md`
+/// §3): the Red/Green/Blue Hue/Saturation sliders, applied by
+/// `ColorOps.calibrationMatrix` as a fixed 3x3 matrix on linear ProPhoto,
+/// plus `shadowTint`, which is retained only for round-tripping -- the
+/// measured reference found it has zero effect (§3.3) and `ColorOps` treats
+/// it as a no-op.
+public struct CalibrationSettings: Codable, Equatable, Hashable, Sendable {
+    public var shadowTint: Double
+    public var redHue: Double
+    public var redSaturation: Double
+    public var greenHue: Double
+    public var greenSaturation: Double
+    public var blueHue: Double
+    public var blueSaturation: Double
+
+    public init(
+        shadowTint: Double = 0,
+        redHue: Double = 0,
+        redSaturation: Double = 0,
+        greenHue: Double = 0,
+        greenSaturation: Double = 0,
+        blueHue: Double = 0,
+        blueSaturation: Double = 0
+    ) {
+        self.shadowTint = shadowTint
+        self.redHue = redHue
+        self.redSaturation = redSaturation
+        self.greenHue = greenHue
+        self.greenSaturation = greenSaturation
+        self.blueHue = blueHue
+        self.blueSaturation = blueSaturation
+    }
+
+    public static let neutral = CalibrationSettings()
+}
+
+/// One Color Grading band's Hue/Saturation/Luminance (`ColorGradeShadowHue`
+/// etc). `hue` is 0...359 (a wheel angle), `saturation` 0...100, `luminance`
+/// -100...100 -- matching Adobe's own XMP ranges, not `HSLAdjustment`'s
+/// -100...100-for-everything convention.
+public struct ColorGradeBand: Codable, Equatable, Hashable, Sendable {
+    public var hue: Double
+    public var saturation: Double
+    public var luminance: Double
+
+    public init(hue: Double = 0, saturation: Double = 0, luminance: Double = 0) {
+        self.hue = hue
+        self.saturation = saturation
+        self.luminance = luminance
+    }
+}
+
+/// Phase2 C2's Color Grading panel (`.photobench/phase2/color/model.md` §4),
+/// applied by `ColorOps.colorGrading`. The legacy Split Toning XMP tags
+/// (`SplitToningShadowHue/Saturation`, `SplitToningHighlightHue/Saturation`,
+/// `SplitToningBalance`) are parsed into the same `shadow`/`highlight`/
+/// `balance` slots by `XMPPresetParser` -- there is no separate storage for
+/// "split toning mode".
+///
+/// `midtone.luminance` and `global.luminance` are retained for round-tripping
+/// only: `color_model.apply_color_grading` (the measured reference
+/// `ColorOps.colorGrading` faithfully ports) has no fitted curve for those
+/// two sliders -- only `ColorGradeShadowLum`/`ColorGradeHighlightLum` were
+/// measured (`model.md` §4.1) -- so they are never applied to rendering.
+public struct ColorGradingSettings: Codable, Equatable, Hashable, Sendable {
+    public var shadow: ColorGradeBand
+    public var midtone: ColorGradeBand
+    public var highlight: ColorGradeBand
+    public var global: ColorGradeBand
+    /// `ColorGradeBlending` (0...100, Adobe default 50; absent-tag default is
+    /// 100 here, matching `color_model.apply_color_grading`'s own default --
+    /// see that function's doc comment for why).
+    public var blending: Double
+    /// `ColorGradeBalance`/legacy `SplitToningBalance` (-100...100).
+    public var balance: Double
+
+    public init(
+        shadow: ColorGradeBand = ColorGradeBand(),
+        midtone: ColorGradeBand = ColorGradeBand(),
+        highlight: ColorGradeBand = ColorGradeBand(),
+        global: ColorGradeBand = ColorGradeBand(),
+        blending: Double = 100,
+        balance: Double = 0
+    ) {
+        self.shadow = shadow
+        self.midtone = midtone
+        self.highlight = highlight
+        self.global = global
+        self.blending = blending
+        self.balance = balance
+    }
+
+    public static let neutral = ColorGradingSettings()
 }
 
 public enum WhiteBalanceMode: String, Codable, Equatable, Hashable, Sendable {
@@ -110,6 +192,15 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
     public var whiteBalance: WhiteBalanceSettings
     public var toneCurves: [ToneCurve]
     public var hsl: [HSLBand: HSLAdjustment]
+    /// Phase2 C2's Camera Calibration panel. Applied last (`ColorOps.
+    /// calibrationMatrix`, a `CIColorMatrix` kept separate from cube Q so a
+    /// calibration-only slider change never invalidates cube Q's cache --
+    /// `docs/PHASE2_C2_C3.md`'s C2 item 3).
+    public var calibration: CalibrationSettings
+    /// Phase2 C2's Color Grading panel (and legacy Split Toning). Applied at
+    /// the end of cube Q (`ColorOps.applyColorOps`'s Vibrance -> Saturation ->
+    /// HSL -> Color Grading order).
+    public var colorGrading: ColorGradingSettings
     /// Phase2 C1 `Parametric{Shadows,Darks,Lights,Highlights}` (-100...100)
     /// and their split points (0...100, Adobe defaults 25/50/75). Applied by
     /// `ToneOps.parametric` at Stage P (`docs/PHASE2_DEVELOP_PIPELINE.md`).
@@ -144,6 +235,8 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         whiteBalance: WhiteBalanceSettings = .asShot,
         toneCurves: [ToneCurve] = [],
         hsl: [HSLBand: HSLAdjustment] = [:],
+        calibration: CalibrationSettings = .neutral,
+        colorGrading: ColorGradingSettings = .neutral,
         relativeTemperature: Double = 0,
         relativeTint: Double = 0,
         parametricShadows: Double = 0,
@@ -171,6 +264,8 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         self.whiteBalance = whiteBalance
         self.toneCurves = toneCurves
         self.hsl = hsl
+        self.calibration = calibration
+        self.colorGrading = colorGrading
         self.parametricShadows = parametricShadows
         self.parametricDarks = parametricDarks
         self.parametricLights = parametricLights
@@ -198,6 +293,8 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         case whiteBalance
         case toneCurves
         case hsl
+        case calibration
+        case colorGrading
         case parametricShadows
         case parametricDarks
         case parametricLights
@@ -230,6 +327,8 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         whiteBalance = try container.decodeIfPresent(WhiteBalanceSettings.self, forKey: .whiteBalance) ?? .asShot
         toneCurves = try container.decodeIfPresent([ToneCurve].self, forKey: .toneCurves) ?? []
         hsl = try container.decodeIfPresent([HSLBand: HSLAdjustment].self, forKey: .hsl) ?? [:]
+        calibration = try container.decodeIfPresent(CalibrationSettings.self, forKey: .calibration) ?? .neutral
+        colorGrading = try container.decodeIfPresent(ColorGradingSettings.self, forKey: .colorGrading) ?? .neutral
         parametricShadows = try container.decodeIfPresent(Double.self, forKey: .parametricShadows) ?? 0
         parametricDarks = try container.decodeIfPresent(Double.self, forKey: .parametricDarks) ?? 0
         parametricLights = try container.decodeIfPresent(Double.self, forKey: .parametricLights) ?? 0
@@ -258,6 +357,8 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         try container.encode(whiteBalance, forKey: .whiteBalance)
         try container.encode(toneCurves, forKey: .toneCurves)
         try container.encode(hsl, forKey: .hsl)
+        try container.encode(calibration, forKey: .calibration)
+        try container.encode(colorGrading, forKey: .colorGrading)
         try container.encode(parametricShadows, forKey: .parametricShadows)
         try container.encode(parametricDarks, forKey: .parametricDarks)
         try container.encode(parametricLights, forKey: .parametricLights)
@@ -294,8 +395,27 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
             parametricLights,
             parametricHighlights
         ]
+        let calibrationControls = [
+            calibration.redHue, calibration.redSaturation,
+            calibration.greenHue, calibration.greenSaturation,
+            calibration.blueHue, calibration.blueSaturation
+            // shadowTint excluded: measured zero-effect (color/model.md §3.3).
+        ]
+        let colorGradingControls = [
+            colorGrading.shadow.hue, colorGrading.shadow.saturation, colorGrading.shadow.luminance,
+            colorGrading.midtone.hue, colorGrading.midtone.saturation,
+            colorGrading.highlight.hue, colorGrading.highlight.saturation, colorGrading.highlight.luminance,
+            colorGrading.global.hue, colorGrading.global.saturation
+            // midtone/global luminance excluded: never applied (see
+            // `ColorGradingSettings`'s doc comment); blending/balance alone
+            // (with every band's saturation/luminance at 0) are no-ops too.
+        ]
         return scalarControls.contains { abs($0) > tolerance }
+            || calibrationControls.contains { abs($0) > tolerance }
+            || colorGradingControls.contains { abs($0) > tolerance }
             || !ToneCurveModel.isIdentity(toneCurves, tolerance: tolerance)
-            || PerceptualColorMixer.isActive(hsl, tolerance: tolerance)
+            || hsl.values.contains {
+                abs($0.hue) > tolerance || abs($0.saturation) > tolerance || abs($0.luminance) > tolerance
+            }
     }
 }

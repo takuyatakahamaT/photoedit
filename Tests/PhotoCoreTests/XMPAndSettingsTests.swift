@@ -54,12 +54,16 @@ struct XMPAndSettingsTests {
         #expect(preset.settings.whiteBalance.incrementalTemperature == nil)
         #expect(preset.settings.whiteBalance.incrementalTint == nil)
         #expect(preset.compatibility.contains {
+            // Phase2 C2: Split Toning (folded into Color Grading) moved from
+            // unimplemented to `ColorOps`'s measured model.
             $0.property == "SplitToningShadowSaturation"
                 && $0.value == "13"
-                && $0.level == .unsupported
+                && $0.level == .supported
         })
         #expect(preset.compatibility.contains {
-            $0.property == "GreenHue" && $0.value == "+19" && $0.level == .unsupported
+            // Phase2 C2: Camera Calibration moved from unimplemented to
+            // `ColorOps.calibrationMatrix`'s measured 3x3 matrix.
+            $0.property == "GreenHue" && $0.value == "+19" && $0.level == .supported
         })
     }
 

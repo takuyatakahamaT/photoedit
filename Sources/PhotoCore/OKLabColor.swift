@@ -67,29 +67,6 @@ struct OKLabColor: Equatable, Sendable {
             && rgb.y >= -tolerance && rgb.y <= 1 + tolerance
             && rgb.z >= -tolerance && rgb.z <= 1 + tolerance
     }
-
-    /// Maps the familiar Adobe/HSL band labels to perceptual hue locations.
-    /// The source swatches are full-saturation encoded-sRGB colors at L=0.5;
-    /// only their OKLCh hue is retained for interpolation.
-    static func perceptualHue(for band: HSLBand) -> Double {
-        from(linearSRGB: linearSRGBReferenceHue(band.centerHue)).hueDegrees
-    }
-
-    private static func linearSRGBReferenceHue(_ degrees: Double) -> SIMD3<Double> {
-        let hue = (degrees / 360).truncatingRemainder(dividingBy: 1)
-        let channel = { (offset: Double) -> Double in
-            var value = (hue + offset).truncatingRemainder(dividingBy: 1)
-            if value < 0 { value += 1 }
-            let p = 0.0
-            let q = 1.0
-            if value < 1.0 / 6.0 { return p + (q - p) * 6 * value }
-            if value < 1.0 / 2.0 { return q }
-            if value < 2.0 / 3.0 { return p + (q - p) * (2.0 / 3.0 - value) * 6 }
-            return p
-        }
-        let encoded = SIMD3(channel(1.0 / 3.0), channel(0), channel(-1.0 / 3.0))
-        return SIMD3(encoded.x.sRGBToLinear, encoded.y.sRGBToLinear, encoded.z.sRGBToLinear)
-    }
 }
 
 extension Double {

@@ -62,11 +62,15 @@ public struct PhotoCoreProcessingFingerprint: Codable, Equatable, Sendable {
         try container.encode(renderPipeline, forKey: .renderPipeline)
     }
 
+    // `colorMixer` keeps its field name (a `Codable` contract other JSON
+    // consumers rely on) even though the deleted `PerceptualColorMixer`'s
+    // OKLCh approximation is gone; it now identifies phase2 C2's measured
+    // `ColorOps` cube Q instead.
     public static let current = PhotoCoreProcessingFingerprint(
         rawDecode: CoreImageDecoder.processingIdentifier,
         basicTone: BasicToneModel.identifier,
         toneCurve: ToneCurveModel.identifier,
-        colorMixer: PerceptualColorMixer.identifier,
+        colorMixer: ColorOps.identifier,
         outputTransform: SRGBOutputTransform.identifier,
         renderPipeline: RenderEngine.processingIdentifier
     )
@@ -75,7 +79,7 @@ public struct PhotoCoreProcessingFingerprint: Codable, Equatable, Sendable {
         rawDecode: CoreImageDecoder.processingIdentifier,
         basicTone: BasicToneModel.identifier,
         toneCurve: ToneCurveModel.identifier,
-        colorMixer: PerceptualColorMixer.identifier,
+        colorMixer: ColorOps.identifier,
         outputTransform: SRGBOutputTransform.identifier,
         renderPipeline: RenderEngine.legacyProcessingIdentifier
     )

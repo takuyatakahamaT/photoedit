@@ -377,8 +377,6 @@ public final class RenderEngine: @unchecked Sendable {
     private let previewContext: CIContext
     private let exportContext: CIContext
     private let outputColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
-    private let kernelCacheLock = NSLock()
-    private var cachedMixerKernel: (key: [HSLBand: HSLAdjustment], kernel: CIColorKernel)?
 
     public init() {
         if let device = MTLCreateSystemDefaultDevice() {
@@ -910,13 +908,15 @@ public final class RenderEngine: @unchecked Sendable {
     /// linear sRGB) image with no Adobe base pipeline behind it (a decoded
     /// JPEG/HEIC/PNG/TIFF, or a synthetic test image). `docs/
     /// PHASE2_DEVELOP_PIPELINE.md`'s "非RAW" path -- Exposure/Contrast/
-    /// Whites/Blacks/Parametric/Point curve all run through `ToneOps` here
-    /// (`applyNonRAWStageP`) instead of the legacy `CIExposureAdjust`/
-    /// `BasicToneModel`/`toneCurveKernel` approximations. RAW photos
+    /// Whites/Blacks/Parametric/Point curve (`applyNonRAWStageP`) and
+    /// Vibrance/Saturation/HSL/Color Grading/Calibration (`applyNonRAWStageQ`)
+    /// all run through `ToneOps`/`ColorOps` here instead of the legacy
+    /// `CIExposureAdjust`/`BasicToneModel`/`toneCurveKernel`/`CIVibrance`/
+    /// `CIColorControls`/`PerceptualColorMixer` approximations. RAW photos
     /// (`decoded.adobeBase != nil`) never reach this function for those
     /// controls -- see `baseImage(decoded:settings:)`, which calls
     /// `AdobeBaseRenderer.Handle.image(settings:)` instead and only reuses
-    /// `applyLegacyToneApproximations` from here.
+    /// `applyLegacyToneApproximations` (Highlights/Shadows) from here.
     func apply(
         settings: EditSettings,
         to source: CIImage
@@ -927,6 +927,7 @@ public final class RenderEngine: @unchecked Sendable {
             relativeTint: settings.relativeTint
         )
         image = applyNonRAWStageP(settings: settings, to: image)
+        image = applyNonRAWStageQ(settings: settings, to: image)
         image = applyLegacyToneApproximations(settings: settings, to: image)
         return image
     }
@@ -948,12 +949,34 @@ public final class RenderEngine: @unchecked Sendable {
         return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: cubed)
     }
 
-    /// The legacy approximations phase2 C1 leaves in place: Highlights/
-    /// Shadows (`BasicToneModel`, now Highlights/Shadows-only), HSL
-    /// (`PerceptualColorMixer`), Vibrance, and Saturation. Shared by both the
-    /// non-RAW path (`apply(settings:to:)`) and the RAW path
+    /// `docs/PHASE2_C2_C3.md`'s non-RAW Stage Q: working space -> ProPhoto ->
+    /// cube Q (`ColorOps.applyColorOps`: Vibrance -> Saturation -> HSL ->
+    /// Color Grading) -> Camera Calibration (`ColorOps.calibrationMatrix`, an
+    /// exact `CIColorMatrix` kept separate from cube Q -- see
+    /// `AdobeBaseRenderer.applyCalibration`'s doc comment) -> working space.
+    /// Mirrors `applyNonRAWStageP`'s exact-bypass-at-neutral-settings shape.
+    private func applyNonRAWStageQ(settings: EditSettings, to image: CIImage) -> CIImage {
+        guard ColorOps.needsColorOps(settings) || ColorOps.needsCalibration(settings.calibration) else {
+            return image
+        }
+        var proPhoto = AdobeBaseRenderer.applyMatrix(DNGColorSpace.srgbLinearToProPhoto, to: image)
+        if ColorOps.needsColorOps(settings) {
+            proPhoto = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postColorCube(settings: settings), to: proPhoto)
+        }
+        if ColorOps.needsCalibration(settings.calibration) {
+            proPhoto = AdobeBaseRenderer.applyCalibration(
+                ColorOps.calibrationMatrix(settings.calibration), to: proPhoto
+            )
+        }
+        return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: proPhoto)
+    }
+
+    /// The one legacy approximation phase2 C2 still leaves in place:
+    /// Highlights/Shadows (`BasicToneModel`) -- C3's spatial (local-Laplacian)
+    /// rework is not implemented yet. Shared by both the non-RAW path
+    /// (`apply(settings:to:)`) and the RAW path
     /// (`baseImage(decoded:settings:)`), applied on top of each path's own
-    /// fully-tone-mapped image.
+    /// fully-tone-and-color-mapped image.
     private func applyLegacyToneApproximations(settings: EditSettings, to source: CIImage) -> CIImage {
         var image = source
         if BasicToneModel.isActive(settings) {
@@ -966,42 +989,17 @@ public final class RenderEngine: @unchecked Sendable {
             }
             image = output
         }
-
-        if PerceptualColorMixer.isActive(settings.hsl) {
-            let kernel = mixerKernel(for: settings.hsl)
-            guard let output = kernel.apply(extent: image.extent, arguments: [image]) else {
-                preconditionFailure("Photo Benchのカラーミキサーを画像へ適用できませんでした。")
-            }
-            image = output
-        }
-
-        if settings.vibrance != 0,
-           let filter = CIFilter(name: "CIVibrance", parameters: [
-               kCIInputImageKey: image,
-               "inputAmount": settings.vibrance / 100
-           ]), let output = filter.outputImage {
-            image = output
-        }
-
-        if settings.saturation != 0,
-           let filter = CIFilter(name: "CIColorControls", parameters: [
-               kCIInputImageKey: image,
-               kCIInputContrastKey: 1,
-               kCIInputSaturationKey: max(0, 1 + settings.saturation / 100)
-           ]), let output = filter.outputImage {
-            image = output
-        }
-
         return image
     }
 
     /// Picks the RAW (`AdobeBaseRenderer.Handle.image(settings:)`) or non-RAW
     /// (`apply(settings:to:)`) path per `decoded.adobeBase`'s presence, per
-    /// `docs/PHASE2_DEVELOP_PIPELINE.md` C1 item 5. The RAW branch mirrors
-    /// `apply(settings:to:)`'s own step order (`RelativeColorAdjustment` then
-    /// the legacy approximations) on top of the Handle's fully-rendered
-    /// (WB + Stage M...P) image, instead of `decoded.image` (which is always
-    /// the neutral-settings baseline -- see `LibRawDecoder`).
+    /// `docs/PHASE2_DEVELOP_PIPELINE.md` C1 item 5 / `docs/PHASE2_C2_C3.md`
+    /// C2 item 3. The RAW branch mirrors `apply(settings:to:)`'s own step
+    /// order (`RelativeColorAdjustment` then the legacy Highlights/Shadows
+    /// approximation) on top of the Handle's fully-rendered (WB + Stage
+    /// M...P...Q + Calibration) image, instead of `decoded.image` (which is
+    /// always the neutral-settings baseline -- see `LibRawDecoder`).
     private func baseImage(decoded: DecodedPhoto, settings: EditSettings) -> CIImage {
         guard let handle = decoded.adobeBase else {
             return apply(settings: settings, to: decoded.image)
@@ -1133,20 +1131,5 @@ public final class RenderEngine: @unchecked Sendable {
         info.isRAW
             || !info.isBoundedSRGBRaster
             || settings.hasActiveColorEdits()
-    }
-
-    private func mixerKernel(for hsl: [HSLBand: HSLAdjustment]) -> CIColorKernel {
-        kernelCacheLock.lock()
-        let cached = cachedMixerKernel
-        kernelCacheLock.unlock()
-        if cached?.key == hsl { return cached!.kernel }
-
-        guard let kernel = PerceptualColorMixer.makeKernel(adjustments: hsl) else {
-            preconditionFailure("Photo Benchのカラーミキサーカーネルをコンパイルできませんでした。")
-        }
-        kernelCacheLock.lock()
-        cachedMixerKernel = (hsl, kernel)
-        kernelCacheLock.unlock()
-        return kernel
     }
 }

@@ -138,12 +138,17 @@ public enum AdobeBaseRenderer {
             )
         }
 
-        /// Phase2 C1's full RAW edit pipeline: WB rebalance (Custom only) ->
-        /// Stage M/H (re-interpolated at the new white point, Custom only) ->
-        /// Stage E (`baselineEV + settings.exposure`) -> Stage L -> Stage T+C
-        /// -> **cube P** (`ToneOps.applyPostOps`, Contrast/Whites/Blacks/
-        /// Parametric/Point curve) -> ProPhoto -> the app's working space.
-        /// `docs/PHASE2_DEVELOP_PIPELINE.md` C1 item 4.
+        /// Phase2 C1/C2's full RAW edit pipeline: WB rebalance (Custom only)
+        /// -> Stage M/H (re-interpolated at the new white point, Custom
+        /// only) -> Stage E (`baselineEV + settings.exposure`) -> Stage L ->
+        /// Stage T+C -> **cube P** (`ToneOps.applyPostOps`, Contrast/Whites/
+        /// Blacks/Parametric/Point curve) -> **cube Q** (`ColorOps.
+        /// applyColorOps`, Vibrance/Saturation/HSL/Color Grading) ->
+        /// **Camera Calibration** (`ColorOps.calibrationMatrix`, an exact
+        /// `CIColorMatrix` kept separate from cube Q -- see `applyCalibration`
+        /// and `postColorCube`'s doc comments) -> ProPhoto -> the app's
+        /// working space. `docs/PHASE2_DEVELOP_PIPELINE.md` C1 item 4,
+        /// `docs/PHASE2_C2_C3.md` C2 item 3.
         ///
         /// When `settings.whiteBalance` is not a valid `.custom` (missing
         /// temperature/tint, or a degenerate xy `AdobeColorSpec`/`HueSatMap`
@@ -179,6 +184,12 @@ public enum AdobeBaseRenderer {
                 image = AdobeBaseRenderer.applyCube(
                     AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image
                 )
+            }
+            if ColorOps.needsColorOps(settings) {
+                image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postColorCube(settings: settings), to: image)
+            }
+            if ColorOps.needsCalibration(settings.calibration) {
+                image = AdobeBaseRenderer.applyCalibration(ColorOps.calibrationMatrix(settings.calibration), to: image)
             }
             return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: image)
         }
@@ -234,6 +245,21 @@ public enum AdobeBaseRenderer {
     private static let postOpsCacheLock = NSLock()
     nonisolated(unsafe) private static var postOpsCache: [PostOpsCacheKey: Data] = [:]
 
+    /// Phase2 C2 Stage Q cube key: every `ColorOps.applyColorOps` input.
+    /// Camera Calibration is deliberately **not** part of this key (or this
+    /// cube) -- it is applied afterward as its own `CIColorMatrix`
+    /// (`applyCalibration`), so a calibration-only slider change never
+    /// invalidates cube Q (`docs/PHASE2_C2_C3.md`'s C2 item 3).
+    private struct ColorOpsCacheKey: Hashable {
+        var vibrance: Double
+        var saturation: Double
+        var hsl: [HSLBand: HSLAdjustment]
+        var colorGrading: ColorGradingSettings
+    }
+
+    private static let colorOpsCacheLock = NSLock()
+    nonisolated(unsafe) private static var colorOpsCache: [ColorOpsCacheKey: Data] = [:]
+
     /// Builds a `Handle` for one decoded photo: applies Stage M to
     /// `cameraImage` immediately, and looks up (or bakes and caches) the
     /// shared H/L/TC cube set for `cacheKey`.
@@ -262,6 +288,9 @@ public enum AdobeBaseRenderer {
         postOpsCacheLock.lock()
         postOpsCache.removeAll()
         postOpsCacheLock.unlock()
+        colorOpsCacheLock.lock()
+        colorOpsCache.removeAll()
+        colorOpsCacheLock.unlock()
     }
 
     /// Bakes (or reuses) cube P: `ToneOps.applyPostOps(settings:)`, optionally
@@ -294,6 +323,27 @@ public enum AdobeBaseRenderer {
         postOpsCacheLock.lock()
         postOpsCache[key] = data
         postOpsCacheLock.unlock()
+        return data
+    }
+
+    /// Bakes (or reuses) cube Q: `ColorOps.applyColorOps` (Vibrance ->
+    /// Saturation -> HSL -> Color Grading). Camera Calibration is excluded on
+    /// purpose -- see `ColorOpsCacheKey`'s and `applyCalibration`'s doc
+    /// comments.
+    static func postColorCube(settings: EditSettings) -> Data {
+        let key = ColorOpsCacheKey(
+            vibrance: settings.vibrance, saturation: settings.saturation,
+            hsl: settings.hsl, colorGrading: settings.colorGrading
+        )
+        colorOpsCacheLock.lock()
+        let cached = colorOpsCache[key]
+        colorOpsCacheLock.unlock()
+        if let cached { return cached }
+
+        let data = buildCubeData { value in ColorOps.applyColorOps(value, settings: settings) }
+        colorOpsCacheLock.lock()
+        colorOpsCache[key] = data
+        colorOpsCacheLock.unlock()
         return data
     }
 
@@ -496,6 +546,21 @@ public enum AdobeBaseRenderer {
             "inputBVector": CIVector(x: matrix[2, 0], y: matrix[2, 1], z: matrix[2, 2], w: 0),
             "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
             "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 0)
+        ])
+    }
+
+    /// Phase2 C2 Camera Calibration: `y = clip(M@x, 0, 1)`
+    /// (`ColorOps.calibrationMatrix` / `color_model.apply_calibration`), as
+    /// an exact `CIColorMatrix` rather than a baked cube -- unlike cube P/Q,
+    /// a 3x3 matrix has no LUT quantization error to trade away, and keeping
+    /// it standalone means a calibration-only slider change never
+    /// invalidates cube Q's cache (`docs/PHASE2_C2_C3.md`'s C2 item 3). The
+    /// full [0,1] `CIColorClamp` (both bounds, unlike `applyStageM`'s
+    /// min-only clamp) matches the Python reference's own `np.clip(y, 0, 1)`.
+    static func applyCalibration(_ matrix: Matrix3x3, to image: CIImage) -> CIImage {
+        applyMatrix(matrix, to: image).applyingFilter("CIColorClamp", parameters: [
+            "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1)
         ])
     }
 }

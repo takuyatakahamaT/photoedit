@@ -155,8 +155,24 @@ struct ToneAndCalibrationTests {
         for band in HSLBand.allCases {
             hsl[band] = HSLAdjustment(hue: 100, saturation: 100, luminance: 100)
         }
+        let settings = EditSettings(hsl: hsl)
+
+        // CPU reference (`ColorOps.applyColorOps`, no cube) first: phase2 C2's
+        // measured model keeps the achromatic axis invariant not by a
+        // designed-in protection (unlike the deleted `PerceptualColorMixer`'s
+        // explicit OKLCh chroma-gate) but because it falls out of the math --
+        // `ColorOps.hsl`'s HSV saturation/luminance deltas are exactly
+        // proportional to the input's own HSV `S`, which is exactly 0 for
+        // R==G==B -- matching `hsl_model.py`'s own measured finding that the
+        // achromatic axis is invariant to noise floor across all 48 variants.
+        for index in 0..<sampleCount {
+            let value = Double(index) / Double(sampleCount - 1)
+            let cpuOutput = ColorOps.applyColorOps(SIMD3(repeating: value), settings: settings)
+            #expect(maximumAbsoluteDifference(cpuOutput, SIMD3(repeating: value)) < 1e-12)
+        }
+
         let output = RenderEngine().apply(
-            settings: EditSettings(hsl: hsl),
+            settings: settings,
             to: image
         )
         let context = CIContext(options: [
@@ -185,10 +201,18 @@ struct ToneAndCalibrationTests {
                 abs(red - blue)
             )
         }
-        // OKLab conversion introduces a sub-code-value float error. Keep it
-        // below 0.13 of an 8-bit step so even maximum mixer edits cannot
-        // create a visible tint on neutral RGB.
-        #expect(maximumChannelDelta < 0.000_5)
+        // GPU cube Q: a 64-point `CIColorCube` cannot represent the CPU
+        // function's hue-discontinuity-at-zero-chroma exactly, so trilinear
+        // interpolation leaks a little of an adjacent, non-neutral grid
+        // node's full-strength adjustment into an exactly-neutral query.
+        // Measured worst case with every band maxed simultaneously (the most
+        // adversarial input this test can construct): 0.0265 of an 8-bit
+        // step. This is ordinary `CIColorCube` quantization error, not an
+        // OKLab float error (the OKLCh `PerceptualColorMixer` this test's
+        // comment used to describe is gone) -- budgeted the same way cube
+        // Q's other ΔE tests are (`ColorOpsTests.
+        // postColorCubeMatchesCPUReferenceWithinDeltaE`).
+        #expect(maximumChannelDelta < 0.03)
     }
 
     @Test func oklabRoundTripsExtendedLinearValuesAndKeepsExposureHomogeneous() {
@@ -259,67 +283,7 @@ struct ToneAndCalibrationTests {
         }
     }
 
-    @Test func perceptualMixerMatchesCPUAndProtectsNeutralsAndHDR() throws {
-        let adjustments: [HSLBand: HSLAdjustment] = [
-            .red: HSLAdjustment(hue: 30, saturation: 45, luminance: 25),
-            .blue: HSLAdjustment(hue: -40, saturation: -25, luminance: -20),
-            .magenta: HSLAdjustment(hue: 10, saturation: 15, luminance: 5)
-        ]
-        let samples = [
-            SIMD3(0.18, 0.18, 0.18),
-            SIMD3(1.8, 0.12, 0.04),
-            SIMD3(0.05, 0.2, 1.5),
-            SIMD3(-0.01, 0.1, 0.8)
-        ]
-        let source = image(from: samples)
-        let kernel = try #require(PerceptualColorMixer.makeKernel(adjustments: adjustments))
-        let rendered = try render(try #require(kernel.apply(extent: source.extent, arguments: [source])))
-        for (index, sample) in samples.enumerated() {
-            let expected = PerceptualColorMixer.apply(to: sample, adjustments: adjustments)
-            #expect(maximumAbsoluteDifference(rendered[index], expected) < 0.000_3)
-        }
-        #expect(maximumAbsoluteDifference(rendered[0], samples[0]) < 0.000_001)
-        #expect(rendered[1].x > 1)
-    }
-
-    @Test func experimentalMixerAndCurveControlsHaveIndependentCPUSemantics() {
-        let sourceLab = OKLabColor(lightness: 0.5, a: 0, b: 0)
-        let sourceChroma = 0.12
-
-        func linearLuminance(_ rgb: SIMD3<Double>) -> Double {
-            0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z
-        }
-
-        for band in HSLBand.allCases {
-            let input = sourceLab.replacing(
-                chroma: sourceChroma,
-                hueDegrees: OKLabColor.perceptualHue(for: band)
-            ).linearSRGB()
-
-            let luminanceOutput = PerceptualColorMixer.apply(
-                to: input,
-                adjustments: [band: HSLAdjustment(luminance: 25)]
-            )
-            let measuredEV = log2(linearLuminance(luminanceOutput) / linearLuminance(input))
-            #expect(abs(measuredEV - 0.25) < 0.000_000_01)
-            #expect(maximumAbsoluteDifference(
-                luminanceOutput,
-                input * exp2(0.25)
-            ) < 0.000_000_2)
-
-            let saturationOutput = PerceptualColorMixer.apply(
-                to: input,
-                adjustments: [band: HSLAdjustment(saturation: 100)]
-            )
-            let saturationLab = OKLabColor.from(linearSRGB: saturationOutput)
-            #expect(abs(saturationLab.lightness - sourceLab.lightness) < 0.000_000_1)
-            #expect(abs(saturationLab.chroma / sourceChroma - 2) < 0.000_001)
-            #expect(circularHueDifference(
-                saturationLab.hueDegrees,
-                OKLabColor.perceptualHue(for: band)
-            ) < 0.000_01)
-        }
-
+    @Test func toneCurveModelAppliesEncodedSpaceFixtureAndResolvesDuplicateXPoints() {
         let sCurve = ToneCurve(channel: .rgb, points: [
             CurvePoint(x: 0, y: 0),
             CurvePoint(x: 0.25, y: 0.18),
