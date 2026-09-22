@@ -1,0 +1,385 @@
+{
+  "unique_camera_model": "Panasonic DC-S5",
+  "profile_name": "Adobe Standard",
+  "calibration_illuminant1": 17,
+  "calibration_illuminant2": 21,
+  "color_matrix1": [
+    [
+      1.1598,
+      -0.6406,
+      0.0627
+    ],
+    [
+      -0.4876,
+      1.3241,
+      0.177
+    ],
+    [
+      -0.0306,
+      0.0922,
+      0.6741
+    ]
+  ],
+  "color_matrix2": [
+    [
+      0.9744,
+      -0.3905,
+      -0.0779
+    ],
+    [
+      -0.4899,
+      1.2807,
+      0.2324
+    ],
+    [
+      -0.0798,
+      0.163,
+      0.5827
+    ]
+  ],
+  "forward_matrix1": [
+    [
+      0.4818,
+      0.3896,
+      0.0929
+    ],
+    [
+      0.2449,
+      0.7279,
+      0.0271
+    ],
+    [
+      0.1003,
+      0.0005,
+      0.7244
+    ]
+  ],
+  "forward_matrix2": [
+    [
+      0.4459,
+      0.3716,
+      0.1467
+    ],
+    [
+      0.2469,
+      0.7097,
+      0.0434
+    ],
+    [
+      0.1065,
+      0.0043,
+      0.7143
+    ]
+  ],
+  "hue_sat_map_dims_hue_sat_val": [
+    90,
+    30,
+    1
+  ],
+  "hue_sat_map_encoding": 0,
+  "look_table_dims_hue_sat_val": [
+    36,
+    8,
+    16
+  ],
+  "look_table_encoding": 0,
+  "raw_bytes_md5": {
+    "profile_hue_sat_map_data1": "8FD1CF9934FBCFDF84197DBC43566292",
+    "profile_hue_sat_map_data2": "4058C37F254A5EC9E1EC116DC80ECC1C",
+    "profile_look_table_data": "915FF3E3898DAE8A0A0AB1E5412D2987"
+  },
+  "hue_sat_map_data1_samples": [
+    {
+      "val_index": 0,
+      "hue_index": 0,
+      "sat_index": 0,
+      "hue_shift": 2.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 0,
+      "hue_index": 0,
+      "sat_index": 15,
+      "hue_shift": 2.0,
+      "sat_scale": 1.3627820014953613,
+      "val_scale": 1.1835373640060425
+    },
+    {
+      "val_index": 0,
+      "hue_index": 0,
+      "sat_index": 29,
+      "hue_shift": 2.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.3548387289047241
+    },
+    {
+      "val_index": 0,
+      "hue_index": 10,
+      "sat_index": 0,
+      "hue_shift": -1.555525779724121,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 0,
+      "hue_index": 10,
+      "sat_index": 15,
+      "hue_shift": -1.5555579662322998,
+      "sat_scale": 1.4826174974441528,
+      "val_scale": 1.087875485420227
+    },
+    {
+      "val_index": 0,
+      "hue_index": 10,
+      "sat_index": 29,
+      "hue_shift": -1.5555579662322998,
+      "sat_scale": 1.0,
+      "val_scale": 1.169892430305481
+    },
+    {
+      "val_index": 0,
+      "hue_index": 45,
+      "sat_index": 0,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 0,
+      "hue_index": 45,
+      "sat_index": 15,
+      "hue_shift": 0.0,
+      "sat_scale": 1.4229635000228882,
+      "val_scale": 1.1334816217422485
+    },
+    {
+      "val_index": 0,
+      "hue_index": 45,
+      "sat_index": 29,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.2580645084381104
+    },
+    {
+      "val_index": 0,
+      "hue_index": 89,
+      "sat_index": 0,
+      "hue_shift": 1.822054386138916,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 0,
+      "hue_index": 89,
+      "sat_index": 15,
+      "hue_shift": 1.8222260475158691,
+      "sat_scale": 1.3658627271652222,
+      "val_scale": 1.1808676719665527
+    },
+    {
+      "val_index": 0,
+      "hue_index": 89,
+      "sat_index": 29,
+      "hue_shift": 1.8222260475158691,
+      "sat_scale": 1.0,
+      "val_scale": 1.3496774435043335
+    }
+  ],
+  "hue_sat_map_data2_samples": [
+    {
+      "val_index": 0,
+      "hue_index": 0,
+      "sat_index": 0,
+      "hue_shift": 2.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 0,
+      "hue_index": 0,
+      "sat_index": 15,
+      "hue_shift": 2.0,
+      "sat_scale": 1.4113295078277588,
+      "val_scale": 1.2387268543243408
+    },
+    {
+      "val_index": 0,
+      "hue_index": 0,
+      "sat_index": 29,
+      "hue_shift": 2.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.461538553237915
+    },
+    {
+      "val_index": 0,
+      "hue_index": 10,
+      "sat_index": 0,
+      "hue_shift": -1.5555830001831055,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 0,
+      "hue_index": 10,
+      "sat_index": 15,
+      "hue_shift": -1.5555543899536133,
+      "sat_scale": 1.4655345678329468,
+      "val_scale": 1.1929105520248413
+    },
+    {
+      "val_index": 0,
+      "hue_index": 10,
+      "sat_index": 29,
+      "hue_shift": -1.5555579662322998,
+      "sat_scale": 1.0,
+      "val_scale": 1.3729604482650757
+    },
+    {
+      "val_index": 0,
+      "hue_index": 45,
+      "sat_index": 0,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 0,
+      "hue_index": 45,
+      "sat_index": 15,
+      "hue_shift": 0.0,
+      "sat_scale": 1.5224695205688477,
+      "val_scale": 1.148300051689148
+    },
+    {
+      "val_index": 0,
+      "hue_index": 45,
+      "sat_index": 29,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.2867133617401123
+    },
+    {
+      "val_index": 0,
+      "hue_index": 89,
+      "sat_index": 0,
+      "hue_shift": 1.8221116065979004,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 0,
+      "hue_index": 89,
+      "sat_index": 15,
+      "hue_shift": 1.8222260475158691,
+      "sat_scale": 1.4243613481521606,
+      "val_scale": 1.227393388748169
+    },
+    {
+      "val_index": 0,
+      "hue_index": 89,
+      "sat_index": 29,
+      "hue_shift": 1.8222260475158691,
+      "sat_scale": 1.0,
+      "val_scale": 1.4396271705627441
+    }
+  ],
+  "look_table_samples": [
+    {
+      "val_index": 0,
+      "hue_index": 0,
+      "sat_index": 0,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 0,
+      "hue_index": 0,
+      "sat_index": 7,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 0,
+      "hue_index": 18,
+      "sat_index": 0,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 0,
+      "hue_index": 18,
+      "sat_index": 7,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 7,
+      "hue_index": 0,
+      "sat_index": 0,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 7,
+      "hue_index": 0,
+      "sat_index": 7,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 7,
+      "hue_index": 18,
+      "sat_index": 0,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 7,
+      "hue_index": 18,
+      "sat_index": 7,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 15,
+      "hue_index": 0,
+      "sat_index": 0,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 15,
+      "hue_index": 0,
+      "sat_index": 7,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 15,
+      "hue_index": 18,
+      "sat_index": 0,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    },
+    {
+      "val_index": 15,
+      "hue_index": 18,
+      "sat_index": 7,
+      "hue_shift": 0.0,
+      "sat_scale": 1.0,
+      "val_scale": 1.0
+    }
+  ]
+}

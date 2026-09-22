@@ -1,0 +1,16 @@
+{
+  "count": 1025,
+  "encoding": "count x little-endian float32, in index order, MD5'd as packed bytes",
+  "md5": "F01A97B006FCE4D3B07F052DF0A60140",
+  "samples": {
+    "0": 0.0,
+    "1": 0.00078,
+    "2": 0.0016,
+    "64": 0.10433,
+    "256": 0.52069,
+    "512": 0.80486,
+    "768": 0.93986,
+    "1023": 0.99987,
+    "1024": 1.0
+  }
+}

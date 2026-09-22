@@ -38,7 +38,7 @@
 ## 現在地（2026-09-22 引き継ぎ時点）
 
 - 専用fitの新規自動適用は0.3.2で停止済み。新しいpreset選択はすべて同じXMP設定適用経路を通る。保存済みv2/v3編集だけが「過去の実験補正」として再現される。専用補正のコード自体は次の整理で撤去する。
-- 本日の実装・文書はすべて未commit（branch `feature/raw-white-balance-observation`の作業ツリー上）。エンジン改修へ入る前にチェックポイントcommitを切る。
+- チェックポイントcommit `5054bdf`（`feature/raw-white-balance-observation`）を切り、以降は `feature/generic-xmp-engine` で作業。フェーズ0の撤去は `0c12dc8` で完了（`ReferenceLook` 一式を削除。旧レコードの `referenceLook` キーは無視して読む）。
 - 汎用XMP経路は、更新版bluesky2の値でLRと平均ΔE00が17〜22離れている。原因は3つに分解できた: (1) ハイライト／シャドウ等を画面全体の1本のカーブで処理しており、LRが残している局所ディテール（全体カーブの1.3〜1.8倍）が出ない、(2) 土台がAppleの絵作りで、Adobe Standard＋Adobe Colorと違う、(3) XMPの大半の項目（parametric curve、Calibration、Color Grading、Texture、絶対WB等）が未描画。
 - 追加調査の結論: Adobeの現像数式はほぼ非公開で、任意XMPの完全互換を達成した他製品も無い。一方、カメラプロファイルの数式は公開仕様で、このMacのLightroom内にDC-S5用DCPとAdobe Color定義があり、ルックテーブルのデコードも確認できた。
 
@@ -51,8 +51,8 @@
 
 | フェーズ | 作業 | 合格条件 |
 |---|---|---|
-| 0 | チェックポイントcommit、bluesky2専用補正の撤去、計測リグ（チャート／XMP生成・解析）、LRローカルタブのXMP往復確認 | 往復が確認でき、リグが再現可能 |
-| 1 | RAW基準現像（DCP＋Adobe Color＋ACR既定カーブ＋基準露出） | プリセット無しでLR既定と平均ΔE00 ≤ 2、平均EV差 ≤ 0.05 |
+| 0 | ~~チェックポイントcommit、bluesky2専用補正の撤去~~（完了）、計測リグ（round0生成・判定は済み）、LRローカルタブのXMP往復確認（オーナーの書き出し待ち） | 往復が確認でき、リグが再現可能 |
+| 1 | RAW基準現像（DCP＋Adobe Color＋ACR既定カーブ＋基準露出）。設計は[PHASE1_BASE_RENDERING.md](PHASE1_BASE_RENDERING.md)。B1（数学・パーサ）実装中 → B2（LibRaw・描画・CLI・アプリ接続） | プリセット無しでLR既定と平均ΔE00 ≤ 2、平均EV差 ≤ 0.05（`compare_renders.py`） |
 | 2 | 画素単位の色操作（カーブ、HSL、Calibration、Color Grading、Vibrance／Saturation、増分WB） | チャートで操作ごとに平均ΔE00 ≤ 1、p95 ≤ 2.5 |
 | 3 | 空間操作（ハイライト／シャドウ／白／黒／露出の肩／コントラスト→Texture／Clarity／Dehaze） | 未使用の実写で平均 ≤ 2、p95 ≤ 5、局所コントラスト比±10%以内 |
 | 4 | 既定シャープ／NR、レンズ補正、周辺光量・粒子、速度 | 100%表示の解像感がLRと同等 |

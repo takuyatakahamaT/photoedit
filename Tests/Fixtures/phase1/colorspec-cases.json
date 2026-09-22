@@ -1,0 +1,302 @@
+{
+  "photos": {
+    "P1013558": {
+      "cam_mul_wb_levels_rgb": [
+        513.0,
+        256.0,
+        445.0
+      ],
+      "neutral_ratio_rgb": [
+        0.001949317738791423,
+        0.00390625,
+        0.0022471910112359553
+      ],
+      "neutral_g1_normalized_rgb": [
+        0.49902534113060426,
+        1.0,
+        0.5752808988764045
+      ],
+      "white_xy": [
+        0.3472259923835648,
+        0.35955260016603346
+      ],
+      "cct_kelvin": 4948.267924129966,
+      "g_fraction_stdA_weight": 0.24485869277549369,
+      "color_matrix_interpolated_xyz_to_camera": [
+        [
+          1.0197968016405765,
+          -0.451739159063151,
+          -0.04347286779576559
+        ],
+        [
+          -0.48933682500661635,
+          1.2913268672664564,
+          0.21883482842023763
+        ],
+        [
+          -0.0677529523154457,
+          0.14566400455149506,
+          0.6050800845196802
+        ]
+      ],
+      "forward_matrix_interpolated_camera_to_xyzd50": [
+        [
+          0.4546904270706402,
+          0.37600745646995887,
+          0.13352660232867844
+        ],
+        [
+          0.24641028261444903,
+          0.714156428208514,
+          0.039408803307759456
+        ],
+        [
+          0.10498187610479193,
+          0.0033695369674531244,
+          0.7167730727970326
+        ]
+      ],
+      "camera_white_sdk": [
+        0.4990253405845602,
+        1.0,
+        0.575280898234554
+      ],
+      "combined_matrix_camera_to_linear_prophoto": {
+        "match_prototype": [
+          [
+            0.5436204977840627,
+            0.32335079384916865,
+            0.13305646507535077
+          ],
+          [
+            0.12619026918686196,
+            0.8723570601232161,
+            0.0014070083566500443
+          ],
+          [
+            0.1272661851191562,
+            0.004084782358410867,
+            0.8689211695927175
+          ]
+        ],
+        "sdk_camera_white": [
+          [
+            0.5436204983789038,
+            0.32335079384916865,
+            0.1330564652238041
+          ],
+          [
+            0.12619026932494204,
+            0.8723570601232161,
+            0.0014070083582198671
+          ],
+          [
+            0.12726618525841354,
+            0.004084782358410867,
+            0.8689211705621874
+          ]
+        ]
+      },
+      "max_abs_diff_combined_matrix": 9.694699487639014e-10
+    },
+    "P1013207": {
+      "cam_mul_wb_levels_rgb": [
+        528.0,
+        256.0,
+        442.0
+      ],
+      "neutral_ratio_rgb": [
+        0.001893939393939394,
+        0.00390625,
+        0.0022624434389140274
+      ],
+      "neutral_g1_normalized_rgb": [
+        0.48484848484848486,
+        1.0,
+        0.579185520361991
+      ],
+      "white_xy": [
+        0.3433706476026445,
+        0.3587076328692931
+      ],
+      "cct_kelvin": 5086.860785063516,
+      "g_fraction_stdA_weight": 0.2169137545844847,
+      "color_matrix_interpolated_xyz_to_camera": [
+        [
+          1.0146158100999636,
+          -0.44475013002157965,
+          -0.047401926105421446
+        ],
+        [
+          -0.48940109836445567,
+          1.2901140569489666,
+          0.22038297799601952
+        ],
+        [
+          -0.06912784327444335,
+          0.14764250617541846,
+          0.6025259171690219
+        ]
+      ],
+      "forward_matrix_interpolated_camera_to_xyzd50": [
+        [
+          0.45368720378958305,
+          0.3755044475825207,
+          0.13503004000335472
+        ],
+        [
+          0.24646617249083105,
+          0.7136478303334377,
+          0.0398643058002729
+        ],
+        [
+          0.10515513472157619,
+          0.003475727732578958,
+          0.7164908289213033
+        ]
+      ],
+      "camera_white_sdk": [
+        0.4848484853639573,
+        1.0,
+        0.57918552097161
+      ],
+      "combined_matrix_camera_to_linear_prophoto": {
+        "match_prototype": [
+          [
+            0.5422471447834603,
+            0.32279838046575116,
+            0.13497789872988156
+          ],
+          [
+            0.12682433933290105,
+            0.87186609833951,
+            0.0012695786832897277
+          ],
+          [
+            0.12747622102264056,
+            0.004213514041191609,
+            0.8685790143305896
+          ]
+        ],
+        "sdk_camera_white": [
+          [
+            0.5422471442069637,
+            0.32279838046575116,
+            0.1349778985878112
+          ],
+          [
+            0.12682433919806624,
+            0.87186609833951,
+            0.0012695786819534385
+          ],
+          [
+            0.1274762208871127,
+            0.004213514041191609,
+            0.8685790134163708
+          ]
+        ]
+      },
+      "max_abs_diff_combined_matrix": 9.142188117650107e-10
+    },
+    "P1012822": {
+      "cam_mul_wb_levels_rgb": [
+        394.0,
+        256.0,
+        613.0
+      ],
+      "neutral_ratio_rgb": [
+        0.0025380710659898475,
+        0.00390625,
+        0.0016313213703099511
+      ],
+      "neutral_g1_normalized_rgb": [
+        0.649746192893401,
+        1.0,
+        0.4176182707993475
+      ],
+      "white_xy": [
+        0.4113051556113832,
+        0.3983305861473383
+      ],
+      "cct_kelvin": 3433.492588967864,
+      "g_fraction_stdA_weight": 0.6973646034212077,
+      "color_matrix_interpolated_xyz_to_camera": [
+        [
+          1.103691397474292,
+          -0.564910887315644,
+          0.020149463241021803
+        ],
+        [
+          -0.4882960614121312,
+          1.3109656237884804,
+          0.1937660009704651
+        ],
+        [
+          -0.04548966151167658,
+          0.11362658607777851,
+          0.6464391247526984
+        ]
+      ],
+      "forward_matrix_interpolated_camera_to_xyzd50": [
+        [
+          0.4709353892628214,
+          0.3841525628615817,
+          0.10918178433593902
+        ],
+        [
+          0.2455052707931576,
+          0.722392035782266,
+          0.03203295696423431
+        ],
+        [
+          0.10217633945878851,
+          0.001650014506999411,
+          0.7213433824945543
+        ]
+      ],
+      "camera_white_sdk": [
+        0.6497461918956899,
+        1.0,
+        0.4176182746894329
+      ],
+      "combined_matrix_camera_to_linear_prophoto": {
+        "match_prototype": [
+          [
+            0.5658588847838127,
+            0.33229589579956886,
+            0.10194313501014027
+          ],
+          [
+            0.11592291819522486,
+            0.8803070905548337,
+            0.0036323752216108345
+          ],
+          [
+            0.12386512238912416,
+            0.0020002600400041352,
+            0.8744616104916406
+          ]
+        ],
+        "sdk_camera_white": [
+          [
+            0.5658588856527115,
+            0.33229589579956886,
+            0.10194313406054699
+          ],
+          [
+            0.1159229183732291,
+            0.8803070905548337,
+            0.0036323751877755097
+          ],
+          [
+            0.12386512257932397,
+            0.0020002600400041352,
+            0.874461602346091
+          ]
+        ]
+      },
+      "max_abs_diff_combined_matrix": 8.145549568183696e-09
+    }
+  },
+  "notes": "combined_matrix_camera_to_linear_prophoto.match_prototype is what this Python prototype's render_stage()/pipeline.py actually applies to LibRaw/dcraw's as-shot-white-balanced camera RGB (cam_linear_wb): it is ForwardMatrix(whiteXY) folded with XYZ(D50)->ProPhoto, with NO additional per-channel normalization. The real DNG SDK (dng_color_spec::SetWhiteXY) instead recomputes fCameraWhite = colorMatrix(whiteXY) @ XYZ(whiteXY) (max-entry-normalized, pinned to [0.001, 1.0]) and folds diag(1/fCameraWhite) into the transform applied to PRE-white-balance camera values. IMPORTANT: neutral_ratio_rgb (== [1/WBRedLevel, 1/WBGreenLevel, 1/WBBlueLevel]) is on an arbitrary absolute scale, NOT the DNG-spec AsShotNeutral scale -- the as-shot WB gain dcraw's -w actually applies is level[c]/level[green] (green-normalized; WBGreenLevel is a fixed 256 across all three photos here while Red/Blue vary with CCT), i.e. cam_linear_wb == raw * diag(neutral_g1_normalized_rgb) elementwise, so the SDK-faithful transform re-expressed for cam_linear_wb input is combined_matrix_camera_to_linear_prophoto.sdk_camera_white == match_prototype @ diag(neutral_g1_normalized_rgb / camera_white_sdk) -- using raw neutral_ratio_rgb here instead would introduce a spurious ~WBGreenLevel-times uniform scale error, not a small correction. neutral_g1_normalized_rgb and camera_white_sdk are close but not identical (fCameraWhite is re-derived from the converged white xy through the CCT-interpolated ColorMatrix, not reused directly from AsShotNeutral), so the two combined matrices differ by up to max_abs_diff_combined_matrix per photo -- small but real. Swift's ColorSpec.swift implements both as `.matchPrototype` (must equal match_prototype here) and `.sdkCameraWhite` (must equal sdk_camera_white here, using neutral_g1_normalized_rgb; this is the default used by AdobeColorMath)."
+}
