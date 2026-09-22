@@ -15,4 +15,4 @@ if [[ ! -x "$PHOTO_APP_EXECUTABLE" ]] \
     "$PHOTO_APP_DIR/scripts/build-app.sh"
 fi
 
-exec /usr/bin/open -n "$PHOTO_APP_BUNDLE" --args "${1:-$PHOTO_APP_DIR}"
+exec /usr/bin/open "$PHOTO_APP_BUNDLE" --args "${1:-$PHOTO_APP_DIR}"

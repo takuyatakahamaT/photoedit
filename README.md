@@ -1,6 +1,12 @@
 # Photo Bench（仮称）
 
-自分専用のmacOS向けローカル写真現像・整理アプリです。クラウドやAI機能を持たず、最終的にLightroomの有料契約を終了して、ローカルだけで遜色ない実用画質・操作感・非破壊編集へ移行することを目指します。Lightroomは当面継続し、教師出力と退避手段として活用します。現在は**Phase 0の証跡基盤、preview parity、canonical settle v4、原寸decode graphのMetal直接表示プロトタイプ、開発用RAWホワイトバランス観測基盤まで実装した段階**です。現行graphは2つの既知sceneで縮小後clip非回帰を通りましたが、Lightroom品質、製品のRAW WB、縮小RAW preview、日常編集機能は未達であり、**まだ解約できる完成度ではありません**。
+**進捗・現在の目標・次の作業:** [PROGRESS.md](./docs/PROGRESS.md)
+
+自分専用のmacOS向けローカル写真編集アプリです。現在は**4つのXMPプリセットの登録・適用、明るさと相対的な色味調整、Undo / Redo、写真ごとの自動保存、原寸JPEG書き出し**を揃えた日常編集の初版です。2026-09-22の作業範囲と確認結果は[日常編集の初版](./docs/EDITING_MVP.md)を参照してください。
+
+現在の要件は、**LightroomのXMPをプリセット共通の現像処理で再現すること**です。3組の写真へbluesky2専用の変換を合わせる試作は、この要件に合わないため中止しました。[汎用XMPエンジンの設計・不足項目](./docs/GENERIC_XMP_ENGINE.md)を現行方針とし、[専用補正の比較](./docs/BLUESKY2_REFERENCE.md)は調査履歴として残します。現時点で汎用的なLightroom互換は完成していません。
+
+Lightroomとの発色・階調差、特に`night`のWB差は残っています。HSL・カーブの近似は引き続き初期OFFで、**4プリセットの画質受け入れ完了やLightroomの置き換えを宣言する段階ではありません**。このREADME内のformal画質・性能数値は2026-07-24時点の履歴です。今回の相対色調整に対する校正合格へ流用しません。
 
 公開Gitリポジトリにはsource・tests・docs・契約manifestだけを置き、個人写真、Lightroom基準画像、生成render、署名済みappは含めません。詳細は[Repository and local data policy](./DATA_POLICY.md)を参照してください。
 
@@ -22,12 +28,24 @@ Finderから`open-photo.command`をダブルクリックします。ターミナ
 
 既定は個人ローカル利用向けのad-hoc署名です。アプリ本体を再ビルドするとmacOSから写真フォルダの再選択を求められる場合があります。自分のコード署名証明書を用意した場合だけ、`PHOTO_BENCH_CODESIGN_IDENTITY`へそのidentityを指定します。別組織の証明書は流用しません。
 
+## 普段の使い方
+
+1. 「フォルダを開く」で写真フォルダを選び、写真をクリックします。
+2. 右側のプリセットライブラリから`colorful` / `bluesky2` / `night` / `pastel`を選びます。追加XMPは上部の「プリセットを読み込む」から登録できます。
+3. 「露出・色温度・色かぶり・彩度」を微調整します。色温度と色かぶりは撮影時の色からの相対値で、LightroomのKelvin値ではありません。
+4. 編集は自動保存されます。取り消しは`⌘Z`、やり直しは`⇧⌘Z`。「詳細な明るさ・彩度」からほかの階調も調整できます。
+5. 「JPEGを書き出す」で仕上がりを別ファイルに保存します。
+
+編集と登録XMPはアプリのApplication Support / PhotoBench内に保存し、原本には書き込みません。写真を移動・改名すると別の写真として扱います。Undo履歴は起動中のみ保持します。保存に失敗した場合は「再試行」を使え、失敗が残ったままの終了時は確認を表示します。
+
 ## 現在できること
 
 - ユーザーが選んだフォルダ以下にあるJPEG / HEIC / PNG / TIFF / RAWを非同期走査し、選択権限を次回起動へ安全に保存
 - Lumix DC-S5の`.RW2`をCore Image RAW 8で6000×4000の原寸デコード。Make/Model一致時だけ`boost=0.9`・Apple default EDRの`extendedDynamicRangeAmount=1`を使う`panasonic-dc-s5-lightroom-9.3-edr1-v2`を選択し、ほかの機種へ流用しない
-- 露出、コントラスト、ハイライト、シャドウ、白レベル、黒レベル、自然な彩度、彩度をスライダー調整
-- 写真ごとの編集状態を、アプリを閉じるまでメモリ内に保持
+- 露出、相対色温度・色かぶり、コントラスト、ハイライト、シャドウ、白レベル、黒レベル、自然な彩度、彩度をスライダー調整
+- 写真ごとの編集・適用プリセットをバージョン付きJSONに自動保存し、再起動後に復元。破損・未知形式の記録は上書きせず読み込みエラーを表示
+- ドラッグを1操作として取り消し・やり直し。写真ごとのセッション履歴を最大100操作保持
+- 4 XMPを初期登録し、追加読込・重複抑止・登録削除に対応。適用済みの写真はプリセット登録を削除しても維持
 - `colorful` / `bluesky2` / `night` / `pastel`のProcess Version 11 XMPを解析
 - XMPの属性形式と要素形式を解析し、基本8項目を近似適用。WBはモード・絶対値・増分値・明示的な0を区別して保持
 - 既存delegateのAs Shot出力と、fresh Core Image RAW 8 filterへ設定したcustom Temperature・Tintを、製品未接続の開発用経路で観測。個人RAWと生成artifactをGit管理外に置き、2scene×18候補をhash-lockする
@@ -94,10 +112,10 @@ process-freshは新しいworker processですが、timer前のmanifest検証がR
 
 - Adobe Color、Adobe PV2012の非公開数式、camera profile / DCP、レンズプロファイルは再現していません。
 - WBはXMPのモード・絶対値・増分値・明示的な0を区別して解析・保持し、開発用のRAW観測経路もありますが、製品のpreview / export / persistenceへは未接続です。未知のCamera Raw画像処理項目と埋め込みAdobe Lookは「未対応」として表示します。
-- クロップ、ブラシマスク、SQLiteカタログ、評価・選別、アルバム、再起動後の編集復元は未実装です。
+- クロップ、ブラシマスク、SQLiteカタログ、評価・選別、アルバム、移動した写真の再リンクは未実装です。
 - DC-S5以外のRAWは読めても機種別の色校正はされません。
 - 2つのdevelopment sceneだけで独立holdoutがありません。最終判定には5〜10以上の探索sceneとsealed holdout、各スライダー単独の教師書き出しが必要です。
-- 編集永続化、SQLiteカタログ、評価・選別、WBレンダー、クロップがなく、毎日の編集ループは成立しません。
+- 日常編集の初版は試用できますが、Lightroom相当のプリセット発色、Adobeの絶対WB、写真管理全般は引き続き改善対象です。
 - WB観測は2 development scene、1 camera model、0 holdoutで、Lightroomの固定As Shot参照だけです。構造検証の合格を画質やproduction採用の合格に読み替えません。
 - 校正archiveの置換はatomicですがcross-process lockがなく、同じrootの並行校正は禁止です。
 
@@ -125,7 +143,9 @@ python3 -m unittest scripts/test_analyze_white_balance_observation.py
 swift run -c release PhotoBenchBenchmark .
 ```
 
-現在はSwift Testing **119 tests / 10 suites**、Python calibration analyzer **61 tests**、Python WB observation analyzer **17 tests**が成功しています。旧 / 新graphの識別、edge-clamped Lanczos後のterminal transform、未clamp縮小との境界alpha比較、canonical settleの整数clip count、fresh RAW WB filter、18候補の固定集合、private data / provenance / no-replace契約を検証しています。これは2sceneの生成rasterと観測構造の契約であり、実画面のpresent lifecycle、production WB、holdout品質をテストしたものではありません。
+2026-09-22のSwift全体は**129件中121成功**。8件は過去の校正manifestがmacOS 26.3.1 / 25D771280aを要求する一方、このPCが27.0 / 26A428へ更新されているため実行条件不一致です。日常編集に関係するAppSupport・相対色調整の**20件は最終sourceで全件成功**。実UIでも再起動後の復元、ドラッグUndo、保存失敗からの復旧、RAW / JPEG書き出しを確認しました。詳しくは[今回の確認結果](./docs/EDITING_MVP.md)を参照してください。
+
+2026-07-24の履歴ではSwift Testing **119 tests / 10 suites**、Python calibration analyzer **61 tests**、Python WB observation analyzer **17 tests**が成功しています。旧 / 新graphの識別、edge-clamped Lanczos後のterminal transform、未clamp縮小との境界alpha比較、canonical settleの整数clip count、fresh RAW WB filter、18候補の固定集合、private data / provenance / no-replace契約を検証しています。これは2sceneの生成rasterと観測構造の契約であり、実画面のpresent lifecycle、production WB、holdout品質をテストしたものではありません。
 
 厳格モードでは、全gate合格をexit `0`、eligible runの数値不合格をexit `1`、構造・hash・runtime不整合をexit `2`にします。校正run `1c324af0-7ec3-4c33-bc6f-3bd653794800`はcanonical settleに合格しますが、Lightroom品質とpreview parityが不合格なので、全gate enforceの期待exitは`1`です。WB analyzerは正式runの構造検証に成功してexit `0`ですが、production adoptionは契約上falseです。既存benchmarkもslider gate不合格のためexit `1`です。
 

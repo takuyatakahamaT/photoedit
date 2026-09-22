@@ -320,6 +320,43 @@ public enum OutputTransformPlacement: Equatable, Sendable {
     case afterDownsampling
 }
 
+/// Small relative adjustments around the white point already present in a
+/// decoded photo. This is independent of Adobe white-balance metadata.
+public enum RelativeColorAdjustment {
+    /// Versions the optional relative color stage without changing the
+    /// established zero-edit processing fingerprint.
+    public static let identifier = "relative-temperature-and-tint-ci-v1"
+
+    static func sanitizedValue(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return min(100, max(-100, value))
+    }
+
+    static func apply(
+        to image: CIImage,
+        relativeTemperature: Double,
+        relativeTint: Double
+    ) -> CIImage {
+        let temperature = sanitizedValue(relativeTemperature)
+        let tint = sanitizedValue(relativeTint)
+        guard temperature != 0 || tint != 0 else { return image }
+
+        let neutral = CIVector(
+            x: 6_500 + 30 * temperature,
+            y: 0.5 * tint
+        )
+        let targetNeutral = CIVector(x: 6_500, y: 0)
+        guard let filter = CIFilter(name: "CITemperatureAndTint", parameters: [
+            kCIInputImageKey: image,
+            "inputNeutral": neutral,
+            "inputTargetNeutral": targetNeutral
+        ]), let output = filter.outputImage else {
+            preconditionFailure("Photo Benchの相対色温度・色かぶり調整を画像へ適用できませんでした。")
+        }
+        return output
+    }
+}
+
 struct PreparedOutputGraph: @unchecked Sendable {
     let image: CIImage
     let extent: CGRect
@@ -870,8 +907,22 @@ public final class RenderEngine: @unchecked Sendable {
         return result
     }
 
-    func apply(settings: EditSettings, to source: CIImage) -> CIImage {
+    func apply(
+        settings: EditSettings,
+        to source: CIImage,
+        decodeInfo: DecodeInfo? = nil
+    ) -> CIImage {
         var image = source
+        if let referenceLook = settings.referenceLook,
+           let decodeInfo {
+            image = BlueskyReferenceLook.apply(to: image, info: decodeInfo, look: referenceLook)
+        }
+
+        image = RelativeColorAdjustment.apply(
+            to: image,
+            relativeTemperature: settings.relativeTemperature,
+            relativeTint: settings.relativeTint
+        )
 
         if settings.exposure != 0,
            let filter = CIFilter(name: "CIExposureAdjust", parameters: [
@@ -934,7 +985,7 @@ public final class RenderEngine: @unchecked Sendable {
     /// Kept module-internal so tests can exercise the real RAW/raster branch
     /// together with the final shoulder and gamut transform.
     func applyForOutput(decoded: DecodedPhoto, settings: EditSettings) -> CIImage {
-        let working = apply(settings: settings, to: decoded.image)
+        let working = apply(settings: settings, to: decoded.image, decodeInfo: decoded.info)
         return applyOutputTransformIfRequired(
             to: working,
             info: decoded.info,
@@ -958,7 +1009,7 @@ public final class RenderEngine: @unchecked Sendable {
             }
         }
 
-        var image = apply(settings: settings, to: decoded.image)
+        var image = apply(settings: settings, to: decoded.image, decodeInfo: decoded.info)
         if outputTransformPlacement == .legacyBeforeDownsampling {
             image = applyOutputTransformIfRequired(
                 to: image,

@@ -29,6 +29,7 @@ let package = Package(
         ),
         .target(
             name: "PhotoBenchAppSupport",
+            dependencies: ["PhotoCore"],
             path: "Sources/PhotoBenchAppSupport"
         ),
         .executableTarget(
@@ -63,7 +64,7 @@ let package = Package(
         ),
         .testTarget(
             name: "PhotoBenchAppSupportTests",
-            dependencies: ["PhotoBenchAppSupport"],
+            dependencies: ["PhotoBenchAppSupport", "PhotoCore"],
             path: "Tests/PhotoBenchAppSupportTests"
         ),
         .testTarget(

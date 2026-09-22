@@ -1,13 +1,19 @@
 # Photo Bench プロジェクト概要
 
-- 状態: Phase 0 の証跡基盤、P1 preview parity、canonical settle v4、P1-3 の Metal 直接表示実験、開発用RAWホワイトバランス観測まで完了。v4 の最終縮小順序は 2 development scene で非回帰合格したが、Lightroom 品質、production WB、縮小 RAW 候補は未達。製品経路は full-resolution RAW decode + As Shot + 従来表示を維持
+**日々の進捗の入口:** [PROGRESS.md](./docs/PROGRESS.md)（現在の目標、方針変更、次の作業、検証状況）
+
+- 状態: 4 XMPの登録・適用、相対色温度／色かぶり、Undo / Redo、写真別の自動保存を加えた日常編集初版。Lightroomとの色差、Adobe絶対WBの再現、縮小RAW候補は未達。RAWはfull-resolution / As Shot decodeを維持し、その後に任意の相対色調整を行う
 - 対象: オーナー個人専用の Apple Silicon macOS アプリ
-- 最終更新: 2026-07-24（JST）
+- 最終更新: 2026-09-22（JST）
 - 開発ルート: このリポジトリのroot（以下の例では`/path/to/photoedit`）
+
+**最新の方針（2026-09-22）:** プリセット専用の色合わせは中止。任意のXMPを共通処理で再現する汎用エンジンが要件。現状の不足・方式選択・検証契約は[GENERIC_XMP_ENGINE.md](./docs/GENERIC_XMP_ENGINE.md)を参照。以下の4プリセット試作と専用fitは、汎用互換の達成を意味しない。
 
 ## 0. この文書の役割
 
 この文書は、新しい開発セッションや第三者レビューが最初に読むプロジェクト入口である。製品の目的、完成像、これまでの判断、現在の到達点、未達課題、承認済みの次の方針を一続きで示す。
+
+**2026-09-22の優先範囲:** オーナーの指示により、まず普段の4プリセットと日常の微調整・保存・書き出しへ絞る。NIHO Desktopへの統合、カタログ、選別、クロップ等は別段階とする。今回の設計・検証・比較資料は[EDITING_MVP.md](./docs/EDITING_MVP.md)を正とする。下記のformal画質・性能数値は2026-07-24時点のsourceによる履歴であり、新しい相対色調整の画質合格を意味しない。
 
 詳細仕様はリンク先の文書を正とし、実測値や合否に食い違いがある場合は、hash 検証済みの次の JSON を最優先する。
 
@@ -35,7 +41,7 @@
 
 Lightroom は移行期間中の比較基準、教師画像の生成手段、退避手段として積極的に用いる。完成後の常用併存は目標にせず、代表ワークフローの受け入れが済んだ時点で契約を終了できる状態を完成条件とする。
 
-**現時点では Lightroom を解約できる状態ではなく、解約を急がない。** 画質gate、実画面preview、編集永続化、カタログ・選別、クロップ等が未達である。Lightroom を使える間に比較用データを増やし、品質差を分解してから移行可否を判断する。
+**現時点では Lightroom を解約できる状態ではなく、解約を急がない。** 画質gate、実画面previewの性能、カタログ・選別、クロップ等が未達である。編集永続化とUndoは日常編集初版で追加した。Lightroomを使える間に比較用データを増やし、品質差を分解してから移行可否を判断する。
 
 ## 2. 製品原則
 
@@ -101,7 +107,7 @@ macOS ネイティブの `SwiftUI + AppKit + Core Image / Metal` を採用して
 
 - `PhotoCore`: decode、編集値、トーン、色、出力変換、書き出し
 - `PhotoBenchApp`: SwiftUI 画面、編集状態、preview 調停
-- `PhotoBenchAppSupport`: security-scoped bookmark とフォルダ権限
+- `PhotoBenchAppSupport`: security-scoped bookmark、フォルダ権限、編集・プリセット保存、Undo履歴
 - `PhotoBenchCalibration`: 画質校正 artifact の生成
 - `PhotoBenchBenchmark`: release 性能測定
 - `scripts/analyze-calibration.py`: hash 検証、色差・EV・clip・plateau の fail-closed 判定
@@ -212,7 +218,7 @@ Core Image RAW 8
 - Lumix RW2 と JPEG を同じ画面で開ける
 - DC-S5 RW2 を 6000×4000 で decode できる
 - 8 基本調整と XMP 近似適用ができる
-- 写真ごとの編集状態をアプリ終了まで保持できる
+- 写真ごとの編集状態と適用プリセットを自動保存し、再起動後に復元できる。Undo履歴はセッション内に保持
 - 6000×4000、sRGB の原寸 JPEG を安全に書き出せる
 - 同じ署名のアプリ再起動後、選択済みフォルダを bookmark から復元できる
 - 製品挙動を変えない開発用経路で、RAW WBの固定候補を再現可能に観測できる
@@ -302,7 +308,7 @@ Mac16,10 / Apple M4 / macOS 26.3.1のrelease buildで、24MP RAWをwarm各20回�
 - 実 UI の slider input-to-screen latency と drop frame をまだ測っていない
 - preview parity v4で3,072pxが2 / 6、3,840pxが4 / 6比較不合格で、実UIはfull-resolution RAW decode経路のまま
 - Metal 直接表示は GPU command completion までは到達したが、positive `presentedTime`を得られず、actual-screen 表示成功・実画面1 LSB parity・UI p95を確認できていない
-- 編集の再起動後復元、SQLite カタログ、評価・選別、検索が未実装
+- SQLiteカタログ、評価・選別、検索、写真移動後の再リンクは未実装。写真ごとの編集復元は日常編集初版で追加
 - クロップ、回転、ブラシ部分補正が未実装
 - 原寸 JPEG 以外の主要 export 契約が不足
 - 校正runnerは単一ユーザーの直列実行を前提としており、別processの同時起動を排他するcross-process lockがない
@@ -327,7 +333,7 @@ Mac16,10 / Apple M4 / macOS 26.3.1のrelease buildで、24MP RAWをwarm各20回�
 2. **縮小 RAW preview の画質契約**: 3,072 / 3,840 px は平均色差・EV等を通っても、事前登録した spatial plateau gate をそれぞれ2 / 6、4 / 6比較で超えた。結果を見て閾値を変えず不採用にした。別のdraft仮説を試す場合は既存証跡を変更せず、新契約として扱う。
 3. **画質の一般化**: 2シーンだけでは、P1524180のEV失敗が実装欠陥、camera profile差、シーン固有過学習のどれかを十分切り分けられない。Lightroom 契約中のデータ確保を先に行い、その後に独立 holdout 付きで再設計する。
 4. **RAW WBのproduction接続条件**: 2sceneの観測構造は整ったが、固定Lightroom As Shot参照しかなく、Adobe profile差とWB差を分離できない。Lightroom側のTemperature / Tint sweep、gray card / ColorChecker、領域別指標、最低2 sealed holdoutを揃え、閾値を事前登録するまで候補値や変換式を選ばない。UIへ接続するときはdecode-affecting editとしてlatest-only / cancellation / stale result拒否、preview / export / persistence / Undoの同一intentを必要条件にする。
-5. **製品ループの未成立**: 編集値が終了時に消え、17,000枚の選別・検索・再リンク、クロップができないため、現状は日常利用から改善情報を得られる段階にない。
+5. **日常編集からの改善収集**: 編集値の再起動後復元とUndoを追加し、限定した日常編集を試用する。17,000枚の選別・検索・再リンク、クロップは引き続き別段階とする。
 6. **校正の同時実行**: 旧complete runの検証付きarchiveと不完全runの回復は実装したが、複数processを跨ぐlockは未実装である。同時runを避ける運用が必要で、将来の自動化前に排他契約を追加する。
 
 このため、Metal は「positive presentation を得るための短い切り分け」と「app lifecycle テスト境界の抽出」まででtimeboxする。それで閉じなければ既定OFFのまま保留する。主軸はLightroom教師を用いたRAW WB・EV・camera profileの品質改善とscene拡張であり、並行して編集永続化、SQLiteカタログ、クロップ、埋め込みJPEGを用いた選別を進める。`cacheIntermediates = true`、linear RAW土台、DCP、SSIMULACRA2、draft表示等は有望な仮説だが、RSS、ライセンス、知覚相関、画質を未実測のため採用済み事実にしない。

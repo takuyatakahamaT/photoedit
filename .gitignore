@@ -72,12 +72,13 @@ xcuserdata/
 /*.PNG
 /*.png
 
-# Root-level Lightroom sidecars are private by default. These four reviewed,
-# owner-authored project presets are explicit source fixtures.
+# Root-level Lightroom sidecars are private by default. These reviewed,
+# owner-authored project preset revisions are explicit source fixtures.
 /*.xmp
 /*.XMP
 !/niho-priset_colorful.xmp
 !/niho-preset bluesky2.xmp
+!/bluesky2-updated.xmp
 !/niho-preset night.xmp
 !/niho-preset pastel.xmp
 

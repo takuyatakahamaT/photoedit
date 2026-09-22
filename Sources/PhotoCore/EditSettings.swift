@@ -1,5 +1,12 @@
 import Foundation
 
+public enum ReferenceLook: String, Codable, Equatable, Hashable, Sendable {
+    case bluesky2September2026 = "niho-bluesky2-reference-20260922-v2"
+    case bluesky2September2026V3 = "niho-bluesky2-reference-20260922-v3"
+
+    public static var currentBluesky2: Self { .bluesky2September2026V3 }
+}
+
 public struct CurvePoint: Codable, Equatable, Hashable, Sendable {
     public let x: Double
     public let y: Double
@@ -99,6 +106,15 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
     public var blacks: Double
     public var vibrance: Double
     public var saturation: Double
+    /// Relative shift around the decoded capture white point. This is kept
+    /// separate from Adobe's absolute/incremental white-balance metadata.
+    public var relativeTemperature: Double {
+        didSet { relativeTemperature = RelativeColorAdjustment.sanitizedValue(relativeTemperature) }
+    }
+    public var relativeTint: Double {
+        didSet { relativeTint = RelativeColorAdjustment.sanitizedValue(relativeTint) }
+    }
+    public var referenceLook: ReferenceLook?
     public var whiteBalance: WhiteBalanceSettings
     public var toneCurves: [ToneCurve]
     public var hsl: [HSLBand: HSLAdjustment]
@@ -114,7 +130,10 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         saturation: Double = 0,
         whiteBalance: WhiteBalanceSettings = .asShot,
         toneCurves: [ToneCurve] = [],
-        hsl: [HSLBand: HSLAdjustment] = [:]
+        hsl: [HSLBand: HSLAdjustment] = [:],
+        relativeTemperature: Double = 0,
+        relativeTint: Double = 0,
+        referenceLook: ReferenceLook? = nil
     ) {
         self.exposure = exposure
         self.contrast = contrast
@@ -124,6 +143,9 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         self.blacks = blacks
         self.vibrance = vibrance
         self.saturation = saturation
+        self.relativeTemperature = RelativeColorAdjustment.sanitizedValue(relativeTemperature)
+        self.relativeTint = RelativeColorAdjustment.sanitizedValue(relativeTint)
+        self.referenceLook = referenceLook
         self.whiteBalance = whiteBalance
         self.toneCurves = toneCurves
         self.hsl = hsl
@@ -138,6 +160,9 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         case blacks
         case vibrance
         case saturation
+        case relativeTemperature
+        case relativeTint
+        case referenceLook
         case whiteBalance
         case toneCurves
         case hsl
@@ -153,6 +178,13 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         blacks = try container.decodeIfPresent(Double.self, forKey: .blacks) ?? 0
         vibrance = try container.decodeIfPresent(Double.self, forKey: .vibrance) ?? 0
         saturation = try container.decodeIfPresent(Double.self, forKey: .saturation) ?? 0
+        relativeTemperature = RelativeColorAdjustment.sanitizedValue(
+            try container.decodeIfPresent(Double.self, forKey: .relativeTemperature) ?? 0
+        )
+        relativeTint = RelativeColorAdjustment.sanitizedValue(
+            try container.decodeIfPresent(Double.self, forKey: .relativeTint) ?? 0
+        )
+        referenceLook = try container.decodeIfPresent(ReferenceLook.self, forKey: .referenceLook)
         whiteBalance = try container.decodeIfPresent(WhiteBalanceSettings.self, forKey: .whiteBalance) ?? .asShot
         toneCurves = try container.decodeIfPresent([ToneCurve].self, forKey: .toneCurves) ?? []
         hsl = try container.decodeIfPresent([HSLBand: HSLAdjustment].self, forKey: .hsl) ?? [:]
@@ -168,6 +200,9 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
         try container.encode(blacks, forKey: .blacks)
         try container.encode(vibrance, forKey: .vibrance)
         try container.encode(saturation, forKey: .saturation)
+        try container.encode(RelativeColorAdjustment.sanitizedValue(relativeTemperature), forKey: .relativeTemperature)
+        try container.encode(RelativeColorAdjustment.sanitizedValue(relativeTint), forKey: .relativeTint)
+        try container.encodeIfPresent(referenceLook, forKey: .referenceLook)
         try container.encode(whiteBalance, forKey: .whiteBalance)
         try container.encode(toneCurves, forKey: .toneCurves)
         try container.encode(hsl, forKey: .hsl)
@@ -188,9 +223,12 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
             whites,
             blacks,
             vibrance,
-            saturation
+            saturation,
+            relativeTemperature,
+            relativeTint
         ]
         return scalarControls.contains { abs($0) > tolerance }
+            || referenceLook != nil
             || !ToneCurveModel.isIdentity(toneCurves, tolerance: tolerance)
             || PerceptualColorMixer.isActive(hsl, tolerance: tolerance)
     }

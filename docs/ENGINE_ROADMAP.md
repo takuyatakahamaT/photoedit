@@ -1,0 +1,189 @@
+# 汎用XMP現像エンジン: 調査結果と実行計画
+
+更新: 2026-09-22 JST（担当引き継ぎ後の再調査）。この文書が現行方針の正。[GENERIC_XMP_ENGINE.md](GENERIC_XMP_ENGINE.md)と[ENGINE_RESEARCH.md](ENGINE_RESEARCH.md)の調査を引き継ぎ、実測と追加調査で具体化した。
+
+## 1. 結論
+
+- **目標は変わらない。** どのLightroomプリセット（XMP）を登録しても、プリセット固有の調整なしに、共通の現像エンジンでLightroomと同じ見た目を得る。
+- **Adobeの現像数式の大半は非公開で、無料で組み込めるAdobe製エンジンも存在しない。** 主要な競合製品も「基本補正だけ・近似」と明記しており、完全互換を達成した製品は確認できなかった。したがって「数式を推測する」のではなく、**Lightroomを教師にして操作（スライダー）ごとの応答を計測し、共通モデルへ落とす**方式を採る。プリセット単位の合わせ込みは行わない。
+- エンジンは3層に分ける。**(0) 基準現像**は公開仕様（DNG仕様）とこのMacにあるAdobe標準プロファイルで再現する。**(1) 画素単位の色操作**はチャート計測でほぼ正確に同定できる。**(2) 空間的な操作**（ハイライト／シャドウ、テクスチャ等）は局所階調モデルを実写計測でfitする。残差が最後まで残るのは(2)。
+- 今の「のっぺり・発色が弱い」の主因は実測で特定できた（§2）。彩度の調整不足ではなく、**階調圧縮を画面全体の1本のカーブで行っている構造**が原因。
+
+## 2. 現状の実測
+
+### 2.1 汎用経路の色差（前任者の測定値）
+
+オーナー提供の3組（RAW／LR既定JPEG／LRでbluesky2適用JPEG）に対する平均CIEDE2000。出典は`.photobench/bluesky2-20260922/`の`production-v2-metrics.json`と`updated-four-values-metrics.json`。
+
+| 経路 | 平均ΔE00 |
+|---|---:|
+| 汎用XMP経路・旧bluesky2（基本補正のみ） | 約13.6 |
+| 汎用XMP経路・更新版bluesky2の値 | **17.4〜22.0** |
+| 中止したbluesky2専用fit（v2） | 約6.6（p95は23） |
+
+「同じ見た目」の目安は平均2以下・p95で5以下。現状の汎用経路は桁が違う。更新版XMPは露出+0.79／ハイライト−79／シャドウ+46／白レベル−56／黒レベル+90という強い値で、現行の`BasicToneModel`（目視で定数を置いた単調カーブ）が想定していない領域にある。
+
+### 2.2 「のっぺり」の正体（今回の実測）
+
+LRの「プリセット適用前JPEG → 適用後JPEG」から、明るさ別に **(a) 全体カーブの傾き** と **(b) 局所ディテールの保持率** を測った。画素単位の全体カーブだけで処理していれば(b)は(a)と一致する。スクリプトと結果は`.photobench/engine-research-20260922/local-contrast-evidence/`。
+
+| シーン | 明るさ（白から何EV下か） | (a) 全体の傾き | (b) 局所ディテール保持 | (b)/(a) |
+|---|---:|---:|---:|---:|
+| P1013558 | −2.75 | 0.33 | 0.54 | 1.6倍 |
+| P1013558 | −1.75 | 0.28 | 0.47 | 1.7倍 |
+| P1013558 | −1.25 | 0.25 | 0.45 | 1.8倍 |
+| P1013207 | −2.75 | 0.38 | 0.52 | 1.4倍 |
+| P1013207 | −1.25 | 0.34 | 0.44 | 1.3倍 |
+
+LRは中間〜明部を強く圧縮しながら、細部の明暗差を全体カーブの1.3〜1.8倍残している。これはAdobeがPV2012のハイライト／シャドウに用いているとされる局所ラプラシアンフィルタ系（エッジ保存型の局所階調処理）の挙動と整合する。**現行エンジンには空間処理が1つもない**ため、同じ全体の明るさに合わせるほど細部が平坦になる。前任者が彩度やオレンジ補正を足しても「くっきりしない」と言われ続けた理由はここにある。
+
+### 2.3 基準現像の差
+
+2026-07-24の観測で、プリセットを掛ける前のAs Shot同士でもLRと平均ΔE00で2.1〜3.7の差があった。現行はApple Core Image RAW（`boost 0.9`＝Appleのトーンカーブが9割掛かった状態）を土台にしており、Adobe Standard＋Adobe Colorとは別の絵作りである。
+
+### 2.4 XMP項目の対応状況
+
+オーナーの5プリセットが使う項目のうち、描画に接続済みなのは基本8項目の近似だけ。point curve／HSLは実験扱いで初期OFF。parametric curve、RGB別カーブの色処理、split toning／color grading、Camera Calibration（GreenHue等・全プリセットが使用）、Texture、Dehaze、絶対WB、シャープ／NR、レンズ補正、Look（Adobe Color）は未描画。
+
+## 3. 調査で分かったこと
+
+### 3.1 公開されているもの
+
+- **カメラプロファイルの数式は完全公開。** DNG仕様1.7.1がColorMatrix／ForwardMatrixの光源補間、HueSatMap（リニアProPhotoのHSV空間）、LookTable、ProfileToneCurve、BaselineExposureを定義する。
+- **Adobe DNG SDK**（無償・改変／配布可の許諾）に、その参照実装がある。`dng_render.cpp`の処理順、`RefBaselineHueSatMap`、**`RefBaselineRGBTone`（色相を保つトーンカーブ適用。ACR／LRの方式）**、ACR3既定トーンカーブ。RawTherapeeの"film-like"カーブも同じ方式だと文書化されている。
+- XMPの項目名と型（Adobe XMP namespace）。Process Versionは11.0=PV5、15.4=PV6で、同じ設定値ならPV5とPV6の描画差は、カラーミキサーのバンディング修正を除きほぼ無いという実測報告がある。
+- Texture＝中周波、Clarity＝より低周波、シャープ＝高周波という帯域の位置づけ（Adobe ACRチームの公式ブログ）。
+- Camera Calibrationは「基準プロファイルそのものを変える唯一の操作で、他の全調整の下に効く」（Adobe社員の発言）。パイプライン順は固定で、スライダーを触った順には依存しない。
+
+### 3.2 公開されていないもの
+
+PV2012の基本補正（露出の肩、コントラスト、ハイライト／シャドウ／白／黒の式と画像適応）、HSL 8帯域の中心・幅・計算空間、Vibranceの重み、Color Gradingの式、Calibrationの行列、Texture／Clarity／Dehazeの式。信頼できる数式・実測データは見つからなかった。**ここは自分たちで計測するしかない。**
+
+### 3.3 他製品・OSSの到達点
+
+- darktableの`lightroom.c`はXMPの項目を自前モジュールへ写す近似で、コントラスト・Vibrance・Dehazeは扱わない。RawTherapee／ARTはDCPには対応するがLR現像設定の取り込みは無い。RapidRAW（Tauri製）もLRプリセット非対応。
+- ON1、Luminar、Capture One、Photomator、Affinity等も、基本補正の近似のみ・プロファイル／LUT／局所コントラストは非対応と明記。**「任意のXMPでLRと同じ」を実現した製品は無い。** この目標は業界未解決の問題であり、完全一致ではなく「見比べて気づかない水準」を検証可能なゲートで定義する。
+- プリセット→LUT変換ツール群（HALD方式）は、露出・コントラスト・ハイライト／シャドウ・Clarity・Texture・Dehaze・粒子等を表現できないと明記している。LUT 1枚では今回の問題は解けない。
+- MITライセンスの`mini-film`に、AdobeのLook／プロファイルXMP内テーブル（独自base85＋zlib）のデコーダがある。
+
+### 3.4 このMacで確認できた資産（今回の検証）
+
+- Lightroom 9.3のアプリ内に**Adobe StandardのDCPが4,329本**あり、`Panasonic DC-S5 Adobe Standard.dcp`を含む（ColorMatrix1/2、ForwardMatrix1/2、HueSatMap 90×30×1、LookTable 36×8×16、トーンカーブ無し＝ACR既定カーブ）。
+- 同じくアプリ内の`Adobe Color.xmp`のルックテーブルを**実際にデコードできた**（展開後110,616バイトのMD5がテーブルIDと一致。36×16×16のHSVルックテーブル＋ポイントカーブ）。
+- LRが書いたサイドカーXMPから、オーナーのRAWに対するLRの基準状態が確定した: As Shot、Adobe Standard＋Adobe Color、PV 15.4、カメラ内蔵レンズ補正ON、シャープ40／半径1.0／ディテール25、カラーNR 25。
+- サイドカーXMPが存在する＝LRの「ローカル」タブでXMPの読み書きが行われている。**XMPを機械生成してLRに読ませ、一括書き出しする教師データ量産**が成立する見込み（§6。最初に少数で往復確認する）。
+
+**ライセンス上の注意:** DCPとAdobe ColorはAdobeの著作物。リポジトリ（公開）には入れない。オーナーのMacではLRの導入先から実行時に読む。NIHO Desktopで配布する場合は同梱できないため、無償のAdobe DNG Converterの導入先から読む方式（RawTherapeeと同じ慣行）か、自作プロファイルへのフォールバックを統合段階で決める。第三者ソフトによるプロファイル利用についてAdobeの明示的な許諾も禁止も確認できていない。
+
+## 4. 方式の比較と採否
+
+| 方式 | 任意プリセットへの汎用性 | LR再現性 | 費用 | 判断 |
+|---|---|---|---|---|
+| **A. 計測ベースの共通エンジン**（公開仕様＋操作別の計測モデル） | あり | 画素単位の操作は高い。空間操作は近似 | 無料 | **採用** |
+| B. プリセットごとにLRでHALD画像を現像してLUT化 | 無い（新しいプリセットのたびにLRが必要） | 局所操作を表現できない | LR契約が必要 | 不採用。ただしHALDチャートは方式Aの計測手段として使う |
+| C. 学習型（ニューラル）エミュレータ | あり | データ次第。破綻の検証が難しい | 無料だが教師データ数千枚規模 | 保留。方式Aで残る残差の補正候補 |
+| D. Adobe公式API（Photoshop API v2） | あり | 本物 | Enterprise契約 | 費用条件により不採用 |
+| E. Adobe DNG Converter（無償）の埋め込みプレビューを教師にする | — | 本物のACRエンジンの可能性 | 無料 | **未検証の実験候補。** XMPの現像設定がプレビューへ反映されるか確認できれば、LR解約後も使える自動の教師になる |
+
+## 5. エンジン構造
+
+```mermaid
+flowchart LR
+  subgraph L0[層0 基準現像]
+    R[RAW: カメラRGB＋WB] --> P[DCP: 行列・HueSatMap・LookTable]
+    P --> K[Look: Adobe Color]
+    J[JPEG/TIFF: ICC] --> W
+    K --> W[リニアProPhoto作業空間]
+  end
+  subgraph L2[層2 空間操作]
+    W --> T[露出・ハイライト/シャドウ・白/黒・コントラスト<br/>＝ベース/ディテール分離の局所階調]
+    T --> X[Texture・Clarity・Dehaze]
+  end
+  subgraph L1[層1 画素単位の色操作]
+    X --> C[基準トーンカーブ → parametric/point curve<br/>色相保持のRGBTone]
+    C --> H[HSL・Color Grading・Vibrance/Saturation]
+  end
+  H --> A[ユーザーの追加微調整] --> O[sRGB出力・シャープ]
+```
+
+- 図の順序は出発点の仮説。**実際の順序は計測で同定する**（操作A単独・B単独・A+Bの3つのLUTから、合成順を判定できる）。Calibrationは層0の内側に入る。
+- 作業空間はACRと同じリニアProPhoto原色。Core Imageの作業空間（extended linear sRGB）は保ち、カーネル内で3×3変換する。
+- モデルの係数・応答テーブルは**操作単位**で持つ。プリセット名・UUID・digest・写真名で分岐する処理は置かない。
+- 層2は公開論文の枠組み（Fast Local Laplacian／ガイド付きベース・ディテール分離）を実装し、「ベースへ掛ける階調関数」「ディテール利得」「エッジ閾値」「輝度の符号化」をLR計測へfitする。
+- 未対応の項目を含むプリセットは、読み込み時に「何が再現されないか」を表示する（既存の互換性表示を継続）。
+
+## 6. 計測プロトコル（Lightroomを教師にする）
+
+1. **往復確認（最初に1回・数分）**: 外部で書いたサイドカーXMP／埋め込みXMPを、LR 9.3のローカルタブが読むか。読まない場合はLR上の「設定のコピー＆ペースト」へ切り替える。
+2. **チャート計測（層1）**: 16bit TIFFの合成チャート（HALD恒等、グレーランプ、色相スイープ）に、1操作だけ変えたXMPを埋め込んだファイルを数百枚生成する。LRで全選択→16bit TIFF・ProPhoto・出力シャープOFFで一括書き出し。各操作の応答、合成順、RAW／非RAWの差を同定する。
+3. **実写計測（層2）**: 実写10〜15枚×操作別スイープ。RAWはAPFSクローン＋サイドカーで容量を増やさず複製する。画像適応の有無は、同じプローブ（グレーパッチ）を明るさ分布の違う写真へ埋め込んで測る。
+4. **検証セット**: fitに使わない写真と、fitに使わないプリセット（オーナーの5本＋第三者の無料プリセット数本）で最終評価する。教師と検証を混ぜない。
+5. 指標は平均／p95のCIEDE2000、平均EV差、明るさ帯ごとの局所コントラスト比、ハロー・クリップ。数値は入口で、最終判定はオーナーの目視。
+
+オーナーの作業は「フォルダをLRで開く→全選択→書き出し」を3〜4回（各10分程度）。Claudeが画面操作で代行することも可能（その都度の許可が必要）。
+
+### round0（準備済み・2026-09-22）
+
+`scripts/lr_measure/make_round0.py`が`exports/lr-measure/round0/input/`へ30枚を生成した（RAWはAPFSクローン＋サイドカー20組、JPEG埋め込み7枚、TIFF埋め込み3枚）。手順は同フォルダの`README.md`。LR書き出し後に`scripts/lr_measure/analyze_round0.py`で次を判定する。
+
+- A. 外部生成XMPをLRが読むか（彩度−100が白黒になるか）を、RAWサイドカー／JPEG埋め込み／TIFF埋め込みの別に確認
+- B. サイドカーで全設定を与えた書き出しが、オーナーが手でbluesky2を当てた書き出しと一致するか（一致すればXMP機械生成による教師量産が成立）
+- C. 更新版bluesky2を1操作ずつに分解した寄与（露出／コントラスト／ハイライト／シャドウ／白／黒／Texture／Vibrance／Saturation／parametric／point curve／HSL／split toning／Calibration／シャープ・NR）
+
+生成時に分かったこと: **更新版bluesky2はシャープを40→0、カラーNRを25→0へ明示的に落としている。** LRが「くっきり」見える理由は既定シャープではなく、局所階調処理とTexture +12の側にある。
+
+## 7. フェーズとゲート
+
+| フェーズ | 内容 | 合格条件 |
+|---|---|---|
+| 0 | 前任作業のチェックポイントcommit、bluesky2専用補正コードの撤去、計測リグ（チャート生成・XMP生成・解析）とLR往復確認 | 往復が確認でき、リグが再現可能 |
+| 1 | RAW基準現像: DCP＋Adobe Color＋ACR既定カーブ＋基準露出を仕様どおり実装。デコーダ（LibRaw／Core Image）は実測で決める | プリセット無しでLR既定と平均ΔE00 ≤ 2、平均EV差 ≤ 0.05 |
+| 2 | 層1: カーブ、HSL、Calibration、Color Grading、Vibrance／Saturation、増分WB | 操作ごと・ランダム合成10組でチャート平均ΔE00 ≤ 1、p95 ≤ 2.5 |
+| 3 | 層2: ハイライト／シャドウ／白／黒／露出の肩／コントラスト、続いてTexture／Clarity／Dehaze | 未使用の実写で平均 ≤ 2、p95 ≤ 5、局所コントラスト比±10%以内、ハロー無し |
+| 4 | 既定シャープ／NR、レンズ補正の一致、周辺光量・粒子、プレビュー速度 | 100%表示で解像感がLRと同等、操作が実用速度 |
+| 5 | 総合検証: 未使用プリセット×未使用写真でオーナーの見比べ | オーナーが普段使いできると判断 |
+| 6 | NIHO Desktop統合（PhotoCoreをTauriから呼ぶ。プロファイル資産の扱いを決定） | — |
+
+production実装はSonnet 5のサブエージェント、設計・計測設計・レビュー・文書は主担当。ゲートを満たさないフェーズは次へ進めない。各フェーズの所要は前フェーズの実測後に見積もり直す。現時点の見立ては、AI作業で延べ25〜45時間規模・複数セッション。最も不確実なのはフェーズ3。
+
+### フェーズ1の事前検証（2026-09-22）
+
+**仮説:** LRのプリセット無し現像は、公開仕様（DNG仕様／DNG SDKの処理順）と、このMacのLightroomにある`Panasonic DC-S5 Adobe Standard.dcp`＋`Adobe Color.xmp`だけで再現できる。
+
+**方法:** LibRaw（`dcraw_emu`）でカメラRGBを取り出し、Pythonの試作で「ForwardMatrixの光源補間 → リニアProPhoto → HueSatMap → 基準露出 → DCP LookTable → Adobe Color LookTable → ACR3既定カーブ（色相保持のRGBTone）→ Adobe Colorのポイントカーブ → sRGB」を実装。オーナーの3枚のRAWについて、LRの既定書き出しJPEGと比較した。試作と数値は`.photobench/engine-research-20260922/dcp-base-prototype/`、比較画像は`exports/engine-research-20260922/`。
+
+**結果（倍率を合わせた後、30×20領域の平均色で比較。CIEDE2000）:**
+
+| シーン | DCP試作 平均／p95 | L*差 | 彩度比 | 現行Core Image土台 平均／p95 | L*差 | 彩度比 |
+|---|---:|---:|---:|---:|---:|---:|
+| P1013558 | **1.15** ／ 2.41 | +0.29 | 0.98 | 2.43 ／ 5.44 | +1.61 | 1.20 |
+| P1013207 | **1.23** ／ 2.53 | +0.14 | 1.01 | 2.49 ／ 4.61 | +1.61 | 1.08 |
+| P1012822 | **1.63** ／ 4.83 | +0.29 | 1.02 | 2.96 ／ 5.18 | +0.99 | 1.22 |
+
+- **仮説は支持された。** 初回の試作でも、現行土台の約半分の誤差で、明るさ・彩度の系統的な偏りが無い。現行土台はLRより一貫して明るく（L* +1.0〜+1.6）、彩度が8〜22%高い。
+- カメラ固有の基準露出（RW2には記録が無い未知数）を写真ごとに1変数でfitすると +0.058／+0.041／+0.071 EVで、ほぼ一定だった。カメラ定数として扱える。
+- Adobe Colorのポイントカーブは「リニアProPhoto値へ色相保持のRGBToneで適用」が3枚とも最良。
+- ルックテーブルのバイナリは、ヘッダu32×5（type, version, hue 36, sat 16, val 16）＋float32の`(hueShift, satScale, valScale)`＋末尾4バイト。彩度0の項目はvalScale=1.0で、DNG仕様と整合する。
+
+**まだ差が残る要因（フェーズ1本実装で潰す）:** レンズ歪曲・周辺光量補正が無い（LRはRW2内蔵の補正を適用。dcraw出力は約2.0〜2.5%広い）、ハイライトのクリップ処理の省略、Adobe Colorテーブルを1 floatずれて読んでいた試作側の不具合、8bit・縮小画像での比較。画素単位のゲート判定には幾何補正の一致が要る。
+
+**デコーダの判断材料:** DCPの行列はカメラRGBへ掛けるので、Appleの色変換後しか取れないCore Image RAWでは仕様どおりに適用できない。色はLibRaw＋DCP経路、幾何（レンズ補正）はRW2内蔵データの自前適用が本線になる。Core Imageは比較基準と、DCPが無い機種のフォールバックとして残す。
+
+試作を担当したサブエージェントの一次報告には誤りが3点あり（彩度過剰・現行土台の差27〜36・テーブルの並び）、主担当の再検証で訂正した。経緯は試作フォルダの`CORRECTION.md`。
+
+## 8. リスクと見通し
+
+- **完全一致は約束できない。** 層2はAdobe非公開の画像適応処理で、極端な設定（オーナーのプリセットはまさにそれ）ほど差が残りやすい。到達点はゲートの数値と目視で判断する。
+- LRのローカルタブが外部XMPの変更を再読込しない可能性がある（コミュニティ報告）。§6-1で最初に確認する。
+- macOS 27でCore Image RAW 9（ML型デモザイク）が入る。Core Imageを土台にした機種別fitは動く標的になるため、色はDCP経路へ寄せる。
+- 教師データを作れるのはLR契約中だけ。フェーズ2〜3の計測と、検証用の書き出しを契約中に済ませる。方式Eが成立すればこの制約は外れる。
+- Adobeのプロファイル資産の第三者利用・配布は未確定（§3.4）。オーナー個人のMacでの利用と、NIHO配布は分けて判断する。
+
+## 9. 主な出典
+
+- DNG仕様1.7.1／Adobe DNG SDK 1.7.1（`dng_render.cpp`、`dng_reference.cpp`、`dng_color_spec.cpp`、`dng_hue_sat_map.cpp`）
+- [Local Laplacian Filters (SIGGRAPH 2011)](https://people.csail.mit.edu/sparis/publi/2011/siggraph/Paris_11_Local_Laplacian_Filters.pdf)、[Fast Local Laplacian Filters (TOG 2014)](https://jankautz.com/publications/FastLLF_TOG14.pdf)、[Adobe Research掲載](https://research.adobe.com/publication/local-laplacian-filters-edge-aware-image-processing-with-a-laplacian-pyramid/)
+- [Adobe: Process versions](https://helpx.adobe.com/camera-raw/using/process-versions.html)、[ACRチーム: Texture](https://theblog.adobe.com/from-the-acr-team-introducing-the-texture-control/)、[調整順とCalibration（Adobe社員）](https://www.lightroomqueen.com/community/threads/does-the-order-of-adjustments-in-develop-matter.10971/)、[Refine Saturation](https://helpx.adobe.com/lightroom-cc/using/whats-new/2023-4.html)
+- [darktable lightroom.c](https://github.com/darktable-org/darktable/blob/master/src/develop/lightroom.c)、[RawPedia: Color Management](https://rawpedia.rawtherapee.com/Color_Management)、[DCamProf](https://rawtherapee.com/mirror/dcamprof/dcamprof.html)、[mini-film (MIT)](https://github.com/alfanick/mini-film)、[PassXMP (MIT)](https://github.com/maxthomason/PassXMP)
+- [LRローカルタブの挙動（Lightroom Queen）](https://www.lightroomqueen.com/community/threads/question-about-locals-tab.49085/)、[HDRNet](https://arxiv.org/abs/1707.02880)、[Image-Adaptive 3D LUT](https://github.com/HuiZeng/Image-Adaptive-3DLUT)、[MIT-Adobe FiveK](https://data.csail.mit.edu/graphics/fivek/)
+- [LibRaw ライセンス](https://www.libraw.org/about)、[Apple WWDC21: RAWのlinear出力](https://developer.apple.com/videos/play/wwdc2021/10160/)、[Apple WWDC26: RAW 9](https://developer.apple.com/videos/play/wwdc2026/305/)

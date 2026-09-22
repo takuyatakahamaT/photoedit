@@ -35,7 +35,7 @@ RAW WBは製品経路を変えず、As Shotを既存production decoder delegate�
 
 Metal直接表示のnative rasterは従来経路と全channel 1 LSB以内で一致し、queue / aspect fitも自動テストを通過した。最終ハードニング直前の実UI smokeではGPU commandが2回`completed`になった後、1回目は`presentedTime == 0`、2回目はpresented callback不返却となり、10秒deadlineでlegacyへfallbackした。その後に`drawableSize > 0`のwatchdog条件と`allowsNextDrawableTimeout = true`を追加し、最終sourceではfallback後のlegacy写真と空表示がないことを再確認したが、同じ詳細traceは再取得していない。したがってpositive presentation、実画面parity・p95・drop率・RSSは未承認である。
 
-編集状態は写真ごとにセッション内メモリへ保持するが、SQLite永続化、クロップ、ブラシ、アルバムはまだ設計段階である。したがって現行版は画質と技術選定を検証するプロトタイプであり、Lightroomから業務を移す完成版ではない。
+2026-09-22の日常編集初版では、編集と適用プリセットをApplication Support内の写真別JSONへ自動保存し、Undo / Redoと相対色温度・色かぶりを追加した。詳細は[日常編集の初版](./docs/EDITING_MVP.md)を参照。SQLiteカタログ、クロップ、ブラシ、アルバムは別段階であり、Lightroomから業務を移す完成版ではない。
 
 ### 1.2 画質ゲートの到達点
 
@@ -347,9 +347,9 @@ UIと画像処理を別ターゲットにし、スライダーの見た目を触
 ### 9.1 原則
 
 - 原本は読み取り専用として扱い、上書きしない。
-- **現行:** 編集値は写真IDごとにセッション内メモリへ保持し、アプリ終了で消える。
-- **Phase 1目標:** 編集値を写真ごとのversioned JSONとしてSQLiteへ自動保存する。
-- **Phase 1目標:** Undo/Redoはセッション内スタックに保持し、確定状態だけを永続化する。永続履歴テーブルは必要性を確認してから追加する。
+- **現行:** 編集値と適用プリセットsnapshotを写真IDごとのversioned JSONへatomic保存する。原本の横ではなくApplication Support内へ保存する。
+- **将来:** 大規模カタログが必要になった段階でSQLiteへの移行を検討する。
+- **現行:** Undo/Redoは写真ごとのセッション内スタックに最大100操作を保持し、編集結果だけを永続化する。永続履歴は必要性を確認してから追加する。
 - プレビューと書き出しは同じ編集モデルから生成する。
 - プレビューの最終表示は表示解像度、書き出しは原寸で再レンダリングする。現行production RAWはfull-resolution decode後に表示寸法へrender / downscaleし、RAW自体を縮小decodeする`scaleFactor`候補はparity v4不合格のため未接続とする。
 - RAW native寸法は正の有限整数として検証し、0・非有限・不明なら整数化前にfail closedとする。exportは実image extentも非有限・非正・原寸不一致なら拒否する。

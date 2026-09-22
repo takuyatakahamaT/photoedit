@@ -17,13 +17,21 @@ else
     echo "Photo Benchをローカル用ad-hoc署名で作成します。再ビルド後は写真フォルダの再選択が必要になる場合があります。" >&2
 fi
 
-/usr/bin/swift build -c release --package-path "$PHOTO_APP_DIR"
+/usr/bin/swift build -c release --product PhotoBench --jobs 2 --package-path "$PHOTO_APP_DIR"
 /bin/rm -rf "$PHOTO_APP_BUNDLE"
 /bin/mkdir -p "$PHOTO_CONTENTS_DIR/MacOS" "$PHOTO_CONTENTS_DIR/Resources"
+/bin/mkdir -p "$PHOTO_CONTENTS_DIR/Resources/Presets"
 /usr/bin/install -m 755 \
     "$PHOTO_APP_DIR/.build/release/PhotoBench" \
     "$PHOTO_CONTENTS_DIR/MacOS/PhotoBench"
 /bin/cp "$PHOTO_APP_DIR/Resources/Info.plist" "$PHOTO_CONTENTS_DIR/Info.plist"
+/usr/bin/install -m 644 \
+    "$PHOTO_APP_DIR/niho-priset_colorful.xmp" \
+    "$PHOTO_APP_DIR/niho-preset bluesky2.xmp" \
+    "$PHOTO_APP_DIR/bluesky2-updated.xmp" \
+    "$PHOTO_APP_DIR/niho-preset night.xmp" \
+    "$PHOTO_APP_DIR/niho-preset pastel.xmp" \
+    "$PHOTO_CONTENTS_DIR/Resources/Presets/"
 /usr/bin/codesign \
     --force \
     --deep \

@@ -1,6 +1,7 @@
 import AppKit
 import Metal
 import MetalKit
+import PhotoBenchAppSupport
 import PhotoCore
 import QuartzCore
 import SwiftUI
@@ -8,6 +9,7 @@ import os
 
 struct ContentView: View {
     @EnvironmentObject private var model: EditorModel
+    @State private var presetPendingDeletion: StoredXMPPreset?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,13 +27,31 @@ struct ContentView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .preferredColorScheme(.dark)
+        .confirmationDialog(
+            "「\(presetPendingDeletion?.name ?? "プリセット")」を削除しますか？",
+            isPresented: Binding(
+                get: { presetPendingDeletion != nil },
+                set: { if !$0 { presetPendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("削除", role: .destructive) {
+                if let presetPendingDeletion {
+                    model.deletePreset(id: presetPendingDeletion.id)
+                }
+                presetPendingDeletion = nil
+            }
+            Button("キャンセル", role: .cancel) { presetPendingDeletion = nil }
+        } message: {
+            Text("登録だけを削除します。すでに写真へ適用した編集は保持されます。")
+        }
     }
 
     private var topBar: some View {
         HStack(spacing: 12) {
             Button("フォルダを開く", action: model.chooseFolder)
                 .disabled(!model.canChooseFolder)
-            Button("XMPを読み込む", action: model.importPreset)
+            Button("プリセットを読み込む", action: model.importPreset)
                 .disabled(model.isBusy)
             Divider().frame(height: 18)
             Text(model.selectedAsset?.filename ?? "写真を選択")
@@ -53,7 +73,14 @@ struct ContentView: View {
                     .background(Color.orange.opacity(0.16), in: Capsule())
                     .foregroundStyle(.orange)
             }
-            if model.preset != nil {
+            if let lookName = model.activeBluesky2ReferenceLookDisplayName {
+                Text(lookName)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(Color.green.opacity(0.16), in: Capsule())
+                    .foregroundStyle(.green)
+            } else if model.preset != nil {
                 Text("XMP近似・未校正")
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 9)
@@ -183,24 +210,53 @@ struct ContentView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("今の写真")
-                        .font(.headline)
-                    if let info = model.decodeInfo {
-                        LabeledContent("デコード", value: info.backend)
-                        LabeledContent("解像度", value: "\(info.width) × \(info.height)")
-                        if let cameraModel = info.cameraModel {
-                            LabeledContent("カメラ", value: cameraModel)
-                        }
-                        if let calibrationLabel = info.calibrationLabel, info.isRAW {
-                            LabeledContent("RAW基準", value: calibrationLabel)
-                        }
-                        LabeledContent("読込", value: String(format: "%.0f ms", info.durationMilliseconds))
+                    HStack {
+                        Text("プリセットライブラリ").font(.headline)
+                        Spacer()
+                        Text("\(model.presetLibrary.count)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
                     }
-                    if let render = model.renderMilliseconds {
-                        LabeledContent(
-                            model.previewRoute == .metalDirect ? "入力→実表示" : "プレビュー生成",
-                            value: String(format: "%.0f ms", render)
-                        )
+                    if let error = model.presetLibraryErrorMessage {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if model.presetLibrary.isEmpty {
+                        Text("XMPを読み込むとここに登録されます。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(model.presetLibrary) { item in
+                        HStack(spacing: 6) {
+                            Button {
+                                model.applyPreset(id: item.id)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(model.presetDisplayName(for: item)).lineLimit(1)
+                                    Text(item.isBuiltIn ? "標準" : "ユーザー登録")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!model.canEdit)
+                            if model.editSnapshot.appliedPresetID == item.id {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                                    .help("この写真へ適用中")
+                            }
+                            Button {
+                                presetPendingDeletion = item
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("プリセットを削除")
+                        }
+                        .padding(.vertical, 2)
                     }
                 }
 
@@ -208,60 +264,141 @@ struct ContentView: View {
 
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Text("一発調整").font(.headline)
+                        Text(model.isBluesky2ReferenceLookActive ? "補正後の微調整" : "一発調整")
+                            .font(.headline)
                         Spacer()
+                        Button("戻る", systemImage: "arrow.uturn.backward", action: model.undo)
+                            .labelStyle(.iconOnly)
+                            .help("編集を戻す (⌘Z)")
+                            .disabled(!model.canUndo || !model.canEdit)
+                        Button("やり直す", systemImage: "arrow.uturn.forward", action: model.redo)
+                            .labelStyle(.iconOnly)
+                            .help("編集をやり直す (⇧⌘Z)")
+                            .disabled(!model.canRedo || !model.canEdit)
                         Button("リセット", action: model.resetAdjustments)
                             .buttonStyle(.link)
+                            .disabled(!model.canEdit)
                     }
-                    adjustmentSlider("露出", value: $model.settings.exposure, range: -5...5, format: "%.2f")
-                    adjustmentSlider("コントラスト", value: $model.settings.contrast, range: -100...100, format: "%.0f")
-                    adjustmentSlider("ハイライト", value: $model.settings.highlights, range: -100...100, format: "%.0f")
-                    adjustmentSlider("シャドウ", value: $model.settings.shadows, range: -100...100, format: "%.0f")
-                    adjustmentSlider("白レベル", value: $model.settings.whites, range: -100...100, format: "%.0f")
-                    adjustmentSlider("黒レベル", value: $model.settings.blacks, range: -100...100, format: "%.0f")
-                    adjustmentSlider("自然な彩度", value: $model.settings.vibrance, range: -100...100, format: "%.0f")
-                    adjustmentSlider("彩度", value: $model.settings.saturation, range: -100...100, format: "%.0f")
+                    if model.isBluesky2ReferenceLookActive {
+                        Text("露出などはプリセット適用後の追加調整です。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    adjustmentSlider("露出", keyPath: \.exposure, range: -5...5, format: "%.2f")
+                    if !model.isBluesky2ReferenceLookActive {
+                        Text("撮影時の色を基準にした微調整")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    adjustmentSlider(
+                        "色温度",
+                        keyPath: \.relativeTemperature,
+                        range: -100...100,
+                        format: "%.0f",
+                        guidance: "寒色 ←→ 暖色"
+                    )
+                    adjustmentSlider(
+                        "色かぶり",
+                        keyPath: \.relativeTint,
+                        range: -100...100,
+                        format: "%.0f",
+                        guidance: "緑 ←→ マゼンタ"
+                    )
+                    adjustmentSlider("彩度", keyPath: \.saturation, range: -100...100, format: "%.0f")
+
+                    DisclosureGroup("詳細な明るさ・彩度") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            adjustmentSlider("コントラスト", keyPath: \.contrast, range: -100...100, format: "%.0f")
+                            adjustmentSlider("ハイライト", keyPath: \.highlights, range: -100...100, format: "%.0f")
+                            adjustmentSlider("シャドウ", keyPath: \.shadows, range: -100...100, format: "%.0f")
+                            adjustmentSlider("白レベル", keyPath: \.whites, range: -100...100, format: "%.0f")
+                            adjustmentSlider("黒レベル", keyPath: \.blacks, range: -100...100, format: "%.0f")
+                            adjustmentSlider("自然な彩度", keyPath: \.vibrance, range: -100...100, format: "%.0f")
+                        }
+                        .padding(.top, 8)
+                    }
                 }
-                .disabled(model.isBusy)
+                .disabled(!model.canEdit)
 
                 if let preset = model.preset {
                     Divider()
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("プリセット").font(.headline)
-                        Text(preset.name).font(.subheadline.weight(.semibold))
-                        Text("Process \(preset.processVersion ?? "不明") / Camera Raw \(preset.cameraRawVersion ?? "不明")")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        let supported = preset.compatibility.filter { $0.level == .supported }.count
-                        let approximate = preset.compatibility.filter { $0.level == .approximate }.count
-                        let unsupported = preset.compatibility.filter { $0.level == .unsupported }.count
-                        Text("対応 \(supported) ・ 近似 \(approximate) ・ 未対応 \(unsupported)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Toggle("HSL・カーブ近似を適用（未校正）", isOn: $model.applyApproximateXMPColor)
-                            .font(.caption)
-                            .onChange(of: model.applyApproximateXMPColor) { _, _ in model.scheduleRender() }
-                            .disabled(model.isBusy)
-                        DisclosureGroup("互換性の詳細") {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ForEach(preset.compatibility.filter { $0.level != .metadata }) { item in
-                                    HStack(alignment: .firstTextBaseline) {
-                                        Text(item.level.rawValue)
-                                            .font(.caption2.weight(.bold))
-                                            .foregroundStyle(color(for: item.level))
-                                            .frame(width: 36, alignment: .leading)
-                                        VStack(alignment: .leading, spacing: 1) {
-                                            Text(item.property).font(.caption)
-                                            Text("\(item.value) — \(item.note)")
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
+                        Text("適用中のプリセット").font(.headline)
+                        Text(model.appliedPresetDisplayName ?? preset.name)
+                            .font(.subheadline.weight(.semibold))
+                        if model.isBluesky2ReferenceLookActive {
+                            Text("汎用XMP再現ではなく、保存済み編集を再現するため保持している過去の実験補正です。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            if model.canApplyXMPReferencePreset {
+                                Button("このプリセットのXMP設定で適用", action: model.applyXMPReferencePreset)
+                                    .buttonStyle(.link)
+                                    .font(.caption)
+                                    .disabled(!model.canEdit)
+                            }
+                        } else {
+                            Text("Process \(preset.processVersion ?? "不明") / Camera Raw \(preset.cameraRawVersion ?? "不明")")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            let supported = preset.compatibility.filter { $0.level == .supported }.count
+                            let approximate = preset.compatibility.filter { $0.level == .approximate }.count
+                            let unsupported = preset.compatibility.filter { $0.level == .unsupported }.count
+                            Text("対応 \(supported) ・ 近似 \(approximate) ・ 未対応 \(unsupported)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Toggle(
+                                "HSL・カーブ近似を適用（未校正）",
+                                isOn: Binding(
+                                    get: { model.applyApproximateXMPColor },
+                                    set: { enabled in model.setApproximateColorEnabled(enabled) }
+                                )
+                            )
+                                .font(.caption)
+                                .disabled(!model.canEdit)
+                            DisclosureGroup("互換性の詳細") {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    ForEach(preset.compatibility.filter { $0.level != .metadata }) { item in
+                                        HStack(alignment: .firstTextBaseline) {
+                                            Text(item.level.rawValue)
+                                                .font(.caption2.weight(.bold))
+                                                .foregroundStyle(color(for: item.level))
+                                                .frame(width: 36, alignment: .leading)
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                Text(item.property).font(.caption)
+                                                Text("\(item.value) — \(item.note)")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                            }
                                         }
                                     }
                                 }
+                                .padding(.top, 6)
                             }
-                            .padding(.top, 6)
                         }
                     }
+                }
+
+                DisclosureGroup("写真情報") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let info = model.decodeInfo {
+                            LabeledContent("デコード", value: info.backend)
+                            LabeledContent("解像度", value: "\(info.width) × \(info.height)")
+                            if let cameraModel = info.cameraModel {
+                                LabeledContent("カメラ", value: cameraModel)
+                            }
+                            if let calibrationLabel = info.calibrationLabel, info.isRAW {
+                                LabeledContent("RAW基準", value: calibrationLabel)
+                            }
+                            LabeledContent("読込", value: String(format: "%.0f ms", info.durationMilliseconds))
+                        }
+                        if let render = model.renderMilliseconds {
+                            LabeledContent(
+                                model.previewRoute == .metalDirect ? "入力→実表示" : "プレビュー生成",
+                                value: String(format: "%.0f ms", render)
+                            )
+                        }
+                    }
+                    .padding(.top, 8)
                 }
             }
             .padding(14)
@@ -277,7 +414,21 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer()
-            Text("編集は終了時に消えます ・ 原本は上書きしません")
+            Text(model.unsavedStatusMessage ?? model.persistenceMessage)
+                .font(.caption2)
+                .foregroundStyle(model.hasSaveFailures || model.persistenceStatus.isFailure ? .red : .secondary)
+                .lineLimit(2)
+                .frame(maxWidth: 340, alignment: .leading)
+                .help(model.unsavedStatusMessage ?? model.persistenceMessage)
+            if model.canRetrySave {
+                Button(model.hasSaveFailures ? "再試行" : "今すぐ保存", action: model.retryAllUnsavedEdits)
+                    .buttonStyle(.link)
+            }
+            if model.canRetryLoad {
+                Button("編集を再読込", action: model.retryLoadCurrentPhotoEdits)
+                    .buttonStyle(.link)
+            }
+            Text("原本は上書きしません")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Text("・プレビュー/書き出し: sRGB")
@@ -290,16 +441,21 @@ struct ContentView: View {
             }
         }
         .padding(.horizontal, 12)
-        .frame(height: 28)
+        .frame(minHeight: 34)
     }
 
     private func adjustmentSlider(
         _ label: String,
-        value: Binding<Double>,
+        keyPath: WritableKeyPath<EditSettings, Double>,
         range: ClosedRange<Double>,
-        format: String
+        format: String,
+        guidance: String? = nil
     ) -> some View {
-        VStack(spacing: 4) {
+        let value = Binding<Double>(
+            get: { model.settings[keyPath: keyPath] },
+            set: { model.updateSetting($0, at: keyPath) }
+        )
+        return VStack(spacing: 4) {
             HStack {
                 Text(label).font(.subheadline)
                 Spacer()
@@ -308,8 +464,15 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 48, alignment: .trailing)
             }
-            Slider(value: value, in: range)
-                .onChange(of: value.wrappedValue) { _, _ in model.scheduleRender() }
+            Slider(value: value, in: range, onEditingChanged: { editing in
+                model.sliderEditingChanged(editing)
+            })
+            if let guidance {
+                Text(guidance)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
     }
 

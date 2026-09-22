@@ -7,7 +7,7 @@ public enum CompatibilityLevel: String, Codable, Sendable {
     case metadata = "情報"
 }
 
-public struct CompatibilityItem: Identifiable, Equatable, Sendable {
+public struct CompatibilityItem: Codable, Identifiable, Equatable, Sendable {
     public let id: String
     public let property: String
     public let value: String
@@ -23,7 +23,7 @@ public struct CompatibilityItem: Identifiable, Equatable, Sendable {
     }
 }
 
-public struct XMPPreset: Equatable, Sendable {
+public struct XMPPreset: Codable, Equatable, Sendable {
     public let name: String
     public let processVersion: String?
     public let cameraRawVersion: String?
@@ -123,11 +123,15 @@ public enum XMPPresetError: LocalizedError {
 public enum XMPPresetParser {
     public static func parse(url: URL) throws -> XMPPreset {
         let data = try Data(contentsOf: url)
+        return try parse(data: data, fallbackName: url.deletingPathExtension().lastPathComponent)
+    }
+
+    public static func parse(data: Data, fallbackName: String) throws -> XMPPreset {
         let delegate = XMPDelegate()
         let parser = XMLParser(data: data)
         parser.delegate = delegate
         guard parser.parse() else { throw parser.parserError ?? XMPPresetError.invalidXML }
-        return delegate.makePreset(fallbackName: url.deletingPathExtension().lastPathComponent)
+        return delegate.makePreset(fallbackName: fallbackName)
     }
 }
 

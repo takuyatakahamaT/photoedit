@@ -31,6 +31,31 @@ struct DirectPreviewRequest: Identifiable, @unchecked Sendable {
     let kind: Kind
 }
 
+enum EditPersistenceStatus: Equatable {
+    case idle
+    case saving
+    case saved
+    case saveFailed(String)
+    case loadFailed(String)
+
+    var message: String {
+        switch self {
+        case .idle: "編集状態なし"
+        case .saving: "保存中…"
+        case .saved: "保存済み"
+        case let .saveFailed(reason): "保存失敗: \(reason)"
+        case let .loadFailed(reason): "読込失敗・保存停止: \(reason)"
+        }
+    }
+
+    var isFailure: Bool {
+        switch self {
+        case .saveFailed, .loadFailed: true
+        case .idle, .saving, .saved: false
+        }
+    }
+}
+
 @MainActor
 final class EditorModel: ObservableObject {
     private static let presentationLog = OSLog(
@@ -43,7 +68,9 @@ final class EditorModel: ObservableObject {
     @Published var selectedAssetID: String? {
         didSet {
             guard selectedAssetID != oldValue else { return }
+            finishSliderGesture()
             saveEditState(for: oldValue)
+            flushPendingEditSave()
             restoreEditState(for: selectedAssetID)
             loadSelection()
         }
@@ -53,9 +80,12 @@ final class EditorModel: ObservableObject {
     @Published private(set) var previewRoute: PreviewPresentationRoute
     @Published private(set) var decodeInfo: DecodeInfo?
     @Published private(set) var renderMilliseconds: Double?
-    @Published private(set) var preset: XMPPreset?
-    @Published var settings = EditSettings.neutral
-    @Published var applyApproximateXMPColor = false
+    @Published private(set) var editSnapshot = PhotoEditSnapshot.neutral
+    @Published private(set) var presetLibrary: [StoredXMPPreset] = []
+    @Published private(set) var presetLibraryErrorMessage: String?
+    @Published private(set) var persistenceStatus: EditPersistenceStatus = .idle
+    @Published private(set) var canUndo = false
+    @Published private(set) var canRedo = false
     @Published private(set) var isBusy = false
     @Published private(set) var hasPreviewInFlight = false
     @Published private(set) var directPresentedCount = 0
@@ -68,32 +98,43 @@ final class EditorModel: ObservableObject {
     private let renderCoordinator = RenderCoordinator()
     private let initialDirectoryHint: URL
     private let folderAccess: FolderAccessCoordinator
+    private let store: PhotoBenchStore
     private var decodedPhoto: DecodedPhoto?
     private var assetsByID: [String: PhotoAsset] = [:]
     private var scanTask: Task<Void, Never>?
     private var loadTask: Task<Void, Never>?
     private var renderTask: Task<Void, Never>?
+    private var saveDebounceTask: Task<Void, Never>?
     private var loadGeneration = 0
     private var renderRevision: UInt64 = 0
-    private var editStates: [String: SessionEditState] = [:]
+    private var editStates: [String: PhotoEditSnapshot] = [:]
+    @Published private var unsavedEditStates: [String: PendingEditSave] = [:]
+    @Published private var persistenceStatusByAssetID: [String: EditPersistenceStatus] = [:]
+    private var loadBlockedAssetIDs: Set<String> = []
+    private var pendingEditSave: PendingEditSave?
+    private var editHistory = PerPhotoEditHistory()
+    private var activeSliderGesturePhotoID: String?
 
-    private struct SessionEditState {
-        let settings: EditSettings
-        let preset: XMPPreset?
-        let applyApproximateXMPColor: Bool
+    private struct PendingEditSave {
+        let assetID: String
+        let photoURL: URL
+        let snapshot: PhotoEditSnapshot
     }
 
     init(
         initialDirectoryHint: URL,
-        folderAccess: FolderAccessCoordinator? = nil
+        folderAccess: FolderAccessCoordinator? = nil,
+        store: PhotoBenchStore? = nil
     ) {
         self.initialDirectoryHint = initialDirectoryHint
         self.folderAccess = folderAccess ?? FolderAccessCoordinator()
+        self.store = store ?? .applicationSupport()
         let configuredRoute = PreviewPresentationRoute.configured()
         previewRoute = configuredRoute == .metalDirect && MetalPreviewRenderer.isSupported
             ? .metalDirect
             : .legacyBitmap
         rootURL = nil
+        loadPresetLibrary()
 
         switch self.folderAccess.restore() {
         case let .restored(url):
@@ -121,8 +162,157 @@ final class EditorModel: ObservableObject {
         selectedAssetID.flatMap { assetsByID[$0] }
     }
 
+    var settings: EditSettings { editSnapshot.settings }
+    var preset: XMPPreset? { editSnapshot.appliedPreset }
+    var applyApproximateXMPColor: Bool { editSnapshot.applyApproximateXMPColor }
+    var isBluesky2ReferenceLookActive: Bool {
+        guard let referenceLook = settings.referenceLook,
+              referenceLook == .bluesky2September2026
+                || referenceLook == .bluesky2September2026V3,
+              let decodeInfo
+        else {
+            return false
+        }
+        return BlueskyReferenceLook.supports(info: decodeInfo)
+    }
+    var activeBluesky2ReferenceLookDisplayName: String? {
+        guard isBluesky2ReferenceLookActive else { return nil }
+        return "bluesky2・過去の実験補正"
+    }
+    var appliedPresetDisplayName: String? {
+        guard let preset = editSnapshot.appliedPreset else { return nil }
+        if let activeBluesky2ReferenceLookDisplayName {
+            return activeBluesky2ReferenceLookDisplayName
+        }
+        return editSnapshot.appliedPresetID == PhotoEditSnapshot.bluesky2ReferencePresetID
+            ? "bluesky2（更新XMP）"
+            : preset.name
+    }
+    var canApplyXMPReferencePreset: Bool {
+        guard isBluesky2ReferenceLookActive,
+              let id = editSnapshot.appliedPresetID
+        else {
+            return false
+        }
+        return presetLibrary.contains { $0.id == id }
+    }
+    var persistenceMessage: String { persistenceStatus.message }
+    var unsavedEditCount: Int { unsavedEditStates.count }
+    var unsavedStatusMessage: String? {
+        guard !unsavedEditStates.isEmpty else { return nil }
+        let failure = persistenceStatusByAssetID.values.compactMap { status -> String? in
+            guard case let .saveFailed(reason) = status else { return nil }
+            return reason
+        }.first
+        if let failure { return "未保存 \(unsavedEditStates.count)枚: \(failure)" }
+        return "保存中… \(unsavedEditStates.count)枚未保存"
+    }
+    var hasSaveFailures: Bool {
+        persistenceStatusByAssetID.values.contains {
+            if case .saveFailed = $0 { return true }
+            return false
+        }
+    }
+    var canEdit: Bool {
+        guard selectedAssetID != nil, !isBusy else { return false }
+        if case .loadFailed = persistenceStatus { return false }
+        return true
+    }
+    var canRetrySave: Bool {
+        !unsavedEditStates.isEmpty
+    }
+    var canRetryLoad: Bool {
+        guard selectedAssetID != nil else { return false }
+        if case .loadFailed = persistenceStatus { return true }
+        return false
+    }
+
     var canExport: Bool { decodedPhoto != nil && !isBusy }
     var canChooseFolder: Bool { !isBusy && !hasPreviewInFlight }
+
+    func presetDisplayName(for storedPreset: StoredXMPPreset) -> String {
+        storedPreset.id == PhotoEditSnapshot.bluesky2ReferencePresetID
+            ? "bluesky2（更新XMP）"
+            : storedPreset.name
+    }
+
+    func updateSetting(_ value: Double, at keyPath: WritableKeyPath<EditSettings, Double>) {
+        mutateEditSnapshot { $0.settings[keyPath: keyPath] = value }
+    }
+
+    func setApproximateColorEnabled(_ enabled: Bool) {
+        mutateEditSnapshot { $0.applyApproximateXMPColor = enabled }
+    }
+
+    func sliderEditingChanged(_ isEditing: Bool) {
+        if isEditing {
+            guard canEdit, let assetID = selectedAssetID else { return }
+            if activeSliderGesturePhotoID != nil { finishSliderGesture() }
+            activeSliderGesturePhotoID = assetID
+            editHistory.beginGroup(for: assetID, startingAt: editSnapshot)
+            refreshHistoryAvailability()
+        } else {
+            finishSliderGesture()
+            flushPendingEditSave()
+        }
+    }
+
+    func undo() {
+        guard canEdit, let assetID = selectedAssetID else { return }
+        finishSliderGesture()
+        flushPendingEditSave()
+        guard let restored = editHistory.undo(for: assetID, current: editSnapshot) else { return }
+        restoreSnapshotThroughMutation(restored, for: assetID)
+    }
+
+    func redo() {
+        guard canEdit, let assetID = selectedAssetID else { return }
+        finishSliderGesture()
+        flushPendingEditSave()
+        guard let restored = editHistory.redo(for: assetID, current: editSnapshot) else { return }
+        restoreSnapshotThroughMutation(restored, for: assetID)
+    }
+
+    func retryAllUnsavedEdits() {
+        let alreadyFlushedID = pendingEditSave?.assetID
+        flushPendingEditSave()
+        for assetID in Array(unsavedEditStates.keys) where assetID != alreadyFlushedID {
+            guard let pending = unsavedEditStates[assetID], !loadBlockedAssetIDs.contains(assetID) else { continue }
+            setPersistenceStatus(.saving, for: assetID)
+            persist(pending)
+        }
+    }
+
+    func retryLoadCurrentPhotoEdits() {
+        guard let assetID = selectedAssetID, let asset = assetsByID[assetID] else { return }
+        do {
+            let snapshot = try store.loadEdit(for: asset.url)?.snapshot ?? .neutral
+            loadBlockedAssetIDs.remove(assetID)
+            unsavedEditStates.removeValue(forKey: assetID)
+            editStates[assetID] = snapshot
+            editSnapshot = snapshot
+            setPersistenceStatus(.saved, for: assetID)
+            refreshHistoryAvailability()
+            scheduleRender()
+        } catch {
+            loadBlockedAssetIDs.insert(assetID)
+            setPersistenceStatus(.loadFailed(error.localizedDescription), for: assetID)
+        }
+    }
+
+    @discardableResult
+    func flushPendingChanges() -> Int {
+        finishSliderGesture()
+        let alreadyFlushedID = pendingEditSave?.assetID
+        flushPendingEditSave()
+        for assetID in Array(unsavedEditStates.keys) where assetID != alreadyFlushedID {
+            guard let pending = unsavedEditStates[assetID],
+                  !loadBlockedAssetIDs.contains(assetID)
+            else { continue }
+            persist(pending)
+        }
+        return unsavedEditStates.count
+    }
 
     func reloadLibrary() {
         scanTask?.cancel()
@@ -183,6 +373,7 @@ final class EditorModel: ObservableObject {
         panel.directoryURL = rootURL ?? initialDirectoryHint
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
+        flushPendingChanges()
         scanTask?.cancel()
         loadTask?.cancel()
         renderTask?.cancel()
@@ -214,25 +405,46 @@ final class EditorModel: ObservableObject {
         panel.directoryURL = rootURL ?? initialDirectoryHint
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            let parsed = try ImplicitSecurityScopedAccess.withAccess(to: url) {
-                try XMPPresetParser.parse(url: url)
+            let sourceData = try ImplicitSecurityScopedAccess.withAccess(to: url) {
+                try Data(contentsOf: url)
             }
-            preset = parsed
-            settings = parsed.applying(to: settings)
-            applyApproximateXMPColor = false
-            scheduleRender()
-            let unsupported = parsed.compatibility.filter { $0.level == .unsupported }.count
-            statusMessage = "\(parsed.name)の基本補正を適用しました（未対応 \(unsupported)項目、HSL/カーブ近似はOFF）。"
+            let imported = try store.registerPreset(
+                data: sourceData,
+                name: url.deletingPathExtension().lastPathComponent
+            )
+            try refreshPresetLibrary()
+            applyPreset(imported)
         } catch {
             statusMessage = error.localizedDescription
         }
     }
 
+    func applyPreset(id: String) {
+        guard let stored = presetLibrary.first(where: { $0.id == id }) else { return }
+        applyPreset(stored)
+    }
+
+    func applyXMPReferencePreset() {
+        guard canApplyXMPReferencePreset,
+              let id = editSnapshot.appliedPresetID,
+              let stored = presetLibrary.first(where: { $0.id == id }) else { return }
+        applyPreset(stored)
+    }
+
+    func deletePreset(id: String) {
+        do {
+            try store.deletePreset(id: id)
+            try refreshPresetLibrary()
+            statusMessage = "プリセットを削除しました。適用済みの編集状態は保持されています。"
+        } catch {
+            presetLibraryErrorMessage = error.localizedDescription
+        }
+    }
+
     func resetAdjustments() {
-        settings = .neutral
-        preset = nil
-        applyApproximateXMPColor = false
-        scheduleRender()
+        finishSliderGesture()
+        flushPendingEditSave()
+        mutateEditSnapshot { $0 = .neutral }
         statusMessage = "調整をリセットしました。"
     }
 
@@ -561,31 +773,181 @@ final class EditorModel: ObservableObject {
     }
 
     private var renderSettings: EditSettings {
-        guard !applyApproximateXMPColor else { return settings }
-        var safe = settings
+        guard !editSnapshot.applyApproximateXMPColor else { return editSnapshot.settings }
+        var safe = editSnapshot.settings
         safe.toneCurves = []
         safe.hsl = [:]
         return safe
     }
 
+    private func loadPresetLibrary() {
+        do {
+            let seeds = try bundledPresetSeeds()
+            if !seeds.isEmpty {
+                try store.seedBuiltInPresets(seeds, version: 2)
+            }
+            try refreshPresetLibrary()
+        } catch {
+            presetLibraryErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func bundledPresetSeeds() throws -> [BuiltInPresetSeed] {
+        guard let resourceURL = Bundle.main.resourceURL?.appendingPathComponent("Presets", isDirectory: true),
+              FileManager.default.fileExists(atPath: resourceURL.path)
+        else { return [] }
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: resourceURL,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension.lowercased() == "xmp" }
+        return try urls.sorted { $0.lastPathComponent < $1.lastPathComponent }.map { url in
+            BuiltInPresetSeed(
+                name: url.deletingPathExtension().lastPathComponent,
+                data: try Data(contentsOf: url)
+            )
+        }
+    }
+
+    private func refreshPresetLibrary() throws {
+        presetLibrary = try store.listPresets()
+        presetLibraryErrorMessage = nil
+    }
+
+    private func applyPreset(_ stored: StoredXMPPreset) {
+        guard canEdit else {
+            statusMessage = "プリセットを適用する写真を選択してください。"
+            return
+        }
+        finishSliderGesture()
+        flushPendingEditSave()
+        mutateEditSnapshot {
+            $0 = $0.applying(preset: stored)
+        }
+        let unsupported = stored.preset.compatibility.filter { $0.level == .unsupported }.count
+        let colorApproximation = editSnapshot.applyApproximateXMPColor
+            ? "HSL/カーブ近似を適用中"
+            : "HSL/カーブ近似はOFF"
+        statusMessage = "\(presetDisplayName(for: stored))を適用しました（未対応 \(unsupported)項目、\(colorApproximation)）。"
+    }
+
+    private func mutateEditSnapshot(_ mutation: (inout PhotoEditSnapshot) -> Void) {
+        guard canEdit,
+              let assetID = selectedAssetID,
+              !loadBlockedAssetIDs.contains(assetID)
+        else { return }
+        let before = editSnapshot
+        var updated = before
+        mutation(&updated)
+        guard updated != before, let asset = assetsByID[assetID] else { return }
+
+        editSnapshot = updated
+        editStates[assetID] = updated
+        editHistory.record(before: before, after: updated, for: assetID)
+        refreshHistoryAvailability()
+        markEditDirty(updated, for: asset)
+        scheduleRender()
+    }
+
+    private func restoreSnapshotThroughMutation(_ snapshot: PhotoEditSnapshot, for assetID: String) {
+        guard let asset = assetsByID[assetID], !loadBlockedAssetIDs.contains(assetID) else { return }
+        editSnapshot = snapshot
+        editStates[assetID] = snapshot
+        refreshHistoryAvailability()
+        markEditDirty(snapshot, for: asset)
+        scheduleRender()
+    }
+
+    private func markEditDirty(_ snapshot: PhotoEditSnapshot, for asset: PhotoAsset) {
+        let assetID = asset.id
+        let pending = PendingEditSave(assetID: assetID, photoURL: asset.url, snapshot: snapshot)
+        unsavedEditStates[assetID] = pending
+        pendingEditSave = pending
+        setPersistenceStatus(.saving, for: assetID)
+        guard saveDebounceTask == nil else { return }
+        saveDebounceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(400))
+            } catch {
+                return
+            }
+            guard let self else { return }
+            self.flushPendingEditSave()
+        }
+    }
+
+    private func flushPendingEditSave() {
+        saveDebounceTask?.cancel()
+        saveDebounceTask = nil
+        guard let pendingEditSave else { return }
+        self.pendingEditSave = nil
+        persist(pendingEditSave)
+    }
+
+    private func persist(_ pending: PendingEditSave) {
+        do {
+            try store.saveEdit(pending.snapshot, for: pending.photoURL)
+            editStates[pending.assetID] = pending.snapshot
+            if unsavedEditStates[pending.assetID]?.snapshot == pending.snapshot {
+                unsavedEditStates.removeValue(forKey: pending.assetID)
+            }
+            setPersistenceStatus(.saved, for: pending.assetID)
+        } catch {
+            setPersistenceStatus(.saveFailed(error.localizedDescription), for: pending.assetID)
+        }
+    }
+
+    private func setPersistenceStatus(_ status: EditPersistenceStatus, for assetID: String) {
+        persistenceStatusByAssetID[assetID] = status
+        if selectedAssetID == assetID {
+            persistenceStatus = status
+        }
+    }
+
+    private func refreshHistoryAvailability() {
+        canUndo = editHistory.canUndo(for: selectedAssetID)
+        canRedo = editHistory.canRedo(for: selectedAssetID)
+    }
+
+    private func finishSliderGesture() {
+        guard let assetID = activeSliderGesturePhotoID else { return }
+        let current = editStates[assetID] ?? editSnapshot
+        editHistory.endGroup(for: assetID, at: current)
+        activeSliderGesturePhotoID = nil
+        refreshHistoryAvailability()
+    }
+
     private func saveEditState(for assetID: String?) {
         guard let assetID else { return }
-        editStates[assetID] = SessionEditState(
-            settings: settings,
-            preset: preset,
-            applyApproximateXMPColor: applyApproximateXMPColor
-        )
+        editStates[assetID] = editSnapshot
     }
 
     private func restoreEditState(for assetID: String?) {
-        guard let assetID, let state = editStates[assetID] else {
-            settings = .neutral
-            preset = nil
-            applyApproximateXMPColor = false
+        guard let assetID, let asset = assetsByID[assetID] else {
+            editSnapshot = .neutral
+            persistenceStatus = .idle
+            refreshHistoryAvailability()
             return
         }
-        settings = state.settings
-        preset = state.preset
-        applyApproximateXMPColor = state.applyApproximateXMPColor
+        if let state = editStates[assetID] {
+            editSnapshot = state
+            persistenceStatus = persistenceStatusByAssetID[assetID] ?? .saved
+            refreshHistoryAvailability()
+            return
+        }
+
+        do {
+            let snapshot = try store.loadEdit(for: asset.url)?.snapshot ?? .neutral
+            editStates[assetID] = snapshot
+            persistenceStatusByAssetID[assetID] = .saved
+            persistenceStatus = .saved
+        } catch {
+            let reason = error.localizedDescription
+            loadBlockedAssetIDs.insert(assetID)
+            editStates[assetID] = .neutral
+            persistenceStatusByAssetID[assetID] = .loadFailed(reason)
+            persistenceStatus = .loadFailed(reason)
+        }
+        editSnapshot = editStates[assetID] ?? .neutral
+        refreshHistoryAvailability()
     }
 }
