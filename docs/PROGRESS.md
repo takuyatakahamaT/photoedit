@@ -52,7 +52,7 @@
 | フェーズ | 作業 | 合格条件 |
 |---|---|---|
 | 0 | ~~チェックポイントcommit、bluesky2専用補正の撤去~~（完了）、計測リグ（round0生成・判定は済み）、LRローカルタブのXMP往復確認（オーナーの書き出し待ち） | 往復が確認でき、リグが再現可能 |
-| 1 | RAW基準現像（DCP＋Adobe Color＋ACR既定カーブ＋基準露出）。設計は[PHASE1_BASE_RENDERING.md](PHASE1_BASE_RENDERING.md)。B1（数学・パーサ）実装中 → B2（LibRaw・描画・CLI・アプリ接続） | プリセット無しでLR既定と平均ΔE00 ≤ 2、平均EV差 ≤ 0.05（`compare_renders.py`） |
+| 1 | RAW基準現像（DCP＋Adobe Color＋ACR既定カーブ＋基準露出）。設計は[PHASE1_BASE_RENDERING.md](PHASE1_BASE_RENDERING.md)。B1（数学・パーサ・CPU参照実装）は `781bd49` で完了（テスト17件、Python試作と照合済み）→ B2（LibRaw・3D LUT描画・CLI・アプリ接続）実装中 | プリセット無しでLR既定と平均ΔE00 ≤ 2、平均EV差 ≤ 0.05（`compare_renders.py`） |
 | 2 | 画素単位の色操作（カーブ、HSL、Calibration、Color Grading、Vibrance／Saturation、増分WB） | チャートで操作ごとに平均ΔE00 ≤ 1、p95 ≤ 2.5 |
 | 3 | 空間操作（ハイライト／シャドウ／白／黒／露出の肩／コントラスト→Texture／Clarity／Dehaze） | 未使用の実写で平均 ≤ 2、p95 ≤ 5、局所コントラスト比±10%以内 |
 | 4 | 既定シャープ／NR、レンズ補正、周辺光量・粒子、速度 | 100%表示の解像感がLRと同等 |

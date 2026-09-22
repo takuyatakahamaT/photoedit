@@ -10,14 +10,20 @@ public enum AdobeBaseCalibration {
     /// `UniqueCameraModel` (case-sensitive, matching the DCP's own string)
     /// -> baseline EV in stops.
     ///
-    /// "Panasonic DC-S5": +0.057. Source: 2026-09-22,
-    /// `.photobench/engine-research-20260922/dcp-base-prototype/` --
-    /// against LibRaw 0.21.4's output, fit per-photo against 3 Lightroom-
-    /// default JPEGs (P1013558/P1013207/P1012822), giving +0.058 / +0.041 /
-    /// +0.071 EV; this constant is their mean. The RW2 files carry no
-    /// `BaselineExposure` tag for this camera.
+    /// "Panasonic DC-S5": 0. History (2026-09-22): the Python prototype in
+    /// `.photobench/engine-research-20260922/dcp-base-prototype/` fitted
+    /// +0.058 / +0.041 / +0.071 EV per photo (mean +0.057) against LibRaw
+    /// 0.21.4 output, but that prototype still misread the Adobe Color look
+    /// table and lacked the HueSatMap clamp. With the corrected Swift
+    /// pipeline the same three Lightroom-default JPEGs measured a residual
+    /// of +0.041 / +0.050 / +0.053 EV at 0.057, i.e. the true offset is
+    /// about +0.009 EV -- within the alignment noise of the region-average
+    /// comparison, so it is treated as zero (LibRaw's white normalization
+    /// matches Adobe's scale for this camera). Re-fit only with a
+    /// pixel-aligned comparison after lens correction (phase 4). The RW2
+    /// files carry no `BaselineExposure` tag for this camera.
     private static let baselineEVByModel: [String: Double] = [
-        "Panasonic DC-S5": 0.057,
+        "Panasonic DC-S5": 0.0,
     ]
 
     /// Baseline EV for `uniqueCameraModel`, or 0 for any unknown model.

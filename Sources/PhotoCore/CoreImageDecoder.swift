@@ -87,12 +87,25 @@ public struct DecodedPhoto: @unchecked Sendable {
     public let image: CIImage
     public let metadata: [String: Any]
     public let info: DecodeInfo
+    /// Stage-M (camera RGB -> linear ProPhoto) image and profile assets for
+    /// RAW photos decoded through `LibRawDecoder`; `nil` for every other
+    /// decode path. Unused in phase1 (see `docs/PHASE1_BASE_RENDERING.md`
+    /// B2); phase2/3 insert user edits between `AdobeBaseRenderer`'s stages
+    /// via this handle instead of only after the finished baseline image.
+    public let adobeBase: AdobeBaseRenderer.Handle?
 
-    public init(sourceURL: URL, image: CIImage, metadata: [String: Any], info: DecodeInfo) {
+    public init(
+        sourceURL: URL,
+        image: CIImage,
+        metadata: [String: Any],
+        info: DecodeInfo,
+        adobeBase: AdobeBaseRenderer.Handle? = nil
+    ) {
         self.sourceURL = sourceURL
         self.image = image
         self.metadata = metadata
         self.info = info
+        self.adobeBase = adobeBase
     }
 }
 
@@ -377,7 +390,9 @@ public struct CoreImageDecoder: ImageDecoding {
         return (make, model)
     }
 
-    private static func readMetadata(url: URL) -> [String: Any] {
+    /// Internal (not `private`) so `LibRawDecoder` can reuse the same EXIF/TIFF
+    /// read for RAW photos it decodes without going through `CIRAWFilter`.
+    static func readMetadata(url: URL) -> [String: Any] {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]
         else { return [:] }

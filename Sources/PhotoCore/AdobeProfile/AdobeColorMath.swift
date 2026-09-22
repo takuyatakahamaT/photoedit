@@ -99,9 +99,12 @@ public struct AdobeBaseAssets: Sendable {
     ///   - variant: `.sdkCameraWhite` (the default) is the DNG-SDK-faithful
     ///     reading; `.matchPrototype` reproduces the Python prototype's
     ///     simplification exactly (fixture-parity / regression use only).
+    ///   - baselineEV: overrides `AdobeBaseCalibration` (fixture parity and
+    ///     calibration experiments); `nil` uses the per-camera table.
     public init(
         dcp: DCPProfile, look: AdobeLookXMP, neutralG1: SIMD3<Double>,
-        variant: ColorSpecVariant = .sdkCameraWhite
+        variant: ColorSpecVariant = .sdkCameraWhite,
+        baselineEV: Double? = nil
     ) throws {
         guard let colorMatrix1 = dcp.colorMatrix1, let colorMatrix2 = dcp.colorMatrix2 else {
             throw AdobeColorMathError.missingColorMatrix
@@ -132,7 +135,7 @@ public struct AdobeBaseAssets: Sendable {
         self.toneCurveSpline = try DNGSpline(
             points: look.toneCurvePoints.map { (x: $0.x / 255.0, y: $0.y / 255.0) }
         )
-        self.baselineEV = AdobeBaseCalibration.baselineEV(uniqueCameraModel: dcp.uniqueCameraModel)
+        self.baselineEV = baselineEV ?? AdobeBaseCalibration.baselineEV(uniqueCameraModel: dcp.uniqueCameraModel)
         self.whiteXY = whiteXY
         self.temperatureKelvin = DNGTemperature.xyToTemperature(whiteXY)
         self.gFraction = spec.gFraction(white: whiteXY)

@@ -94,7 +94,7 @@ final class EditorModel: ObservableObject {
     @Published private(set) var directDroppedCount = 0
     @Published private(set) var statusMessage = "写真フォルダを読み込んでいます…"
 
-    private let decoder = CoreImageDecoder()
+    private let decoder = PhotoDecoder()
     private let renderCoordinator = RenderCoordinator()
     private let initialDirectoryHint: URL
     private let folderAccess: FolderAccessCoordinator

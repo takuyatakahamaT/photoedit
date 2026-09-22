@@ -246,7 +246,12 @@ struct AdobeProfileTests {
         // correction), so this specific fixture requires `.matchPrototype`
         // to line up; `colorSpecMatchesFixtureForAllPhotos` above already
         // separately validates `.sdkCameraWhite`.
-        let assets = try AdobeBaseAssets(dcp: dcp, look: look, neutralG1: neutralG1, variant: .matchPrototype)
+        // The fixture was generated with the prototype's +0.057 EV; the
+        // production calibration table has since moved to 0, so pin the
+        // fixture's own value here instead of the table's.
+        let assets = try AdobeBaseAssets(
+            dcp: dcp, look: look, neutralG1: neutralG1, variant: .matchPrototype, baselineEV: stageFx.baseline_ev
+        )
         expectApproxEqual(assets.baselineEV, stageFx.baseline_ev, relTol: 1e-9, absTol: 1e-12, "baselineEV")
 
         for (index, sample) in stageFx.samples.enumerated() {
@@ -451,7 +456,7 @@ struct AdobeProfileTests {
 
     @Test func adobeBaseCalibrationKnownAndUnknownModels() {
         expectApproxEqual(
-            AdobeBaseCalibration.baselineEV(uniqueCameraModel: "Panasonic DC-S5"), 0.057,
+            AdobeBaseCalibration.baselineEV(uniqueCameraModel: "Panasonic DC-S5"), 0.0,
             relTol: 1e-9, absTol: 1e-12, "DC-S5 baselineEV"
         )
         #expect(AdobeBaseCalibration.baselineEV(uniqueCameraModel: "Some Unknown Camera") == 0.0)

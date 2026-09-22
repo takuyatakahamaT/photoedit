@@ -20,11 +20,24 @@ let package = Package(
             name: "PhotoBenchWhiteBalanceObservation",
             targets: ["PhotoBenchWhiteBalanceObservation"]
         ),
-        .executable(name: "PhotoBenchBenchmark", targets: ["PhotoBenchBenchmark"])
+        .executable(name: "PhotoBenchBenchmark", targets: ["PhotoBenchBenchmark"]),
+        .executable(name: "photobench-render", targets: ["PhotoBenchRender"])
     ],
     targets: [
+        .systemLibrary(
+            name: "CLibRaw",
+            path: "Sources/CLibRaw",
+            pkgConfig: "libraw_r",
+            providers: [.brew(["libraw"])]
+        ),
+        .target(
+            name: "CLibRawShim",
+            dependencies: ["CLibRaw"],
+            path: "Sources/CLibRawShim"
+        ),
         .target(
             name: "PhotoCore",
+            dependencies: ["CLibRawShim"],
             path: "Sources/PhotoCore"
         ),
         .target(
@@ -57,9 +70,14 @@ let package = Package(
             dependencies: ["PhotoCore", "PhotoBenchCalibrationSupport"],
             path: "Sources/PhotoBenchBenchmark"
         ),
+        .executableTarget(
+            name: "PhotoBenchRender",
+            dependencies: ["PhotoCore"],
+            path: "Sources/PhotoBenchRender"
+        ),
         .testTarget(
             name: "PhotoCoreTests",
-            dependencies: ["PhotoCore"],
+            dependencies: ["PhotoCore", "CLibRawShim"],
             path: "Tests/PhotoCoreTests"
         ),
         .testTarget(

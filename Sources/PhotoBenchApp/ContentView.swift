@@ -360,6 +360,11 @@ struct ContentView: View {
                             if let cameraModel = info.cameraModel {
                                 LabeledContent("カメラ", value: cameraModel)
                             }
+                            if info.isRAW {
+                                LabeledContent("現像", value: info.backend.hasPrefix("LibRaw")
+                                    ? "Adobe Standard + Adobe Color（LibRaw）"
+                                    : "Core Image（プロファイル未検出）")
+                            }
                             if let calibrationLabel = info.calibrationLabel, info.isRAW {
                                 LabeledContent("RAW基準", value: calibrationLabel)
                             }
