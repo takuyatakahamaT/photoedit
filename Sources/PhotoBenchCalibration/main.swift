@@ -2,6 +2,7 @@ import CoreImage
 import Darwin
 import Foundation
 import ImageIO
+import Metal
 import PhotoBenchCalibrationSupport
 import PhotoCore
 
@@ -169,72 +170,76 @@ enum PhotoBenchCalibration {
             let beforeURL = try loaded.resolve(scene.lightroomBefore.path)
             let afterURL = try loaded.resolve(scene.lightroomAfter.path)
             for (label, sourceURL) in [("before", beforeURL), ("after", afterURL)] {
-                let decoded = try CoreImageDecoder().decode(url: sourceURL)
-                try validateLightroomReference(decoded, scene: scene, manifest: manifest)
-                let destination = try CalibrationManifestLoader.prepareOutputFile(
-                    named: "\(scene.id)-lightroom-\(label).tif",
-                    in: referenceDirectory,
-                    inside: loaded.root
-                )
-                let milliseconds = try renderer.exportTIFF(
-                    decoded: decoded,
-                    settings: .neutral,
-                    destination: destination,
-                    maxDimension: CGFloat(manifest.comparison.maxDimension),
-                    outputTransformPlacement: outputTransformPlacement
-                )
-                let artifact = try makeArtifact(
-                    role: "normalized-reference-\(label)",
-                    sceneID: scene.id,
-                    route: nil,
-                    candidateGroup: nil,
-                    candidateID: nil,
-                    label: nil,
-                    destination: destination,
-                    root: loaded.root,
-                    milliseconds: milliseconds,
-                    settings: .neutral,
-                    settingsSHA256: neutralHash
-                )
-                artifacts.append(artifact)
-                printTiming(artifact)
+                try autoreleasepool {
+                    let decoded = try CoreImageDecoder().decode(url: sourceURL)
+                    try validateLightroomReference(decoded, scene: scene, manifest: manifest)
+                    let destination = try CalibrationManifestLoader.prepareOutputFile(
+                        named: "\(scene.id)-lightroom-\(label).tif",
+                        in: referenceDirectory,
+                        inside: loaded.root
+                    )
+                    let milliseconds = try renderer.exportTIFF(
+                        decoded: decoded,
+                        settings: .neutral,
+                        destination: destination,
+                        maxDimension: CGFloat(manifest.comparison.maxDimension),
+                        outputTransformPlacement: outputTransformPlacement
+                    )
+                    let artifact = try makeArtifact(
+                        role: "normalized-reference-\(label)",
+                        sceneID: scene.id,
+                        route: nil,
+                        candidateGroup: nil,
+                        candidateID: nil,
+                        label: nil,
+                        destination: destination,
+                        root: loaded.root,
+                        milliseconds: milliseconds,
+                        settings: .neutral,
+                        settingsSHA256: neutralHash
+                    )
+                    artifacts.append(artifact)
+                    printTiming(artifact)
+                }
             }
         }
 
         for scene in manifest.scenes {
             let rawURL = try loaded.resolve(scene.raw.path)
             for amount in manifest.diagnostics.boostAmounts {
-                let configuration = RAWDecodeConfiguration(boostAmount: Float(amount))
-                let decoded = try CoreImageDecoder(rawConfiguration: configuration).decode(url: rawURL)
-                try validateRAW(decoded, scene: scene, manifest: manifest, requireProfile: false)
-                let label = threeDigitLabel(amount)
-                let destination = try CalibrationManifestLoader.prepareOutputFile(
-                    named: "\(scene.id)-boost-\(label).tif",
-                    in: renderDirectory,
-                    inside: loaded.root
-                )
-                let milliseconds = try renderer.exportTIFF(
-                    decoded: decoded,
-                    settings: .neutral,
-                    destination: destination,
-                    maxDimension: CGFloat(manifest.comparison.maxDimension),
-                    outputTransformPlacement: outputTransformPlacement
-                )
-                let artifact = try makeArtifact(
-                    role: "diagnostic-candidate",
-                    sceneID: scene.id,
-                    route: "raw",
-                    candidateGroup: "boost",
-                    candidateID: label,
-                    label: "boost-\(label)",
-                    destination: destination,
-                    root: loaded.root,
-                    milliseconds: milliseconds,
-                    settings: .neutral,
-                    settingsSHA256: neutralHash
-                )
-                artifacts.append(artifact)
-                printTiming(artifact)
+                try autoreleasepool {
+                    let configuration = RAWDecodeConfiguration(boostAmount: Float(amount))
+                    let decoded = try CoreImageDecoder(rawConfiguration: configuration).decode(url: rawURL)
+                    try validateRAW(decoded, scene: scene, manifest: manifest, requireProfile: false)
+                    let label = threeDigitLabel(amount)
+                    let destination = try CalibrationManifestLoader.prepareOutputFile(
+                        named: "\(scene.id)-boost-\(label).tif",
+                        in: renderDirectory,
+                        inside: loaded.root
+                    )
+                    let milliseconds = try renderer.exportTIFF(
+                        decoded: decoded,
+                        settings: .neutral,
+                        destination: destination,
+                        maxDimension: CGFloat(manifest.comparison.maxDimension),
+                        outputTransformPlacement: outputTransformPlacement
+                    )
+                    let artifact = try makeArtifact(
+                        role: "diagnostic-candidate",
+                        sceneID: scene.id,
+                        route: "raw",
+                        candidateGroup: "boost",
+                        candidateID: label,
+                        label: "boost-\(label)",
+                        destination: destination,
+                        root: loaded.root,
+                        milliseconds: milliseconds,
+                        settings: .neutral,
+                        settingsSHA256: neutralHash
+                    )
+                    artifacts.append(artifact)
+                    printTiming(artifact)
+                }
             }
         }
 
@@ -251,64 +256,68 @@ enum PhotoBenchCalibration {
         for scene in manifest.scenes {
             let rawURL = try loaded.resolve(scene.raw.path)
             for amount in manifest.diagnostics.extendedDynamicRangeAmounts {
-                let configuration = RAWDecodeConfiguration(
-                    boostAmount: Float(manifest.rawProfile.boostAmount),
-                    extendedDynamicRangeAmount: Float(amount)
-                )
-                let decoded = try CoreImageDecoder(rawConfiguration: configuration).decode(url: rawURL)
-                try validateRAW(decoded, scene: scene, manifest: manifest, requireProfile: false)
-                let edrLabel = threeDigitLabel(amount)
-                let headroom = try extendedHeadroomSummary(decoded: decoded)
-                headroomRecords.append(
-                    EDRHeadroomRecord(
-                        sceneID: scene.id,
-                        amount: amount,
-                        maximumChannel: Double(headroom.maximumChannel),
-                        extendedChannelPixelFraction: headroom.extendedChannelPixelFraction,
-                        maximumLuminance: Double(headroom.maximumLuminance),
-                        extendedLuminancePixelFraction: headroom.extendedLuminancePixelFraction
+                try autoreleasepool {
+                    let configuration = RAWDecodeConfiguration(
+                        boostAmount: Float(manifest.rawProfile.boostAmount),
+                        extendedDynamicRangeAmount: Float(amount)
                     )
-                )
-                print(
-                    "\(scene.id)-edr-\(edrLabel) RAW headroom: "
-                        + "max channel=\(String(format: "%.5f", headroom.maximumChannel)), "
-                        + "channel >1=\(String(format: "%.5f%%", headroom.extendedChannelPixelFraction * 100)), "
-                        + "max Y=\(String(format: "%.5f", headroom.maximumLuminance)), "
-                        + "Y >1=\(String(format: "%.5f%%", headroom.extendedLuminancePixelFraction * 100))"
-                )
-                let candidates: [(id: String, label: String, settings: EditSettings, hash: String)] = [
-                    ("neutral", "edr-\(edrLabel)", .neutral, neutralHash),
-                    ("basic-legacy", "xmp-basic-edr-\(edrLabel)", basicSettings, basicHash),
-                    ("full-current", "xmp-full-edr-\(edrLabel)", fullSettings, fullHash)
-                ]
-                for candidate in candidates {
-                    let destination = try CalibrationManifestLoader.prepareOutputFile(
-                        named: "\(scene.id)-\(candidate.label).tif",
-                        in: renderDirectory,
-                        inside: loaded.root
+                    let decoded = try CoreImageDecoder(rawConfiguration: configuration).decode(url: rawURL)
+                    try validateRAW(decoded, scene: scene, manifest: manifest, requireProfile: false)
+                    let edrLabel = threeDigitLabel(amount)
+                    let headroom = try extendedHeadroomSummary(decoded: decoded)
+                    headroomRecords.append(
+                        EDRHeadroomRecord(
+                            sceneID: scene.id,
+                            amount: amount,
+                            maximumChannel: Double(headroom.maximumChannel),
+                            extendedChannelPixelFraction: headroom.extendedChannelPixelFraction,
+                            maximumLuminance: Double(headroom.maximumLuminance),
+                            extendedLuminancePixelFraction: headroom.extendedLuminancePixelFraction
+                        )
                     )
-                    let milliseconds = try renderer.exportTIFF(
-                        decoded: decoded,
-                        settings: candidate.settings,
-                        destination: destination,
-                        maxDimension: CGFloat(manifest.comparison.maxDimension),
-                        outputTransformPlacement: outputTransformPlacement
+                    print(
+                        "\(scene.id)-edr-\(edrLabel) RAW headroom: "
+                            + "max channel=\(String(format: "%.5f", headroom.maximumChannel)), "
+                            + "channel >1=\(String(format: "%.5f%%", headroom.extendedChannelPixelFraction * 100)), "
+                            + "max Y=\(String(format: "%.5f", headroom.maximumLuminance)), "
+                            + "Y >1=\(String(format: "%.5f%%", headroom.extendedLuminancePixelFraction * 100))"
                     )
-                    let artifact = try makeArtifact(
-                        role: "diagnostic-candidate",
-                        sceneID: scene.id,
-                        route: "raw",
-                        candidateGroup: "edr",
-                        candidateID: candidate.id,
-                        label: candidate.label,
-                        destination: destination,
-                        root: loaded.root,
-                        milliseconds: milliseconds,
-                        settings: candidate.settings,
-                        settingsSHA256: candidate.hash
-                    )
-                    artifacts.append(artifact)
-                    printTiming(artifact)
+                    let candidates: [(id: String, label: String, settings: EditSettings, hash: String)] = [
+                        ("neutral", "edr-\(edrLabel)", .neutral, neutralHash),
+                        ("basic-legacy", "xmp-basic-edr-\(edrLabel)", basicSettings, basicHash),
+                        ("full-current", "xmp-full-edr-\(edrLabel)", fullSettings, fullHash)
+                    ]
+                    for candidate in candidates {
+                        try autoreleasepool {
+                            let destination = try CalibrationManifestLoader.prepareOutputFile(
+                                named: "\(scene.id)-\(candidate.label).tif",
+                                in: renderDirectory,
+                                inside: loaded.root
+                            )
+                            let milliseconds = try renderer.exportTIFF(
+                                decoded: decoded,
+                                settings: candidate.settings,
+                                destination: destination,
+                                maxDimension: CGFloat(manifest.comparison.maxDimension),
+                                outputTransformPlacement: outputTransformPlacement
+                            )
+                            let artifact = try makeArtifact(
+                                role: "diagnostic-candidate",
+                                sceneID: scene.id,
+                                route: "raw",
+                                candidateGroup: "edr",
+                                candidateID: candidate.id,
+                                label: candidate.label,
+                                destination: destination,
+                                root: loaded.root,
+                                milliseconds: milliseconds,
+                                settings: candidate.settings,
+                                settingsSHA256: candidate.hash
+                            )
+                            artifacts.append(artifact)
+                            printTiming(artifact)
+                        }
+                    }
                 }
             }
         }
@@ -355,24 +364,26 @@ enum PhotoBenchCalibration {
                     )
                 )
                 for stage in parityStages {
-                    let artifact = try renderPreviewParityArtifact(
-                        decoded: rawDecoded,
-                        sceneID: scene.id,
-                        stageID: stage.stageID,
-                        suffix: parityPlan.baselineArtifactSuffix,
-                        role: "preview-parity-baseline",
-                        route: "preview-parity-full-resolution",
-                        settings: stage.settings,
-                        settingsHash: stage.settingsHash,
-                        outputMaxDimension: parityPlan.outputMaxDimension,
-                        downsamplingFilter: parityPlan.downsamplingFilter,
-                        outputTransformPlacement: parityPlan.outputTransformPlacement,
-                        renderer: renderer,
-                        renderDirectory: renderDirectory,
-                        root: loaded.root
-                    )
-                    artifacts.append(artifact)
-                    printTiming(artifact)
+                    try autoreleasepool {
+                        let artifact = try renderPreviewParityArtifact(
+                            decoded: rawDecoded,
+                            sceneID: scene.id,
+                            stageID: stage.stageID,
+                            suffix: parityPlan.baselineArtifactSuffix,
+                            role: "preview-parity-baseline",
+                            route: "preview-parity-full-resolution",
+                            settings: stage.settings,
+                            settingsHash: stage.settingsHash,
+                            outputMaxDimension: parityPlan.outputMaxDimension,
+                            downsamplingFilter: parityPlan.downsamplingFilter,
+                            outputTransformPlacement: parityPlan.outputTransformPlacement,
+                            renderer: renderer,
+                            renderDirectory: renderDirectory,
+                            root: loaded.root
+                        )
+                        artifacts.append(artifact)
+                        printTiming(artifact)
+                    }
                 }
 
                 // Decode and materialize one candidate at a time. Keeping both RAW
@@ -400,24 +411,26 @@ enum PhotoBenchCalibration {
                             )
                         )
                         for stage in parityStages {
-                            let artifact = try renderPreviewParityArtifact(
-                                decoded: previewDecoded,
-                                sceneID: scene.id,
-                                stageID: stage.stageID,
-                                suffix: candidate.artifactSuffix,
-                                role: "preview-parity-candidate",
-                                route: candidate.decodeRoute,
-                                settings: stage.settings,
-                                settingsHash: stage.settingsHash,
-                                outputMaxDimension: parityPlan.outputMaxDimension,
-                                downsamplingFilter: parityPlan.downsamplingFilter,
-                                outputTransformPlacement: parityPlan.outputTransformPlacement,
-                                renderer: renderer,
-                                renderDirectory: renderDirectory,
-                                root: loaded.root
-                            )
-                            artifacts.append(artifact)
-                            printTiming(artifact)
+                            try autoreleasepool {
+                                let artifact = try renderPreviewParityArtifact(
+                                    decoded: previewDecoded,
+                                    sceneID: scene.id,
+                                    stageID: stage.stageID,
+                                    suffix: candidate.artifactSuffix,
+                                    role: "preview-parity-candidate",
+                                    route: candidate.decodeRoute,
+                                    settings: stage.settings,
+                                    settingsHash: stage.settingsHash,
+                                    outputMaxDimension: parityPlan.outputMaxDimension,
+                                    downsamplingFilter: parityPlan.downsamplingFilter,
+                                    outputTransformPlacement: parityPlan.outputTransformPlacement,
+                                    renderer: renderer,
+                                    renderDirectory: renderDirectory,
+                                    root: loaded.root
+                                )
+                                artifacts.append(artifact)
+                                printTiming(artifact)
+                            }
                         }
                     }
                 }
@@ -434,33 +447,35 @@ enum PhotoBenchCalibration {
                         ("raw", rawDecoded, definition.rawLabel),
                         ("lr-input", lightroomDecoded, definition.lightroomInputLabel)
                     ] {
-                        let destination = try CalibrationManifestLoader.prepareOutputFile(
-                            named: "\(scene.id)-\(label).tif",
-                            in: renderDirectory,
-                            inside: loaded.root
-                        )
-                        let milliseconds = try renderer.exportTIFF(
-                            decoded: decoded,
-                            settings: settings,
-                            destination: destination,
-                            maxDimension: CGFloat(manifest.comparison.maxDimension),
-                            outputTransformPlacement: outputTransformPlacement
-                        )
-                        let artifact = try makeArtifact(
-                            role: "comparison-candidate",
-                            sceneID: scene.id,
-                            route: route,
-                            candidateGroup: group.name,
-                            candidateID: definition.id,
-                            label: label,
-                            destination: destination,
-                            root: loaded.root,
-                            milliseconds: milliseconds,
-                            settings: settings,
-                            settingsSHA256: settingsHash
-                        )
-                        artifacts.append(artifact)
-                        printTiming(artifact)
+                        try autoreleasepool {
+                            let destination = try CalibrationManifestLoader.prepareOutputFile(
+                                named: "\(scene.id)-\(label).tif",
+                                in: renderDirectory,
+                                inside: loaded.root
+                            )
+                            let milliseconds = try renderer.exportTIFF(
+                                decoded: decoded,
+                                settings: settings,
+                                destination: destination,
+                                maxDimension: CGFloat(manifest.comparison.maxDimension),
+                                outputTransformPlacement: outputTransformPlacement
+                            )
+                            let artifact = try makeArtifact(
+                                role: "comparison-candidate",
+                                sceneID: scene.id,
+                                route: route,
+                                candidateGroup: group.name,
+                                candidateID: definition.id,
+                                label: label,
+                                destination: destination,
+                                root: loaded.root,
+                                milliseconds: milliseconds,
+                                settings: settings,
+                                settingsSHA256: settingsHash
+                            )
+                            artifacts.append(artifact)
+                            printTiming(artifact)
+                        }
                     }
                 }
             }
@@ -1249,10 +1264,18 @@ enum PhotoBenchCalibration {
         return (width, height)
     }
 
+    /// Printed after every artifact so a run log shows whether GPU memory
+    /// stays flat. Each render sits in its own `autoreleasepool`; without
+    /// one, a 24 MP render left about 367 MB of Metal allocation behind until
+    /// the whole run ended.
+    private static let metalDevice = MTLCreateSystemDefaultDevice()
+
     private static func printTiming(_ artifact: CalibrationArtifact) {
+        let allocatedMegabytes = (metalDevice?.currentAllocatedSize ?? 0) / 1_048_576
         print(
             "\(URL(fileURLWithPath: artifact.path).lastPathComponent): "
-                + "\(String(format: "%.1f", artifact.renderAndEncodeMilliseconds)) ms"
+                + "\(String(format: "%.1f", artifact.renderAndEncodeMilliseconds)) ms, "
+                + "Metal allocated \(allocatedMegabytes) MB"
         )
     }
 
