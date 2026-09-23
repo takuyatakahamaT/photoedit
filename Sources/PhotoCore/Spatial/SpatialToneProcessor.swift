@@ -90,8 +90,15 @@ public enum SpatialToneProcessor {
 
     /// `scalePx` should already be `SpatialToneOps.scalePx(forLongEdge:)` of
     /// the image `image` is (the caller's own long edge, at whatever
-    /// resolution it is actually processing).
-    public static func apply(to image: CIImage, highlights: Double, shadows: Double, scalePx: Double) throws -> CIImage {
+    /// resolution it is actually processing). `texture`/`clarity` (Phase2
+    /// C4) default to `0` so pre-C4 call sites keep compiling unchanged; see
+    /// `SpatialToneOps.applyHighlightsShadows`'s doc comment for why
+    /// chaining all four into one `Ln` pass with a single final ratio is
+    /// exact, not an approximation.
+    public static func apply(
+        to image: CIImage, highlights: Double, shadows: Double, scalePx: Double,
+        texture: Double = 0, clarity: Double = 0
+    ) throws -> CIImage {
         diagnosticsLock.lock()
         applyCallCount += 1
         let callIndex = applyCallCount
@@ -108,10 +115,15 @@ public enum SpatialToneProcessor {
 
         guard let device = MTLCreateSystemDefaultDevice() else {
             diagnosticsLock.lock(); cpuFallbackCallCount += 1; diagnosticsLock.unlock()
-            return try applyCPUFallback(to: image, highlights: highlights, shadows: shadows, scalePx: scalePx)
+            return try applyCPUFallback(
+                to: image, highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity
+            )
         }
         diagnosticsLock.lock(); gpuCallCount += 1; diagnosticsLock.unlock()
-        return try applyGPU(device: device, to: image, highlights: highlights, shadows: shadows, scalePx: scalePx)
+        return try applyGPU(
+            device: device, to: image, highlights: highlights, shadows: shadows, scalePx: scalePx,
+            texture: texture, clarity: clarity
+        )
     }
 
     // MARK: - GPU path: one explicit command buffer, no custom kernel
@@ -127,7 +139,8 @@ public enum SpatialToneProcessor {
     static let needsVerticalFlipAfterRoundTrip = false
 
     private static func applyGPU(
-        device: MTLDevice, to image: CIImage, highlights: Double, shadows: Double, scalePx: Double
+        device: MTLDevice, to image: CIImage, highlights: Double, shadows: Double, scalePx: Double,
+        texture: Double, clarity: Double
     ) throws -> CIImage {
         let resources = try metalResources(for: device)
 
@@ -209,6 +222,19 @@ public enum SpatialToneProcessor {
                 sigmaR: SpatialToneOps.shadowsParams.sigmaR,
                 levels: levelsS
             )
+        }
+        if texture != 0 {
+            let gains = SpatialToneOps.gainProfile(
+                amount: texture, pos: SpatialToneOps.textureGain60Pos, neg: SpatialToneOps.textureGain60Neg, levelsTotal: levelsH
+            )
+            currentLn = applyMultiscaleGainGPU(encoder: encoder, resources: resources, allocator: allocator, ln: currentLn, gains: gains)
+        }
+        if clarity != 0 {
+            let levelsC = levelsH + SpatialToneOps.clarityLevelOffset
+            let gains = SpatialToneOps.gainProfile(
+                amount: clarity, pos: SpatialToneOps.clarityGain60Pos, neg: SpatialToneOps.clarityGain60Neg, levelsTotal: levelsC
+            )
+            currentLn = applyMultiscaleGainGPU(encoder: encoder, resources: resources, allocator: allocator, ln: currentLn, gains: gains)
         }
 
         // Not pooled: this texture escapes into the returned `CIImage` and
@@ -310,6 +336,28 @@ public enum SpatialToneProcessor {
         var lapFull = acc
         lapFull.append(baseFinal)
         return reconstruct(encoder: encoder, resources: resources, allocator: allocator, lap: lapFull)
+    }
+
+    /// `SpatialToneOps.applyMultiscaleGain`'s GPU counterpart (Phase2 C4
+    /// Texture/Clarity2012 "Model L"): a purely linear filter, no remap or
+    /// discretization sweep -- reuses the exact same `gaussianPyramid`/
+    /// `laplacianPyramid`/`reconstruct` helpers Highlights/Shadows use, with
+    /// one new primitive (`spatialMultiplyScalar`) multiplying each band
+    /// (every detail level **and** the coarsest base) by its own gain.
+    private static func applyMultiscaleGainGPU(
+        encoder: MTLComputeCommandEncoder, resources: MetalResources, allocator: TextureAllocator,
+        ln: MTLTexture, gains: [Double]
+    ) -> MTLTexture {
+        let levels = gains.count - 1
+        guard levels > 0 else { return ln }
+        let g = gaussianPyramid(encoder: encoder, resources: resources, allocator: allocator, base: ln, levels: levels)
+        var lap = laplacianPyramid(encoder: encoder, resources: resources, allocator: allocator, g: g)
+        for i in 0..<lap.count {
+            let scaled = allocator.plane(width: lap[i].width, height: lap[i].height)
+            runMultiplyScalar(encoder: encoder, resources: resources, src: lap[i], dst: scaled, scalar: gains[i])
+            lap[i] = scaled
+        }
+        return reconstruct(encoder: encoder, resources: resources, allocator: allocator, lap: lap)
     }
 
     private static func gaussianPyramid(
@@ -465,6 +513,15 @@ public enum SpatialToneProcessor {
         dispatch(encoder, width: dst.width, height: dst.height)
     }
 
+    private static func runMultiplyScalar(encoder: MTLComputeCommandEncoder, resources: MetalResources, src: MTLTexture, dst: MTLTexture, scalar: Double) {
+        encoder.setComputePipelineState(resources.pipeline("spatialMultiplyScalar"))
+        encoder.setTexture(src, index: 0)
+        encoder.setTexture(dst, index: 1)
+        var scalarF = Float(scalar)
+        encoder.setBytes(&scalarF, length: MemoryLayout<Float>.size, index: 0)
+        dispatch(encoder, width: dst.width, height: dst.height)
+    }
+
     private static func runRemap(
         encoder: MTLComputeCommandEncoder, resources: MetalResources,
         ln: MTLTexture, out: MTLTexture, g0Buffer: MTLBuffer, k: Int, sigmaR: Double, alpha: Double, beta: Double
@@ -544,7 +601,8 @@ public enum SpatialToneProcessor {
     /// directly, and rebuilds a fresh `CIImage` -- the same shape as the GPU
     /// path's single round trip, just entirely on the CPU.
     private static func applyCPUFallback(
-        to image: CIImage, highlights: Double, shadows: Double, scalePx: Double
+        to image: CIImage, highlights: Double, shadows: Double, scalePx: Double,
+        texture: Double = 0, clarity: Double = 0
     ) throws -> CIImage {
         let extent = image.extent.integral
         guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else {
@@ -569,7 +627,7 @@ public enum SpatialToneProcessor {
                     inputBase: inRaw.baseAddress!, inputBytesPerRow: bytesPerRow, inputWidth: width, inputHeight: height,
                     outputBase: outRaw.baseAddress!, outputBytesPerRow: bytesPerRow,
                     outputWidth: width, outputHeight: height, offsetX: 0, offsetY: 0,
-                    highlights: highlights, shadows: shadows, scalePx: scalePx
+                    highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity
                 )
             }
         }
@@ -608,7 +666,9 @@ public enum SpatialToneProcessor {
         offsetY: Int,
         highlights: Double,
         shadows: Double,
-        scalePx: Double
+        scalePx: Double,
+        texture: Double = 0,
+        clarity: Double = 0
     ) throws {
         guard inputWidth > 0, inputHeight > 0 else { throw ProcessorError.outputConstructionFailed }
         guard offsetX >= 0, offsetY >= 0,
@@ -635,7 +695,7 @@ public enum SpatialToneProcessor {
 
         let resultStraight = SpatialToneOps.applyHighlightsShadows(
             rgb: rgb, width: inputWidth, height: inputHeight,
-            highlights: highlights, shadows: shadows, scalePx: scalePx
+            highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity
         )
 
         for y in 0..<outputHeight {

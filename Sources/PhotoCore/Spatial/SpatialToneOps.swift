@@ -20,9 +20,12 @@ public enum SpatialToneOps {
 
     /// Whether `settings` would do anything other than pass its input through
     /// unchanged -- mirrors every other Phase2 op's own `needsXxx` gate
-    /// (`ToneOps.needsPostOps`, `ColorOps.needsColorOps`).
+    /// (`ToneOps.needsPostOps`, `ColorOps.needsColorOps`). Phase2 C4 added
+    /// Texture/Clarity2012 to this same Ln chain (see `applyHighlightsShadows`'s
+    /// doc comment), so they gate it too; Dehaze does not -- it has no
+    /// spatial component (`ToneOps.dehaze`, baked into cube P/P1 instead).
     public static func needsSpatial(_ settings: EditSettings) -> Bool {
-        settings.highlights != 0 || settings.shadows != 0
+        settings.highlights != 0 || settings.shadows != 0 || settings.texture != 0 || settings.clarity != 0
     }
 
     /// `spatial_model_v2.py` was fit at a 1500x1000 analysis resolution with
@@ -288,6 +291,123 @@ public enum SpatialToneOps {
         return x
     }
 
+    // MARK: - Texture / Clarity2012 (Phase2 C4, `detail_model.py`'s "Model L")
+
+    /// Verbatim from `.photobench/phase2/detail/detail_model.py`'s
+    /// `TEXTURE_GAIN_60`/`CLARITY_GAIN_60`: 9 measured per-Laplacian-level
+    /// gains (level 0 = finest detail .. level 8 = coarsest measured base),
+    /// from a least-squares fit of `detail_edited ~= k_l * detail_neutral`
+    /// per level, pooled over 3 real photos at `Texture`/`Clarity2012` =
+    /// ±60. Unlike Highlights/Shadows' additive log2-luminance gain curve,
+    /// this is a *multiplicative* gain applied directly to each Laplacian
+    /// band (`applyMultiscaleGain`) -- no remapping/discretization sweep at
+    /// all (`model.md`'s "Model L", chosen over the fitted local-Laplacian
+    /// "Model N" because it was at least as accurate and far cheaper).
+    static let textureGain60Neg: [Double] = [
+        0.8567, 0.8955, 0.9436, 0.9797, 0.9951, 0.9996, 1.0005, 1.0008, 0.9982
+    ]
+    static let textureGain60Pos: [Double] = [
+        1.1616, 1.1282, 1.0704, 1.0265, 1.0074, 1.0015, 1.0007, 1.0004, 1.0031
+    ]
+    static let clarityGain60Neg: [Double] = [
+        0.8517, 0.8534, 0.8603, 0.8787, 0.9153, 0.9696, 1.0039, 1.0177, 0.9972
+    ]
+    static let clarityGain60Pos: [Double] = [
+        1.3641, 1.3005, 1.2463, 1.203, 1.1634, 1.1203, 1.0776, 1.0456, 1.0155
+    ]
+    /// `CLARITY_LEVEL_OFFSET`: Clarity's measured effect reaches a visibly
+    /// broader spatial scale than Texture's (chart period > 150px, real-photo
+    /// levels 7-8 still non-1.0), so Clarity always uses a pyramid 3 levels
+    /// deeper than the same `scalePx` would give Texture/Highlights --
+    /// opposite sign from Shadows' `shadowsLevelsOffset` (Clarity goes
+    /// *deeper* than the Texture/Highlights baseline, Shadows shallower).
+    static let clarityLevelOffset = 3
+
+    /// `_gain_profile`: `n_levels_total + 1` per-level gains (index
+    /// `levels_total` is the coarsest base). `amount == 0` is the identity
+    /// (`ones`); otherwise `(table[key] - 1)` is scaled by `|amount| / 60`
+    /// (exact at the measured ±60) and added back to 1. The 9 measured
+    /// levels are truncated if fewer are needed, or the last (~1.0, already
+    /// near-identity) value is repeated to fill any additional levels a
+    /// larger `scalePx`/Clarity's offset asks for.
+    static func gainProfile(amount: Double, pos: [Double], neg: [Double], levelsTotal: Int) -> [Double] {
+        let n = levelsTotal + 1
+        guard amount != 0 else { return [Double](repeating: 1.0, count: n) }
+        let table = amount > 0 ? pos : neg
+        let scale = amount > 0 ? amount / 60.0 : amount / -60.0
+        let dev = table.map { ($0 - 1.0) * scale }
+        if n <= dev.count {
+            return dev[0..<n].map { 1.0 + $0 }
+        }
+        var result = dev.map { 1.0 + $0 }
+        let padValue = 1.0 + (dev.last ?? 0)
+        result.append(contentsOf: [Double](repeating: padValue, count: n - dev.count))
+        return result
+    }
+
+    /// `_apply_multiscale_gain`: builds `Ln`'s Gaussian/Laplacian pyramid
+    /// (`gains.count - 1` levels), multiplies *every* band (every detail
+    /// level **and** the coarsest base -- unlike Highlights/Shadows, which
+    /// only ever touches the base) by its own scalar gain, and reconstructs.
+    /// A purely linear filter: no remap, no discretization sweep.
+    static func applyMultiscaleGain(_ ln: SpatialPlane, gains: [Double]) -> SpatialPlane {
+        let levels = gains.count - 1
+        guard levels > 0 else { return ln }
+        let g = gaussianPyramid(ln, levels: levels)
+        var lap = laplacianPyramid(from: g)
+        for i in 0..<lap.count {
+            lap[i] = lap[i].mapValues { $0 * gains[i] }
+        }
+        return reconstruct(lap)
+    }
+
+    /// `apply_texture`: standalone (matches the Python reference's own
+    /// isolated function exactly, for fixture testing) -- production always
+    /// calls this via `applyHighlightsShadows`'s chained `texture`/`clarity`
+    /// parameters instead, never this directly.
+    public static func applyTexture(
+        rgb: [SIMD3<Double>], width: Int, height: Int, amount: Double, scalePx: Double
+    ) -> [SIMD3<Double>] {
+        precondition(rgb.count == width * height, "SpatialToneOps: rgb.count must equal width*height")
+        guard amount != 0 else { return rgb }
+        let ln0 = luminancePlane(rgb: rgb, width: width, height: height)
+        let levels = max(1, Int(log2(max(scalePx, 2.0)).rounded(.toNearestOrEven)))
+        let gains = gainProfile(amount: amount, pos: textureGain60Pos, neg: textureGain60Neg, levelsTotal: levels)
+        let lnOut = applyMultiscaleGain(ln0, gains: gains)
+        return applyRatio(rgb: rgb, lnOut: lnOut, ln0: ln0)
+    }
+
+    /// `apply_clarity`: standalone, see `applyTexture`'s doc comment.
+    public static func applyClarity(
+        rgb: [SIMD3<Double>], width: Int, height: Int, amount: Double, scalePx: Double
+    ) -> [SIMD3<Double>] {
+        precondition(rgb.count == width * height, "SpatialToneOps: rgb.count must equal width*height")
+        guard amount != 0 else { return rgb }
+        let ln0 = luminancePlane(rgb: rgb, width: width, height: height)
+        let levels = max(1, Int(log2(max(scalePx, 2.0)).rounded(.toNearestOrEven))) + clarityLevelOffset
+        let gains = gainProfile(amount: amount, pos: clarityGain60Pos, neg: clarityGain60Neg, levelsTotal: levels)
+        let lnOut = applyMultiscaleGain(ln0, gains: gains)
+        return applyRatio(rgb: rgb, lnOut: lnOut, ln0: ln0)
+    }
+
+    static func luminancePlane(rgb: [SIMD3<Double>], width: Int, height: Int) -> SpatialPlane {
+        var values = [Double](repeating: 0, count: rgb.count)
+        for i in 0..<rgb.count {
+            let sample = rgb[i]
+            let y = sample.x * ppLuma.x + sample.y * ppLuma.y + sample.z * ppLuma.z
+            values[i] = log2(max(y, eps))
+        }
+        return SpatialPlane(width: width, height: height, values: values)
+    }
+
+    static func applyRatio(rgb: [SIMD3<Double>], lnOut: SpatialPlane, ln0: SpatialPlane) -> [SIMD3<Double>] {
+        var out = [SIMD3<Double>](repeating: .zero, count: rgb.count)
+        for i in 0..<rgb.count {
+            out[i] = rgb[i] * exp2(lnOut.values[i] - ln0.values[i])
+        }
+        return out
+    }
+
     /// `_remap_magnitude`: `|I-g0| -> `unsigned post-remap distance, `alpha`
     /// for the detail term (`<= sigma_r`), `beta` for the edge term (`>
     /// sigma_r`), continuous at `sigma_r`.
@@ -413,24 +533,39 @@ public enum SpatialToneOps {
     ///   - scalePx: see `scalePx(forLongEdge:)`.
     /// - Returns: linear ProPhoto RGB, same shape. Not clipped to `[0,1]`
     ///   (neither is the Python reference -- the caller's next cube clips).
+    /// Phase2 C4 extended this from "Highlights/Shadows" to the full
+    /// Ln-chain `SpatialToneProcessor` runs: Highlights -> Shadows ->
+    /// Texture -> Clarity, each stage's output `Ln` feeding the next, with
+    /// exactly one `y_ratio = 2^(Ln_final - Ln0)` applied to `rgb` at the
+    /// end -- not one round trip per stage. This is not an approximation of
+    /// calling `detail_model.py`'s `apply_texture`/`apply_clarity` (and
+    /// `spatial_model_v2.py`'s `apply_highlights_shadows`) sequentially on
+    /// each other's RGB output: because every stage here is exactly
+    /// "recompute a per-pixel ratio from Ln and multiply all of RGB by it",
+    /// re-deriving `Y -> Ln` from a previous stage's RGB output always
+    /// reproduces that stage's own final `Ln` exactly (`Y' = ratio * Y`, so
+    /// `log2(Y') = log2(ratio) + log2(Y) = (Ln_stage - Ln0) + Ln0 =
+    /// Ln_stage`) -- so chaining `Ln` directly and ratio-ing once at the end
+    /// is bit-for-bit the same computation, just without three redundant
+    /// luminance-recompute-and-multiply round trips. Kept as one function
+    /// (rather than one per stage) so that equivalence is structural, not
+    /// something a caller could get wrong by chaining calls in the wrong
+    /// way. `texture`/`clarity` default to `0` (no-op) so every pre-C4 call
+    /// site keeps compiling and behaving identically.
     public static func applyHighlightsShadows(
         rgb: [SIMD3<Double>],
         width: Int,
         height: Int,
         highlights: Double,
         shadows: Double,
-        scalePx: Double
+        scalePx: Double,
+        texture: Double = 0,
+        clarity: Double = 0
     ) -> [SIMD3<Double>] {
         precondition(rgb.count == width * height, "SpatialToneOps: rgb.count must equal width*height")
-        guard highlights != 0 || shadows != 0 else { return rgb }
+        guard highlights != 0 || shadows != 0 || texture != 0 || clarity != 0 else { return rgb }
 
-        var lnValues = [Double](repeating: 0, count: rgb.count)
-        for i in 0..<rgb.count {
-            let sample = rgb[i]
-            let y = sample.x * ppLuma.x + sample.y * ppLuma.y + sample.z * ppLuma.z
-            lnValues[i] = log2(max(y, eps))
-        }
-        let ln0 = SpatialPlane(width: width, height: height, values: lnValues)
+        let ln0 = luminancePlane(rgb: rgb, width: width, height: height)
         let levelsH = max(1, Int(log2(max(scalePx, 2.0)).rounded(.toNearestOrEven)))
 
         var ln = ln0
@@ -451,13 +586,17 @@ public enum SpatialToneOps {
                 levels: levelsS
             )
         }
-
-        var out = [SIMD3<Double>](repeating: .zero, count: rgb.count)
-        for i in 0..<rgb.count {
-            let ratio = exp2(ln.values[i] - ln0.values[i])
-            out[i] = rgb[i] * ratio
+        if texture != 0 {
+            let gains = gainProfile(amount: texture, pos: textureGain60Pos, neg: textureGain60Neg, levelsTotal: levelsH)
+            ln = applyMultiscaleGain(ln, gains: gains)
         }
-        return out
+        if clarity != 0 {
+            let levelsC = levelsH + clarityLevelOffset
+            let gains = gainProfile(amount: clarity, pos: clarityGain60Pos, neg: clarityGain60Neg, levelsTotal: levelsC)
+            ln = applyMultiscaleGain(ln, gains: gains)
+        }
+
+        return applyRatio(rgb: rgb, lnOut: ln, ln0: ln0)
     }
 }
 

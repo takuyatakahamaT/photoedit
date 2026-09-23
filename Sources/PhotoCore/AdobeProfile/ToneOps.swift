@@ -90,6 +90,71 @@ public enum ToneOps {
         return encodedCurve(value) { powerRatio($0, a: e, c: 1.0) }
     }
 
+    // MARK: - 2b) Dehaze (Phase2 C4) -- LINEAR space global log2-luminance curve + saturation
+
+    /// `.photobench/phase2/detail/detail_model.py`'s `_DEHAZE_GRID`
+    /// (`np.linspace(-14.0, 0.0, 29)`, identical closed form to
+    /// `SpatialToneOps.grid`, duplicated here rather than shared -- this
+    /// operation is pointwise/cube-bakeable and deliberately has no
+    /// dependency on the `Spatial` module).
+    private static let dehazeGrid: [Double] = (0..<29).map { -14.0 + Double($0) * 0.5 }
+    private static let dehazePPLuma = SIMD3<Double>(0.2880402, 0.7118741, 0.0000857)
+    private static let dehazeEPS = 3e-5
+
+    /// `DEHAZE_GAIN_50`: a 29-point additive log2-luminance gain curve (same
+    /// shape as the spatial family's `GAIN_TABLE`, but this one is *not*
+    /// spatial -- Dehaze's local-contrast/dark-channel component was
+    /// measured and found not to improve on real photos, `model.md` §3),
+    /// extracted from a frequency chart's soft band + step-edge plateaus at
+    /// `Dehaze` = ±50. `+50`/`-50` are not antisymmetric (measured, not a
+    /// modeling choice).
+    private static let dehazeGain50Pos: [Double] = [
+        -0.9862, -0.9862, -0.9862, -0.9862, -0.9862, -0.9862, -0.9862, -0.9862, -0.9862, -0.9862,
+        -0.9862, -0.9862, -0.9862, -0.9862, -0.9862, -0.9862, -0.9862, -0.996347, -1.034678, -1.045433,
+        -1.033353, -1.011323, -0.992833, -0.956357, -0.887950, -0.728754, -0.435554, -0.3194, -0.3194
+    ]
+    private static let dehazeGain50Neg: [Double] = [
+        1.7478, 1.7478, 1.7478, 1.7478, 1.7478, 1.7478, 1.7478, 1.7478, 1.7478, 1.7478,
+        1.7478, 1.7478, 1.7478, 1.7478, 1.7478, 1.7478, 1.7478, 1.732147, 1.654377, 1.574631,
+        1.498939, 1.422737, 1.309562, 1.139466, 0.919832, 0.681691, 0.422810, 0.2216, 0.2216
+    ]
+    /// `DEHAZE_SAT_K_AT_40`: pooled least-squares fit (P1013558/P1013207/
+    /// P1012822: 1.51/1.42/1.53) of `chroma_out = k * chroma_in` (hue/luma
+    /// preserving, same mechanism as `ColorOps`' saturation) at `Dehaze` =
+    /// `+40` on real photos. `amount < 0` has no photo data -- linear
+    /// extrapolation through the origin, unverified (`model.md` §3).
+    private static let dehazeSatKAt40 = 1.4693
+
+    private static func dehazeCurveGain(_ amount: Double) -> [Double] {
+        guard amount != 0 else { return [Double](repeating: 0, count: dehazeGrid.count) }
+        let table = amount > 0 ? dehazeGain50Pos : dehazeGain50Neg
+        let scale = amount > 0 ? amount / 50.0 : amount / -50.0
+        return table.map { $0 * scale }
+    }
+
+    /// `apply_dehaze`. Unlike every other op in this file, this operates
+    /// directly on **linear** ProPhoto (like `exposureNonRaw`) rather than
+    /// through `encodedCurve`'s sRGB-encoded gray-curve mixing -- the
+    /// reference model is defined in linear log2-luminance space (matching
+    /// the `Spatial` module's convention) and the saturation step needs the
+    /// same linear chroma (`toned - Y`) `ColorOps` uses, so there is no
+    /// shared helper to reuse here. `scalePx` is not a parameter (Dehaze has
+    /// no spatial component, unlike Highlights/Shadows/Texture/Clarity).
+    public static func dehaze(_ value: SIMD3<Double>, amount: Double) -> SIMD3<Double> {
+        guard amount != 0 else { return value }
+        let y0 = max(value.x * dehazePPLuma.x + value.y * dehazePPLuma.y + value.z * dehazePPLuma.z, dehazeEPS)
+        let ln0 = log2(y0)
+        let curve = dehazeCurveGain(amount)
+        let gain = piecewiseLinear(ln0, xs: dehazeGrid, ys: curve)
+        let toned = value * exp2(gain)
+
+        let kSat = 1.0 + (dehazeSatKAt40 - 1.0) * (amount / 40.0)
+        let y1 = toned.x * dehazePPLuma.x + toned.y * dehazePPLuma.y + toned.z * dehazePPLuma.z
+        let chroma = toned - SIMD3(repeating: y1)
+        let out = SIMD3(repeating: y1) + chroma * kSat
+        return SIMD3(max(out.x, 0.0), max(out.y, 0.0), max(out.z, 0.0))
+    }
+
     // MARK: - 3) Whites2012 / Blacks2012 -- anchored power-ratio, sRGB-encoded
 
     private static let whitesAmount: [Double] = [-100.0, -50.0, 0.0, 50.0, 100.0]
@@ -242,29 +307,40 @@ public enum ToneOps {
 
     // MARK: - 6) Stage P composition
 
-    /// `docs/PHASE2_DEVELOP_PIPELINE.md`'s Stage P order: Contrast -> Whites
-    /// -> Blacks -> Parametric -> Point curve. Exposure is **not** included
-    /// here -- RAW applies it at Stage E (a plain linear gain, unrelated to
-    /// `exposureNonRaw`), and the non-RAW caller applies `exposureNonRaw`
-    /// itself immediately before this function (`RenderEngine`).
+    /// `docs/PHASE2_DEVELOP_PIPELINE.md`'s Stage P order: Contrast -> Dehaze
+    /// -> Whites -> Blacks -> Parametric -> Point curve (Phase2 C4 inserted
+    /// Dehaze directly after Contrast -- `.photobench/phase2/detail/
+    /// model.md`; it has no spatial component, so it stays in this cube
+    /// rather than joining Highlights/Shadows/Texture/Clarity in
+    /// `SpatialToneOps`). Exposure is **not** included here -- RAW applies
+    /// it at Stage E (a plain linear gain, unrelated to `exposureNonRaw`),
+    /// and the non-RAW caller applies `exposureNonRaw` itself immediately
+    /// before this function (`RenderEngine`).
     ///
-    /// Expressed as `contrast` followed by `applyPostOpsAfterContrast` (not
-    /// its own independent copy of the four ops) so that, when phase2 C3's
-    /// spatial Highlights/Shadows pass needs to split cube P into P1
-    /// (contrast only) and P2 (everything after), `postOpsCubeP1 ∘
-    /// postOpsCubeP2 == postOpsCube` *exactly* -- same order, same
-    /// computation, just with an `S` (`SpatialToneOps`) step inserted
-    /// between the two halves by `AdobeBaseRenderer`/`RenderEngine`, never a
-    /// second implementation of Contrast/Whites/Blacks/Parametric/point
-    /// curve that could quietly drift from this one.
+    /// Expressed as `applyContrastAndDehaze` followed by
+    /// `applyPostOpsAfterContrast` (not its own independent copy of the
+    /// ops) so that, when phase2 C3's spatial pass needs to split cube P
+    /// into P1 (Contrast -> Dehaze) and P2 (everything after),
+    /// `postOpsCubeP1 ∘ postOpsCubeP2 == postOpsCube` *exactly* -- same
+    /// order, same computation, just with an `S` (`SpatialToneOps`) step
+    /// inserted between the two halves by `AdobeBaseRenderer`/
+    /// `RenderEngine`, never a second implementation that could quietly
+    /// drift from this one.
     public static func applyPostOps(_ value: SIMD3<Double>, settings: EditSettings) -> SIMD3<Double> {
-        applyPostOpsAfterContrast(contrast(value, amount: settings.contrast), settings: settings)
+        applyPostOpsAfterContrast(applyContrastAndDehaze(value, settings: settings), settings: settings)
     }
 
-    /// `applyPostOps` minus its leading `contrast` call: Whites -> Blacks ->
-    /// Parametric -> Point curve. This is cube P2 in the C3 spatial-active
-    /// pipeline (`docs/PHASE2_C2_C3.md`'s C3 section); `contrast` alone
-    /// (called directly, it is already `public`) is cube P1.
+    /// Cube P1's exact content in the C3 spatial-active pipeline: Contrast
+    /// then Dehaze (both pointwise/cube-bakeable, unlike the spatial pass
+    /// that runs between P1 and P2).
+    public static func applyContrastAndDehaze(_ value: SIMD3<Double>, settings: EditSettings) -> SIMD3<Double> {
+        dehaze(contrast(value, amount: settings.contrast), amount: settings.dehaze)
+    }
+
+    /// `applyPostOps` minus its leading `applyContrastAndDehaze` call:
+    /// Whites -> Blacks -> Parametric -> Point curve. This is cube P2 in
+    /// the C3 spatial-active pipeline (`docs/PHASE2_C2_C3.md`'s C3
+    /// section); `applyContrastAndDehaze` is cube P1.
     public static func applyPostOpsAfterContrast(_ value: SIMD3<Double>, settings: EditSettings) -> SIMD3<Double> {
         var result = value
         result = whites(result, amount: settings.whites)
@@ -285,12 +361,18 @@ public enum ToneOps {
     /// the identity, exactly like every individual op's own `amount == 0`
     /// no-op guard above.
     public static func needsPostOps(_ settings: EditSettings) -> Bool {
-        settings.contrast != 0 || needsPostOpsAfterContrast(settings)
+        needsContrastOrDehaze(settings) || needsPostOpsAfterContrast(settings)
+    }
+
+    /// As `needsPostOps`, but for `applyContrastAndDehaze` alone (cube P1's
+    /// gate in the C3 spatial-active pipeline).
+    public static func needsContrastOrDehaze(_ settings: EditSettings) -> Bool {
+        settings.contrast != 0 || settings.dehaze != 0
     }
 
     /// As `needsPostOps`, but for `applyPostOpsAfterContrast` alone (cube
-    /// P2) -- `settings.contrast` deliberately excluded, since that is cube
-    /// P1's own gate.
+    /// P2) -- `settings.contrast`/`settings.dehaze` deliberately excluded,
+    /// since those are cube P1's own gate (`needsContrastOrDehaze`).
     public static func needsPostOpsAfterContrast(_ settings: EditSettings) -> Bool {
         settings.whites != 0
             || settings.blacks != 0

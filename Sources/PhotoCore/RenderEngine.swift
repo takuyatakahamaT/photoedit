@@ -957,9 +957,11 @@ public final class RenderEngine: @unchecked Sendable {
         let result: CIImage
         if SpatialToneOps.needsSpatial(settings) {
             var stage = proPhoto
-            if settings.exposure != 0 || settings.contrast != 0 {
+            if settings.exposure != 0 || ToneOps.needsContrastOrDehaze(settings) {
                 stage = AdobeBaseRenderer.applyCube(
-                    AdobeBaseRenderer.postOpsCubeP1(exposureNonRaw: settings.exposure, contrast: settings.contrast),
+                    AdobeBaseRenderer.postOpsCubeP1(
+                        exposureNonRaw: settings.exposure, contrast: settings.contrast, dehaze: settings.dehaze
+                    ),
                     to: stage
                 )
             }

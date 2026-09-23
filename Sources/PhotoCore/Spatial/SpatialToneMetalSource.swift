@@ -39,7 +39,8 @@ enum SpatialToneMetalSource {
         "spatialComputeG0Grid",
         "spatialComputeBracket",
         "spatialAccumulateWeighted",
-        "spatialApplyRatio"
+        "spatialApplyRatio",
+        "spatialMultiplyScalar"
     ]
 
     /// Threadgroup size `spatialMinMaxReduce` is always dispatched with
@@ -404,6 +405,22 @@ enum SpatialToneMetalSource {
         float contribution = w * lk.read(gid).r;
         float previous = (isFirst != 0) ? 0.0 : acc.read(gid).r;
         acc.write(float4(previous + contribution, 0.0, 0.0, 0.0), gid);
+    }
+
+    // MARK: - Texture / Clarity2012 (Phase2 C4 "Model L": per-level scalar gain)
+
+    /// `SpatialToneOps.applyMultiscaleGain`'s one new primitive: every other
+    /// piece (Gaussian pyramid, Laplacian bands, reconstruct) is already
+    /// shared with Highlights/Shadows above. Multiplies one Laplacian band
+    /// (or the coarsest base) by its own per-level scalar gain.
+    kernel void spatialMultiplyScalar(
+        texture2d<float, access::read> src [[texture(0)]],
+        texture2d<float, access::write> dst [[texture(1)]],
+        constant float &scalar [[buffer(0)]],
+        uint2 gid [[thread_position_in_grid]]
+    ) {
+        if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) { return; }
+        dst.write(float4(src.read(gid).r * scalar, 0.0, 0.0, 0.0), gid);
     }
     """
 }

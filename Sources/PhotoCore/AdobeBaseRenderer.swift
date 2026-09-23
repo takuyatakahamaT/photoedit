@@ -181,9 +181,10 @@ public enum AdobeBaseRenderer {
                 userEV: settings.exposure, variant: variant, through: .tone
             )
             if SpatialToneOps.needsSpatial(settings) {
-                if settings.contrast != 0 {
+                if ToneOps.needsContrastOrDehaze(settings) {
                     image = AdobeBaseRenderer.applyCube(
-                        AdobeBaseRenderer.postOpsCubeP1(exposureNonRaw: 0, contrast: settings.contrast), to: image
+                        AdobeBaseRenderer.postOpsCubeP1(exposureNonRaw: 0, contrast: settings.contrast, dehaze: settings.dehaze),
+                        to: image
                     )
                 }
                 image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image)
@@ -240,6 +241,7 @@ public enum AdobeBaseRenderer {
     private struct PostOpsCacheKey: Hashable {
         var exposureNonRaw: Double
         var contrast: Double
+        var dehaze: Double
         var whites: Double
         var blacks: Double
         var parametricShadows: Double
@@ -255,22 +257,24 @@ public enum AdobeBaseRenderer {
     private static let postOpsCacheLock = NSLock()
     nonisolated(unsafe) private static var postOpsCache: [PostOpsCacheKey: Data] = [:]
 
-    /// Phase2 C3: cube P1's key when Highlights2012/Shadows2012's spatial
-    /// pass (`SpatialToneOps`/`SpatialToneProcessor`) is active and cube P
-    /// must therefore be split (`docs/PHASE2_C2_C3.md`'s C3 section) --
-    /// exposure (non-RAW only) and contrast are the only two `ToneOps` P
-    /// steps that run *before* the spatial pass.
+    /// Phase2 C3/C4: cube P1's key when the spatial pass
+    /// (`SpatialToneOps`/`SpatialToneProcessor`: Highlights/Shadows/Texture/
+    /// Clarity) is active and cube P must therefore be split
+    /// (`docs/PHASE2_C2_C3.md`'s C3 section) -- exposure (non-RAW only),
+    /// contrast, and (Phase2 C4) dehaze are the `ToneOps` P steps that run
+    /// *before* the spatial pass (`ToneOps.applyContrastAndDehaze`).
     private struct PostOpsP1CacheKey: Hashable {
         var exposureNonRaw: Double
         var contrast: Double
+        var dehaze: Double
     }
 
     private static let postOpsP1CacheLock = NSLock()
     nonisolated(unsafe) private static var postOpsP1Cache: [PostOpsP1CacheKey: Data] = [:]
 
-    /// Cube P2's key: `PostOpsCacheKey` minus `exposureNonRaw`/`contrast`
-    /// (cube P1's own key) -- Whites/Blacks/Parametric/Point curve, which
-    /// run *after* the spatial pass.
+    /// Cube P2's key: `PostOpsCacheKey` minus `exposureNonRaw`/`contrast`/
+    /// `dehaze` (cube P1's own key) -- Whites/Blacks/Parametric/Point curve,
+    /// which run *after* the spatial pass.
     private struct PostOpsP2CacheKey: Hashable {
         var whites: Double
         var blacks: Double
@@ -351,7 +355,7 @@ public enum AdobeBaseRenderer {
     static func postOpsCube(exposureNonRaw: Double, settings: EditSettings) -> Data {
         let key = PostOpsCacheKey(
             exposureNonRaw: exposureNonRaw,
-            contrast: settings.contrast, whites: settings.whites, blacks: settings.blacks,
+            contrast: settings.contrast, dehaze: settings.dehaze, whites: settings.whites, blacks: settings.blacks,
             parametricShadows: settings.parametricShadows, parametricDarks: settings.parametricDarks,
             parametricLights: settings.parametricLights, parametricHighlights: settings.parametricHighlights,
             parametricShadowSplit: settings.parametricShadowSplit,
@@ -374,16 +378,17 @@ public enum AdobeBaseRenderer {
         return data
     }
 
-    /// Phase2 C3: cube P1 (exposureNonRaw -> Contrast only), used instead of
-    /// the single `postOpsCube` when `SpatialToneOps.needsSpatial(settings)`
-    /// -- Highlights2012/Shadows2012's spatial pass runs on cube P1's
-    /// (linear ProPhoto) output, before cube P2 (`postOpsCubeP2`). Bakes to
-    /// the exact same values `postOpsCube`'s own leading `contrast(
-    /// exposureNonRaw(...))` computation would, so splitting the cube never
-    /// changes the H=S=0 (single-cube) path's numeric result --
-    /// `ToneOpsTests`/`AdobeBaseRendererTests` cover this equivalence.
-    static func postOpsCubeP1(exposureNonRaw: Double, contrast: Double) -> Data {
-        let key = PostOpsP1CacheKey(exposureNonRaw: exposureNonRaw, contrast: contrast)
+    /// Phase2 C3/C4: cube P1 (exposureNonRaw -> Contrast -> Dehaze), used
+    /// instead of the single `postOpsCube` when `SpatialToneOps.needsSpatial(
+    /// settings)` -- the spatial pass (Highlights/Shadows/Texture/Clarity)
+    /// runs on cube P1's (linear ProPhoto) output, before cube P2
+    /// (`postOpsCubeP2`). Bakes to the exact same values `postOpsCube`'s own
+    /// leading `applyContrastAndDehaze(exposureNonRaw(...))` computation
+    /// would, so splitting the cube never changes the no-spatial-op
+    /// (single-cube) path's numeric result -- `ToneOpsTests`/
+    /// `AdobeBaseRendererTests` cover this equivalence.
+    static func postOpsCubeP1(exposureNonRaw: Double, contrast: Double, dehaze: Double) -> Data {
+        let key = PostOpsP1CacheKey(exposureNonRaw: exposureNonRaw, contrast: contrast, dehaze: dehaze)
         postOpsP1CacheLock.lock()
         let cached = postOpsP1Cache[key]
         postOpsP1CacheLock.unlock()
@@ -391,7 +396,7 @@ public enum AdobeBaseRenderer {
 
         let data = buildCubeData { value in
             let afterExposure = exposureNonRaw == 0 ? value : ToneOps.exposureNonRaw(value, ev: exposureNonRaw)
-            return ToneOps.contrast(afterExposure, amount: contrast)
+            return ToneOps.dehaze(ToneOps.contrast(afterExposure, amount: contrast), amount: dehaze)
         }
         postOpsP1CacheLock.lock()
         postOpsP1Cache[key] = data
@@ -662,25 +667,27 @@ public enum AdobeBaseRenderer {
         ])
     }
 
-    /// Phase2 C3: Highlights2012 -> Shadows2012's spatial (local-Laplacian)
-    /// pass, run between cube P1 and cube P2 (`docs/PHASE2_C2_C3.md`'s C3
-    /// section) whenever `SpatialToneOps.needsSpatial(settings)`. `image`
-    /// must already be **linear ProPhoto** -- cube P1's own `applyCube`
-    /// output (which itself decodes/re-encodes the cube's internal gamma),
-    /// or, on the non-RAW path, the working-space -> ProPhoto matrix's
-    /// direct output. `scalePx` is derived from `image`'s own extent (the
-    /// resolution this call is *actually* processing at, already reflecting
-    /// any decode-time downscale -- see `SpatialToneOps.scalePx(
-    /// forLongEdge:)`'s doc comment on why no separate
-    /// `appliedScaleFactor` correction is needed), so the RAW path here, the
-    /// non-RAW path (`RenderEngine.applyNonRAWStageP`), preview decodes, and
-    /// export decodes all agree on the same physical detail scale through
-    /// this one shared call site.
+    /// Phase2 C3/C4: Highlights2012 -> Shadows2012 -> Texture -> Clarity2012's
+    /// spatial (local-Laplacian/multiscale-gain) pass, run between cube P1
+    /// and cube P2 (`docs/PHASE2_C2_C3.md`'s C3 section, extended by Phase2
+    /// C4's `.photobench/phase2/detail/model.md`) whenever
+    /// `SpatialToneOps.needsSpatial(settings)`. `image` must already be
+    /// **linear ProPhoto** -- cube P1's own `applyCube` output (which itself
+    /// decodes/re-encodes the cube's internal gamma), or, on the non-RAW
+    /// path, the working-space -> ProPhoto matrix's direct output. `scalePx`
+    /// is derived from `image`'s own extent (the resolution this call is
+    /// *actually* processing at, already reflecting any decode-time
+    /// downscale -- see `SpatialToneOps.scalePx(forLongEdge:)`'s doc comment
+    /// on why no separate `appliedScaleFactor` correction is needed), so the
+    /// RAW path here, the non-RAW path (`RenderEngine.applyNonRAWStageP`),
+    /// preview decodes, and export decodes all agree on the same physical
+    /// detail scale through this one shared call site.
     static func applySpatialToneOps(settings: EditSettings, to image: CIImage) -> CIImage {
         let longEdge = max(image.extent.width, image.extent.height)
         let scalePx = SpatialToneOps.scalePx(forLongEdge: Double(longEdge))
         guard let output = try? SpatialToneProcessor.apply(
-            to: image, highlights: settings.highlights, shadows: settings.shadows, scalePx: scalePx
+            to: image, highlights: settings.highlights, shadows: settings.shadows, scalePx: scalePx,
+            texture: settings.texture, clarity: settings.clarity
         ) else {
             preconditionFailure("Photo BenchのHighlights/Shadows空間処理カーネルを画像へ適用できませんでした。")
         }

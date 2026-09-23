@@ -229,9 +229,11 @@ public struct EditSettings: Codable, Equatable, Hashable, Sendable {
     /// non-100 value is retained but rendered as if it were 100
     /// (`.photobench/phase2/tone/model.md`'s Q3 "未解決" note).
     public var curveRefineSaturation: Double
-    /// `Texture`/`Clarity2012`/`Dehaze` (-100...100). Retained only -- no
-    /// rendering operation reads these yet (phase3, per
-    /// `docs/PHASE2_DEVELOP_PIPELINE.md`'s "範囲外").
+    /// `Texture`/`Clarity2012`/`Dehaze` (-100...100). Phase2 C4: Texture/
+    /// Clarity feed `SpatialToneOps`/`SpatialToneProcessor`'s Ln chain
+    /// (`AdobeBaseRenderer.applySpatialToneOps`); Dehaze is pointwise and
+    /// baked into cube P/P1 (`ToneOps.dehaze`) -- see
+    /// `.photobench/phase2/detail/model.md`.
     public var texture: Double
     public var clarity: Double
     public var dehaze: Double

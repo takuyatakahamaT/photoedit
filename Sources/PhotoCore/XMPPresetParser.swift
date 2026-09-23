@@ -522,7 +522,7 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
         // Retained (parsed, kept on `EditSettings`) but never applied to rendering.
         let unsupported = Set([
             "IncrementalTemperature", "IncrementalTint",
-            "Texture", "Clarity2012", "Dehaze", "Sharpness", "SharpenRadius",
+            "Sharpness", "SharpenRadius",
             "SharpenDetail", "SharpenEdgeMasking", "LuminanceSmoothing",
             "ColorNoiseReduction", "ColorNoiseReductionDetail", "ColorNoiseReductionSmoothness",
             "AutoLateralCA", "LensProfileEnable", "LensProfileSetup"
@@ -569,6 +569,20 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
                 // reported residual) rather than a clean-room guess.
                 level = .supported
                 note = "実測局所ラプラシアンフィルタ（リニアProPhoto空間、cube外の空間処理）で対応"
+            } else if key == "Texture" || key == "Clarity2012" {
+                // Phase2 C4: real, measured per-level multiscale gain model
+                // (`.photobench/phase2/detail/model.md`'s "Model L") --
+                // promoted out of "unsupported". Same Ln chain/cube-外 as
+                // Highlights/Shadows, just a linear per-band gain instead of
+                // a remap.
+                level = .supported
+                note = "実測段別ゲインフィルタ（リニアProPhoto空間、cube外の空間処理）で対応"
+            } else if key == "Dehaze" {
+                // Phase2 C4: real, measured global log2輝度カーブ＋彩度倍率
+                // (空間成分は実測で確認できず不採用、model.md §3) -- pointwise
+                // なのでcube P/P1に焼く(`ToneOps.dehaze`)。
+                level = .supported
+                note = "実測トーンカーブ＋彩度倍率（cube Pに焼き込み）で対応"
             } else if supportedScalars.contains(key) {
                 level = .supported
                 note = key.hasPrefix("Parametric")
