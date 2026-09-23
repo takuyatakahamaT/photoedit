@@ -79,6 +79,11 @@
    - 周辺光量用の平坦な被写体（グレーカード・曇天）を同じレンズ・同じ絞りで数枚
 3. 教師データを作れるのは LR 契約中だけ。round2 の書き出しが済むまで契約を継続する。
 
+## 実行環境の注意（2026-09-23）
+
+- 個人 Mac mini（16GB）は、原寸 float パイプラインのレンダー・`swift test`・numpy の原寸比較を並行させると watchdog リセットで再起動する（06:01 と 11:27 に発生）。**実装エージェントは 1 体ずつ直列、重い処理は Mac Studio（64GB）で実行**する。入口は `scripts/studio/studio-run.sh`（sync / sync-data / run / fetch）。Studio 側の前提（libraw・pkgconf・`~/.venvs/photobench`・Lightroom CC のプロファイル資産）は整備済み。
+- Studio と mini の中立レンダーは同一の結果（0.93 / 1.15 / 1.24）。
+
 ## 成果物・履歴
 
 - [現行方針・調査結果・実行計画](ENGINE_ROADMAP.md)
