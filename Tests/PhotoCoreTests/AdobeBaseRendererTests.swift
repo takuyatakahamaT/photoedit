@@ -179,4 +179,64 @@ struct AdobeBaseRendererTests {
                 + (labA.b - labB.b) * (labA.b - labB.b)
         ).squareRoot()
     }
+
+    // MARK: - (d) round2 set A refit: `highlightRatioBase(for:)`'s "preHS" input
+
+    /// A small (not 1-row -- `makeImage` above is 1-row and this file's own
+    /// `ColorMixerTests`/`ToneAndCalibrationTests` history has a documented
+    /// Core Image "height==1 silently misbehaves" trap, so this test builds
+    /// its own 2D fixture instead) gradient camera-RGB image, reusing
+    /// `sampleCameraRGBs`' generation shape.
+    private static func makeGradientImage(width: Int, height: Int, colorSpace: CGColorSpace) -> CIImage {
+        var floats = [Float](repeating: 0, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let sample = sampleCameraRGBs(count: width)[x]
+                let base = (y * width + x) * 4
+                floats[base] = Float(sample.x)
+                floats[base + 1] = Float(sample.y)
+                floats[base + 2] = Float(sample.z)
+                floats[base + 3] = 1
+            }
+        }
+        return CIImage(
+            bitmapData: floats.withUnsafeBytes { Data($0) }, bytesPerRow: width * 4 * MemoryLayout<Float>.size,
+            size: CGSize(width: width, height: height), format: .RGBAf, colorSpace: colorSpace
+        )
+    }
+
+    /// `Handle.highlightRatioBase(for:)` (round2 set A refit,
+    /// `.photobench/phase2/spatial-adaptive/model.md` §6/§7): moving only
+    /// Highlights/Shadows/Texture/Clarity must not change the statistic
+    /// (they are zeroed out of its cache key/input specifically so dragging
+    /// them does not force a recompute), but moving Exposure -- which now
+    /// runs *before* the point the statistic is read, unlike the old
+    /// neutral-render version -- must.
+    @Test func highlightRatioBaseIgnoresHighlightsShadowsButRespondsToExposure() throws {
+        guard let dcp = loadRealDCP(), let look = loadRealAdobeLook() else { return }
+        let assets = try AdobeBaseAssets(dcp: dcp, look: look, neutralG1: SIMD3(1, 1, 1))
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
+        let inputImage = Self.makeGradientImage(width: 48, height: 32, colorSpace: colorSpace)
+        let cacheKey = AdobeBaseRenderer.CacheKey(
+            dcpIdentity: "test-fixture-dcp-preHS", lookIdentity: "test-fixture-look-preHS",
+            whiteXY: assets.whiteXY, exposureEV: assets.baselineEV, variant: .b
+        )
+        let handle = AdobeBaseRenderer.makeHandle(cameraImage: inputImage, assets: assets, cacheKey: cacheKey, variant: .b)
+
+        var highlightsOnly = EditSettings.neutral
+        highlightsOnly.highlights = 80
+        var shadowsOnly = EditSettings.neutral
+        shadowsOnly.shadows = -60
+        var withExposure = EditSettings.neutral
+        withExposure.exposure = 1.5
+
+        let ratioNeutral = handle.highlightRatioBase(for: .neutral)
+        let ratioHighlights = handle.highlightRatioBase(for: highlightsOnly)
+        let ratioShadows = handle.highlightRatioBase(for: shadowsOnly)
+        let ratioExposure = handle.highlightRatioBase(for: withExposure)
+
+        #expect(ratioNeutral == ratioHighlights, "Highlights alone must not change the preHS statistic")
+        #expect(ratioNeutral == ratioShadows, "Shadows alone must not change the preHS statistic")
+        #expect(ratioExposure > ratioNeutral, "raising Exposure should raise the fraction of pixels above -1 stop")
+    }
 }

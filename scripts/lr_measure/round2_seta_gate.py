@@ -29,10 +29,35 @@ RAW_SCENES = {
     "P1524180": ROOT / "P1524180.RW2",
     "P1522877": ROOT / "P1522877.RW2",
     "P1524181": ROOT / "P1524181.RW2",
+    # 16-scene refit's +10 (`model.md` §8/§9): RAW lives under a different
+    # directory than the original 6, XMP/reference under a sibling dir to
+    # `round2-photos` (`round2-extra-photos`) but the same `p2_<scene>_
+    # <variant>.{xmp,jpg}` naming, so only `RAW_SCENES`/`XMP_DIRS`/`REF_DIRS`
+    # need the extra entries -- the render/compare logic below is unchanged.
+    "P1581215": ROOT / "exports/lr-measure/round2/extra-raw/P1581215.RW2",
+    "P1581237": ROOT / "exports/lr-measure/round2/extra-raw/P1581237.RW2",
+    "P1581243": ROOT / "exports/lr-measure/round2/extra-raw/P1581243.RW2",
+    "P1581255": ROOT / "exports/lr-measure/round2/extra-raw/P1581255.RW2",
+    "P1581256": ROOT / "exports/lr-measure/round2/extra-raw/P1581256.RW2",
+    "P1581332": ROOT / "exports/lr-measure/round2/extra-raw/P1581332.RW2",
+    "P1581335": ROOT / "exports/lr-measure/round2/extra-raw/P1581335.RW2",
+    "P1581346": ROOT / "exports/lr-measure/round2/extra-raw/P1581346.RW2",
+    "P1581356": ROOT / "exports/lr-measure/round2/extra-raw/P1581356.RW2",
+    "P1581368": ROOT / "exports/lr-measure/round2/extra-raw/P1581368.RW2",
+}
+EXTRA_SCENES = {
+    "P1581215", "P1581237", "P1581243", "P1581255", "P1581256",
+    "P1581332", "P1581335", "P1581346", "P1581356", "P1581368",
 }
 VARIANTS = ["Shadows2012_+50", "Shadows2012_+100", "Highlights2012_-80_Shadows2012_+40"]
 XMP_DIR = ROOT / "exports/lr-measure/round2/round2-photos"
+XMP_DIR_EXTRA = ROOT / "exports/lr-measure/round2/round2-extra-photos"
 REF_DIR = ROOT / "exports/lr-measure/round2/lr-export-photos"
+
+
+def xmp_path_for(scene: str, variant: str) -> Path:
+    base_dir = XMP_DIR_EXTRA if scene in EXTRA_SCENES else XMP_DIR
+    return base_dir / f"p2_{scene}_{variant}.xmp"
 
 
 def log(msg: str) -> None:
@@ -73,7 +98,7 @@ def main() -> None:
     jobs = []
     for variant in VARIANTS:
         for scene, raw_path in RAW_SCENES.items():
-            xmp = XMP_DIR / f"p2_{scene}_{variant}.xmp"
+            xmp = xmp_path_for(scene, variant)
             render_dir = out_root / "renders" / variant
             jobs.append((scene, variant, raw_path, xmp, render_dir))
 

@@ -166,10 +166,14 @@ public struct SpatialGainScale: Sendable, Equatable {
 /// touches this one place.
 public enum SpatialAdaptiveLaw {
     /// `kS = clamp(intercept + slope * highlightRatioBase, clampMin, clampMax)`,
-    /// a 1-variable linear regression (n=6 scenes, Pearson r=+0.996 against
-    /// each scene's real-engine-measured optimal kS) -- `model.md` §4.2.
-    public static let intercept = 0.4184
-    public static let slope = 1.6664
+    /// a 1-variable linear regression against each scene's real-engine-
+    /// measured optimal kS -- `model.md` §4.2. Refit on the 16-scene
+    /// dataset (originally n=6); `highlightRatioBase` itself also moved from
+    /// a neutral render to a "preHS" one (`model.md` §6/§7) at this same
+    /// refit -- see `Handle.highlightRatioBase(for:)`/`RenderEngine`'s
+    /// non-RAW equivalent.
+    public static let intercept = 0.4008
+    public static let slope = 1.6900
     /// The regression's training data only spans kS in [0.4, 1.8]
     /// (`model.md` §5) -- clamped rather than extrapolated beyond that.
     public static let clampMin = 0.4

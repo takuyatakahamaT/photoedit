@@ -157,6 +157,20 @@ public enum AdobeBaseRenderer {
         /// -- a renderer has no good way to surface a mid-slider XMP error,
         /// and as-shot is always a safe answer.
         public func image(settings: EditSettings) -> CIImage {
+            AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: imagePreMatrix(settings: settings))
+        }
+
+        /// `image(settings:)` minus the final ProPhoto -> working-space
+        /// matrix -- split out so `highlightRatioBase(for:)` (round2 set A,
+        /// `.photobench/phase2/spatial-adaptive/model.md` §6/§7) can render
+        /// the same pipeline (through cube Q/Calibration) for a
+        /// Highlights/Shadows/Texture/Clarity-zeroed settings value and read
+        /// off the still-linear-ProPhoto result, without duplicating this
+        /// whole function. Every other caller of the old `image(settings:)`
+        /// body is unaffected -- this is a pure extraction, not a behavior
+        /// change (`image(settings:)` above wraps it with the exact matrix
+        /// call the extracted code used to end with).
+        private func imagePreMatrix(settings: EditSettings) -> CIImage {
             var effectiveAssets = assets
             if settings.whiteBalance.mode == .custom,
                let temperature = settings.whiteBalance.temperature,
@@ -181,7 +195,7 @@ public enum AdobeBaseRenderer {
             // round2 set A (`.photobench/phase2/spatial-adaptive/model.md`):
             // computed (and cached, see `highlightRatioBase()`'s doc
             // comment) only when a spatial pass will actually run.
-            let highlightRatioBase = needsSpatial ? self.highlightRatioBase() : nil
+            let highlightRatioBase = needsSpatial ? self.highlightRatioBase(for: settings) : nil
 
             var image: CIImage
             if needsSpatial && order == .preTone {
@@ -263,27 +277,44 @@ public enum AdobeBaseRenderer {
             if needsSpatial && order == .postQ {
                 image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
             }
-            return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: image)
+            return image
         }
 
-        /// round2 set A (`.photobench/phase2/spatial-adaptive/model.md` §6
-        /// item 1-2): `highlightRatioBase` computed from this photo's own
-        /// *neutral* rendering (`image(through: .tone)` -- Stage H/E/L/T
-        /// only, no cube P/Q/Calibration, still linear ProPhoto), downscaled
-        /// to a fixed 750px long edge (matching preview/export so both see
-        /// the same value regardless of what resolution they actually
-        /// render at) and cached per `cacheKey` (the same identity the cube
-        /// cache uses -- dcpIdentity/lookIdentity/variant/whiteXY/
-        /// exposureEV, i.e. everything that can change what "neutral" looks
-        /// like for this photo). `Handle` itself is an immutable `Sendable`
-        /// struct, so this follows the file's established static-dictionary-
-        /// plus-lock caching pattern (`cachedCubes`) rather than instance
-        /// storage. `PHOTO_BENCH_SPATIAL_DIAG=1` prints the computed ratio
-        /// and its wall-clock cost to stderr, same convention as
-        /// `SpatialToneProcessor`'s own diagnostics.
-        public func highlightRatioBase() -> Double {
+        /// round2 set A refit (`.photobench/phase2/spatial-adaptive/model.md`
+        /// §6/§7): `highlightRatioBase` is no longer computed from a
+        /// *neutral* rendering -- §6 found that once Exposure/Contrast/
+        /// Whites/Blacks are non-zero, the statistic needs to be taken
+        /// *after* those apply (the point where Highlights/Shadows'
+        /// local-Laplacian remap actually sees the image, "preHS") to stay
+        /// predictive, which makes it depend on `settings` (everything
+        /// except Highlights/Shadows/Texture/Clarity themselves -- moving
+        /// *those* four never changes what "preHS" looks like, so they are
+        /// zeroed out of the cache key, not just left as-is, to avoid
+        /// recomputing on every Highlights/Shadows drag). Renders
+        /// `imagePreMatrix(settings:)` (through cube Q/Calibration, still
+        /// linear ProPhoto) for that zeroed settings value, downscaled to a
+        /// fixed 750px long edge (matching preview/export so both see the
+        /// same value regardless of what resolution they actually render
+        /// at). Cached per `(cacheKey, zeroedSettings)` -- `Handle` itself
+        /// is an immutable `Sendable` struct, so this follows the file's
+        /// established static-dictionary-plus-lock caching pattern
+        /// (`cachedCubes`) rather than instance storage; the cache is
+        /// unbounded, same as this file's other settings-keyed caches
+        /// (`postOpsCache` etc.). `PHOTO_BENCH_SPATIAL_DIAG=1` prints the
+        /// computed ratio and its wall-clock cost to stderr, same
+        /// convention as `SpatialToneProcessor`'s own diagnostics -- this is
+        /// the number to watch for whether recomputing on most non-H/S/
+        /// Texture/Clarity slider moves is actually cheap enough.
+        public func highlightRatioBase(for settings: EditSettings) -> Double {
+            var zeroed = settings
+            zeroed.highlights = 0
+            zeroed.shadows = 0
+            zeroed.texture = 0
+            zeroed.clarity = 0
+            let key = AdobeBaseRenderer.StatsCacheKey(identity: cacheKey, settings: zeroed)
+
             AdobeBaseRenderer.statsCacheLock.lock()
-            if let cached = AdobeBaseRenderer.statsCache[cacheKey] {
+            if let cached = AdobeBaseRenderer.statsCache[key] {
                 AdobeBaseRenderer.statsCacheLock.unlock()
                 return cached
             }
@@ -291,9 +322,9 @@ public enum AdobeBaseRenderer {
 
             let diagnosticsEnabled = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] != nil
             let startTime = diagnosticsEnabled ? DispatchTime.now() : nil
-            let neutralImage = image(through: .tone, userExposureEV: 0)
+            let preHSImage = imagePreMatrix(settings: zeroed)
             let ratio = SpatialAdaptiveStats.highlightRatioBase(
-                image: neutralImage, longEdge: AdobeBaseRenderer.highlightRatioBaseLongEdge, lumaWeights: SpatialToneOps.ppLuma
+                image: preHSImage, longEdge: AdobeBaseRenderer.highlightRatioBaseLongEdge, lumaWeights: SpatialToneOps.ppLuma
             )
             if let startTime {
                 let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds &- startTime.uptimeNanoseconds) / 1_000_000
@@ -303,10 +334,18 @@ public enum AdobeBaseRenderer {
             }
 
             AdobeBaseRenderer.statsCacheLock.lock()
-            AdobeBaseRenderer.statsCache[cacheKey] = ratio
+            AdobeBaseRenderer.statsCache[key] = ratio
             AdobeBaseRenderer.statsCacheLock.unlock()
             return ratio
         }
+    }
+
+    /// `Handle.highlightRatioBase(for:)`'s cache key: a photo identity plus
+    /// the (Highlights/Shadows/Texture/Clarity-zeroed) settings that can
+    /// change what its "preHS" rendering looks like.
+    struct StatsCacheKey: Hashable {
+        var identity: CacheKey
+        var settings: EditSettings
     }
 
     /// Fixed long edge `Handle.highlightRatioBase()`/`RenderEngine`'s non-RAW
@@ -317,7 +356,7 @@ public enum AdobeBaseRenderer {
     /// not guarantee.
     static let highlightRatioBaseLongEdge = 750.0
     private static let statsCacheLock = NSLock()
-    nonisolated(unsafe) private static var statsCache: [CacheKey: Double] = [:]
+    nonisolated(unsafe) private static var statsCache: [StatsCacheKey: Double] = [:]
 
     /// Cube H depends on the DCP and the photo's white point (it is the
     /// CCT-interpolated `ProfileHueSatMap`); cubes L and TC depend only on

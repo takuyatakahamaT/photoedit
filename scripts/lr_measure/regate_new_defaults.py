@@ -64,11 +64,13 @@ def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def render_one(raw_path: Path, xmp_path: Path, out_dir: Path, engine: str | None) -> tuple[bool, str]:
+def render_one(raw_path: Path, xmp_path: Path, out_dir: Path, engine: str | None, gain_scale: str | None = None) -> tuple[bool, str]:
     out_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     for key in ("PHOTO_BENCH_SPATIAL_ORDER", "PHOTO_BENCH_SPATIAL_GAIN_SCALE", "PHOTO_BENCH_CALIBRATION_FIRST"):
-        env.pop(key, None)  # clean environment: exercise the new *defaults*, not any override
+        env.pop(key, None)  # clean environment by default: exercise the new *defaults*, not any override
+    if gain_scale:
+        env["PHOTO_BENCH_SPATIAL_GAIN_SCALE"] = gain_scale
     cmd = [str(RENDER_BIN), str(raw_path), "--output-dir", str(out_dir), "--preset", str(xmp_path)]
     if engine:
         cmd += ["--engine", engine]
@@ -90,6 +92,7 @@ def compare(reference_dir: Path, renders_dir: Path, out_json: Path) -> dict | No
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out-dir", default=".photobench/phase2/regate-new-defaults")
+    parser.add_argument("--gain-scale", default=None, help="force PHOTO_BENCH_SPATIAL_GAIN_SCALE (e.g. for a fixed-kS baseline comparison)")
     args = parser.parse_args()
     out_root = ROOT / args.out_dir
     out_root.mkdir(parents=True, exist_ok=True)
@@ -112,7 +115,7 @@ def main() -> None:
     log(f"rendering {len(jobs)} cases with a clean environment (no PHOTO_BENCH_* vars)")
     errors = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = [pool.submit(render_one, raw_path, xmp, render_dir, engine) for _, _, _, raw_path, xmp, render_dir, engine in jobs]
+        futures = [pool.submit(render_one, raw_path, xmp, render_dir, engine, args.gain_scale) for _, _, _, raw_path, xmp, render_dir, engine in jobs]
         for fut in futures:
             ok, err = fut.result()
             if not ok:

@@ -937,42 +937,87 @@ public final class RenderEngine: @unchecked Sendable {
             relativeTint: settings.relativeTint
         )
         let highlightRatioBase = SpatialToneOps.needsSpatial(settings)
-            ? Self.highlightRatioBase(source: source, sourceURL: sourceURL) : nil
+            ? highlightRatioBase(settings: settings, source: source, sourceURL: sourceURL) : nil
         image = applyNonRAWStageP(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
         image = applyNonRAWStageQ(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
         return image
     }
 
-    // MARK: - round2 set A: per-photo image-adaptive Shadows2012 amplitude
+    // MARK: - round2 set A: per-photo/per-settings image-adaptive Shadows2012 amplitude
 
-    /// Non-RAW counterpart to `AdobeBaseRenderer.Handle.highlightRatioBase()`
-    /// -- `RenderEngine` has no per-photo `Handle`-like value type to attach
-    /// a cached property to (`DecodedPhoto`, defined in `CoreImageDecoder.
-    /// swift`, is out of scope for this change), so this follows the same
-    /// static-dictionary-plus-lock pattern keyed by `sourceURL` instead. The
-    /// non-RAW `source` is already the "neutral" state (no Adobe-base
-    /// pipeline runs before it), already in the app's working space
-    /// (extended linear sRGB per `apply(settings:to:)`'s doc comment) -- so,
-    /// unlike the RAW path's linear-ProPhoto neutral render, this uses sRGB
-    /// primaries' own luma weights, not `SpatialToneOps.ppLuma`.
+    /// Non-RAW counterpart to `AdobeBaseRenderer.Handle.highlightRatioBase(
+    /// for:)`. `RenderEngine` has no per-photo `Handle`-like value type to
+    /// attach a cached property to (`DecodedPhoto`, defined in
+    /// `CoreImageDecoder.swift`, is out of scope for this change), so this
+    /// follows the same static-dictionary-plus-lock pattern, keyed by
+    /// `sourceURL` plus the (Highlights/Shadows/Texture/Clarity-zeroed)
+    /// settings instead of `Handle`'s `cacheKey` plus settings.
+    private struct NonRAWStatsCacheKey: Hashable { var url: URL; var settings: EditSettings }
     private static let nonRawStatsCacheLock = NSLock()
-    nonisolated(unsafe) private static var nonRawStatsCache: [URL: Double] = [:]
-    private static let sRGBLumaWeights = SIMD3<Double>(0.2126, 0.7152, 0.0722)
+    nonisolated(unsafe) private static var nonRawStatsCache: [NonRAWStatsCacheKey: Double] = [:]
 
-    private static func highlightRatioBase(source: CIImage, sourceURL: URL?) -> Double {
+    /// round2 set A refit (`.photobench/phase2/spatial-adaptive/model.md`
+    /// §6/§7): matches `Handle.highlightRatioBase(for:)`'s "preHS" (post-
+    /// Exposure/Contrast/Whites/Blacks/color, pre-Highlights/Shadows)
+    /// statistic exactly, just built by hand here rather than via a shared
+    /// `image(through:)`-style stage enum, since the non-RAW pipeline has no
+    /// such thing: `source` (working space) -> ProPhoto -> `exposureNonRaw`
+    /// + cube P (`postOpsCube`, unsplit -- the zeroed settings always have
+    /// `needsSpatial == false`, so there is nothing to split *against*,
+    /// same reasoning as `SpatialOrder`'s "nothing to reorder" cases) ->
+    /// cube Q + Calibration (in whichever order `CalibrationOrder.
+    /// calibrationFirst` says) -> **stop, stay in ProPhoto** (mirrors
+    /// `applyNonRAWStageP`/`Q`'s own cube-building calls exactly, just
+    /// without their early-return-in-working-space shortcuts, so this
+    /// always ends in ProPhoto regardless of which settings are zero -- the
+    /// shortcuts exist only to skip a no-op matrix round trip in the real
+    /// render path, irrelevant here). Uses `SpatialToneOps.ppLuma` (ProPhoto
+    /// weights), unlike this method's previous (neutral-render, still-
+    /// working-space) version.
+    private func highlightRatioBase(settings: EditSettings, source: CIImage, sourceURL: URL?) -> Double {
+        var zeroed = settings
+        zeroed.highlights = 0
+        zeroed.shadows = 0
+        zeroed.texture = 0
+        zeroed.clarity = 0
+
         if let sourceURL {
-            nonRawStatsCacheLock.lock()
-            if let cached = nonRawStatsCache[sourceURL] {
-                nonRawStatsCacheLock.unlock()
+            let key = Self.NonRAWStatsCacheKey(url: sourceURL, settings: zeroed)
+            Self.nonRawStatsCacheLock.lock()
+            if let cached = Self.nonRawStatsCache[key] {
+                Self.nonRawStatsCacheLock.unlock()
                 return cached
             }
-            nonRawStatsCacheLock.unlock()
+            Self.nonRawStatsCacheLock.unlock()
         }
 
         let diagnosticsEnabled = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] != nil
         let startTime = diagnosticsEnabled ? DispatchTime.now() : nil
+
+        var proPhoto = AdobeBaseRenderer.applyMatrix(DNGColorSpace.srgbLinearToProPhoto, to: source)
+        if zeroed.exposure != 0 || ToneOps.needsPostOps(zeroed) {
+            proPhoto = AdobeBaseRenderer.applyCube(
+                AdobeBaseRenderer.postOpsCube(exposureNonRaw: zeroed.exposure, settings: zeroed), to: proPhoto
+            )
+        }
+        if CalibrationOrder.calibrationFirst {
+            if ColorOps.needsCalibration(zeroed.calibration) {
+                proPhoto = AdobeBaseRenderer.applyCalibration(ColorOps.calibrationMatrix(zeroed.calibration), to: proPhoto)
+            }
+            if ColorOps.needsColorOps(zeroed) {
+                proPhoto = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postColorCube(settings: zeroed), to: proPhoto)
+            }
+        } else {
+            if ColorOps.needsColorOps(zeroed) {
+                proPhoto = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postColorCube(settings: zeroed), to: proPhoto)
+            }
+            if ColorOps.needsCalibration(zeroed.calibration) {
+                proPhoto = AdobeBaseRenderer.applyCalibration(ColorOps.calibrationMatrix(zeroed.calibration), to: proPhoto)
+            }
+        }
+
         let ratio = SpatialAdaptiveStats.highlightRatioBase(
-            image: source, longEdge: AdobeBaseRenderer.highlightRatioBaseLongEdge, lumaWeights: sRGBLumaWeights
+            image: proPhoto, longEdge: AdobeBaseRenderer.highlightRatioBaseLongEdge, lumaWeights: SpatialToneOps.ppLuma
         )
         if let startTime {
             let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds &- startTime.uptimeNanoseconds) / 1_000_000
@@ -982,9 +1027,10 @@ public final class RenderEngine: @unchecked Sendable {
         }
 
         if let sourceURL {
-            nonRawStatsCacheLock.lock()
-            nonRawStatsCache[sourceURL] = ratio
-            nonRawStatsCacheLock.unlock()
+            let key = Self.NonRAWStatsCacheKey(url: sourceURL, settings: zeroed)
+            Self.nonRawStatsCacheLock.lock()
+            Self.nonRawStatsCache[key] = ratio
+            Self.nonRawStatsCacheLock.unlock()
         }
         return ratio
     }
