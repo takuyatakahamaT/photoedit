@@ -15,6 +15,49 @@ import Foundation
 /// the CPU reference (`Double`, matching the Python reference's `float64`);
 /// `SpatialToneProcessor` is the GPU (`CIImageProcessorKernel`/Metal) version
 /// this CPU code is also the software-renderer fallback for.
+/// **Experiment only** (not a production setting): where the spatial pass
+/// [S] (Highlights/Shadows/Texture/Clarity, `AdobeBaseRenderer.
+/// applySpatialToneOps`) runs relative to cube P (Contrast/Dehaze/Whites/
+/// Blacks/Parametric/Point curve), cube Q (color), and Calibration.
+/// Controlled by `PHOTO_BENCH_SPATIAL_ORDER` purely so the C4-era
+/// full-recipe darkness regression (4 presets x 2 scenes, uniformly -0.24..
+/// -0.58 EV vs C2's +0.06..+0.34) can be measured under every plausible [S]
+/// position without hand-editing the pipeline each time. Production code
+/// never sets this env var, so `.p1SP2` (today's actual pipeline) is always
+/// what real renders get; this type exists purely for
+/// `AdobeBaseRenderer.Handle.image(settings:)`/`RenderEngine.
+/// applyNonRAWStageP`'s `switch` on it.
+public enum SpatialOrder: String {
+    /// Today's production order: cube P1 (Contrast -> Dehaze) -> [S] ->
+    /// cube P2 (Whites -> Blacks -> Parametric -> Point curve).
+    case p1SP2 = "p1-s-p2"
+    /// [S] -> cube P (Contrast -> Dehaze -> Whites -> Blacks -> Parametric
+    /// -> Point curve, unsplit -- valid because nothing before Contrast
+    /// depends on [S] having already run in this ordering).
+    case sP1P2 = "s-p1-p2"
+    /// cube P (unsplit, as above) -> [S], run after the *entire* Basic
+    /// panel instead of in the middle of it.
+    case p1P2S = "p1-p2-s"
+    /// RAW: right after Stage E (exposure), before Stage L (look table) --
+    /// i.e. before the DCP look/tone curve cubes even run. Non-RAW: right
+    /// after `exposureNonRaw`, before Contrast (mirrors the RAW
+    /// Stage-E-relative position as closely as a pipeline with no Stage
+    /// L/T can).
+    case preTone = "pre-tone"
+    /// After cube Q (`ColorOps`) and Calibration, the last thing before the
+    /// ProPhoto -> working-space matrix.
+    case postQ = "post-q"
+
+    public static var current: SpatialOrder {
+        guard let raw = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_ORDER"],
+              let order = SpatialOrder(rawValue: raw)
+        else {
+            return .p1SP2
+        }
+        return order
+    }
+}
+
 public enum SpatialToneOps {
     public static let identifier = "spatial-v2-local-laplacian-highlights-shadows-v1"
 

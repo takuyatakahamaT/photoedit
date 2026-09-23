@@ -950,32 +950,66 @@ public final class RenderEngine: @unchecked Sendable {
     /// bypass `RelativeColorAdjustmentTests.zeroIsAnExactBypassAndKeepsThe
     /// ExistingPipelineFingerprint` (and this function's own callers) rely on.
     private func applyNonRAWStageP(settings: EditSettings, to image: CIImage) -> CIImage {
-        guard settings.exposure != 0 || ToneOps.needsPostOps(settings) || SpatialToneOps.needsSpatial(settings) else {
+        let order = SpatialOrder.current
+        let needsSpatial = SpatialToneOps.needsSpatial(settings)
+        guard settings.exposure != 0 || ToneOps.needsPostOps(settings) || needsSpatial else {
             return image
         }
-        let proPhoto = AdobeBaseRenderer.applyMatrix(DNGColorSpace.srgbLinearToProPhoto, to: image)
-        let result: CIImage
-        if SpatialToneOps.needsSpatial(settings) {
-            var stage = proPhoto
-            if settings.exposure != 0 || ToneOps.needsContrastOrDehaze(settings) {
-                stage = AdobeBaseRenderer.applyCube(
-                    AdobeBaseRenderer.postOpsCubeP1(
-                        exposureNonRaw: settings.exposure, contrast: settings.contrast, dehaze: settings.dehaze
-                    ),
-                    to: stage
-                )
+        var stage = AdobeBaseRenderer.applyMatrix(DNGColorSpace.srgbLinearToProPhoto, to: image)
+
+        // **Experiment only** (`SpatialOrder`'s doc comment): every branch
+        // but `.p1SP2` (today's actual production pipeline) exists purely
+        // to measure the C4-era full-recipe darkness regression under a
+        // different [S] position; mirrors `AdobeBaseRenderer.Handle.
+        // image(settings:)`'s RAW-path `switch` exactly.
+        if needsSpatial {
+            switch order {
+            case .preTone:
+                if settings.exposure != 0 {
+                    let exposureOnly = AdobeBaseRenderer.buildCubeData { ToneOps.exposureNonRaw($0, ev: settings.exposure) }
+                    stage = AdobeBaseRenderer.applyCube(exposureOnly, to: stage)
+                }
+                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage)
+                if ToneOps.needsPostOps(settings) {
+                    stage = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: stage)
+                }
+            case .sP1P2:
+                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage)
+                if settings.exposure != 0 || ToneOps.needsPostOps(settings) {
+                    stage = AdobeBaseRenderer.applyCube(
+                        AdobeBaseRenderer.postOpsCube(exposureNonRaw: settings.exposure, settings: settings), to: stage
+                    )
+                }
+            case .p1P2S, .postQ:
+                if settings.exposure != 0 || ToneOps.needsPostOps(settings) {
+                    stage = AdobeBaseRenderer.applyCube(
+                        AdobeBaseRenderer.postOpsCube(exposureNonRaw: settings.exposure, settings: settings), to: stage
+                    )
+                }
+                if order == .p1P2S {
+                    stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage)
+                }
+            // `.postQ`: [S] deferred to `applyNonRAWStageQ`'s tail.
+            case .p1SP2:
+                if settings.exposure != 0 || ToneOps.needsContrastOrDehaze(settings) {
+                    stage = AdobeBaseRenderer.applyCube(
+                        AdobeBaseRenderer.postOpsCubeP1(
+                            exposureNonRaw: settings.exposure, contrast: settings.contrast, dehaze: settings.dehaze
+                        ),
+                        to: stage
+                    )
+                }
+                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage)
+                if ToneOps.needsPostOpsAfterContrast(settings) {
+                    stage = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCubeP2(settings: settings), to: stage)
+                }
             }
-            stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage)
-            if ToneOps.needsPostOpsAfterContrast(settings) {
-                stage = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCubeP2(settings: settings), to: stage)
-            }
-            result = stage
         } else {
-            result = AdobeBaseRenderer.applyCube(
-                AdobeBaseRenderer.postOpsCube(exposureNonRaw: settings.exposure, settings: settings), to: proPhoto
+            stage = AdobeBaseRenderer.applyCube(
+                AdobeBaseRenderer.postOpsCube(exposureNonRaw: settings.exposure, settings: settings), to: stage
             )
         }
-        return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: result)
+        return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: stage)
     }
 
     /// `docs/PHASE2_C2_C3.md`'s non-RAW Stage Q: working space -> ProPhoto ->
@@ -985,7 +1019,11 @@ public final class RenderEngine: @unchecked Sendable {
     /// `AdobeBaseRenderer.applyCalibration`'s doc comment) -> working space.
     /// Mirrors `applyNonRAWStageP`'s exact-bypass-at-neutral-settings shape.
     private func applyNonRAWStageQ(settings: EditSettings, to image: CIImage) -> CIImage {
-        guard ColorOps.needsColorOps(settings) || ColorOps.needsCalibration(settings.calibration) else {
+        // **Experiment only** (`SpatialOrder`'s doc comment): `.postQ`
+        // defers [S] here, after cube Q/Calibration, instead of
+        // `applyNonRAWStageP` running it.
+        let deferredSpatial = SpatialOrder.current == .postQ && SpatialToneOps.needsSpatial(settings)
+        guard ColorOps.needsColorOps(settings) || ColorOps.needsCalibration(settings.calibration) || deferredSpatial else {
             return image
         }
         var proPhoto = AdobeBaseRenderer.applyMatrix(DNGColorSpace.srgbLinearToProPhoto, to: image)
@@ -996,6 +1034,9 @@ public final class RenderEngine: @unchecked Sendable {
             proPhoto = AdobeBaseRenderer.applyCalibration(
                 ColorOps.calibrationMatrix(settings.calibration), to: proPhoto
             )
+        }
+        if deferredSpatial {
+            proPhoto = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: proPhoto)
         }
         return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: proPhoto)
     }

@@ -176,20 +176,64 @@ public enum AdobeBaseRenderer {
                 ),
                 variant: variant
             )
-            var image = AdobeBaseRenderer.applyRemainingStages(
-                to: stageM, assets: effectiveAssets, cubes: effectiveCubes,
-                userEV: settings.exposure, variant: variant, through: .tone
-            )
-            if SpatialToneOps.needsSpatial(settings) {
-                if ToneOps.needsContrastOrDehaze(settings) {
-                    image = AdobeBaseRenderer.applyCube(
-                        AdobeBaseRenderer.postOpsCubeP1(exposureNonRaw: 0, contrast: settings.contrast, dehaze: settings.dehaze),
-                        to: image
-                    )
-                }
+            let order = SpatialOrder.current
+            let needsSpatial = SpatialToneOps.needsSpatial(settings)
+
+            var image: CIImage
+            if needsSpatial && order == .preTone {
+                // **Experiment only** (`SpatialOrder`'s doc comment): stop
+                // right after Stage E, run [S] there, then finish Stage L/T
+                // by hand (mirroring `applyRemainingStages`'s own tail).
+                image = AdobeBaseRenderer.applyRemainingStages(
+                    to: stageM, assets: effectiveAssets, cubes: effectiveCubes,
+                    userEV: settings.exposure, variant: variant, through: .exposure
+                )
                 image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image)
-                if ToneOps.needsPostOpsAfterContrast(settings) {
-                    image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCubeP2(settings: settings), to: image)
+                image = AdobeBaseRenderer.applyCube(effectiveCubes.look, to: image)
+                image = AdobeBaseRenderer.applyCube(effectiveCubes.tone, to: image)
+            } else {
+                image = AdobeBaseRenderer.applyRemainingStages(
+                    to: stageM, assets: effectiveAssets, cubes: effectiveCubes,
+                    userEV: settings.exposure, variant: variant, through: .tone
+                )
+            }
+
+            // **Experiment only**: every branch below except the default
+            // (`.p1SP2`, today's actual production pipeline) exists purely
+            // to measure the C4-era full-recipe darkness regression under a
+            // different [S] position -- see `SpatialOrder`'s doc comment.
+            // `.preTone` already ran [S] above, so it only needs cube P
+            // unsplit here, same as `.sP1P2`/`.p1P2S`.
+            if needsSpatial {
+                switch order {
+                case .preTone:
+                    if ToneOps.needsPostOps(settings) {
+                        image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image)
+                    }
+                case .sP1P2:
+                    image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image)
+                    if ToneOps.needsPostOps(settings) {
+                        image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image)
+                    }
+                case .p1P2S, .postQ:
+                    if ToneOps.needsPostOps(settings) {
+                        image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image)
+                    }
+                    if order == .p1P2S {
+                        image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image)
+                    }
+                    // `.postQ`: [S] deferred to after cube Q/Calibration below.
+                case .p1SP2:
+                    if ToneOps.needsContrastOrDehaze(settings) {
+                        image = AdobeBaseRenderer.applyCube(
+                            AdobeBaseRenderer.postOpsCubeP1(exposureNonRaw: 0, contrast: settings.contrast, dehaze: settings.dehaze),
+                            to: image
+                        )
+                    }
+                    image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image)
+                    if ToneOps.needsPostOpsAfterContrast(settings) {
+                        image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCubeP2(settings: settings), to: image)
+                    }
                 }
             } else if ToneOps.needsPostOps(settings) {
                 image = AdobeBaseRenderer.applyCube(
@@ -201,6 +245,9 @@ public enum AdobeBaseRenderer {
             }
             if ColorOps.needsCalibration(settings.calibration) {
                 image = AdobeBaseRenderer.applyCalibration(ColorOps.calibrationMatrix(settings.calibration), to: image)
+            }
+            if needsSpatial && order == .postQ {
+                image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image)
             }
             return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: image)
         }
