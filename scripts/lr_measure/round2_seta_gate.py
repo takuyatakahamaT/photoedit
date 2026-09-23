@@ -64,13 +64,15 @@ def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def render_one(raw_path: Path, xmp_path: Path, out_dir: Path, gain_scale: str | None) -> tuple[bool, str]:
+def render_one(raw_path: Path, xmp_path: Path, out_dir: Path, gain_scale: str | None, adaptive_version: str | None = None) -> tuple[bool, str]:
     out_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     for key in ("PHOTO_BENCH_SPATIAL_ORDER", "PHOTO_BENCH_SPATIAL_GAIN_SCALE", "PHOTO_BENCH_CALIBRATION_FIRST"):
         env.pop(key, None)
     if gain_scale:
         env["PHOTO_BENCH_SPATIAL_GAIN_SCALE"] = gain_scale
+    if adaptive_version:
+        env["PHOTO_BENCH_SPATIAL_ADAPTIVE"] = adaptive_version
     cmd = [str(RENDER_BIN), str(raw_path), "--output-dir", str(out_dir), "--preset", str(xmp_path)]
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if proc.returncode != 0:
@@ -91,13 +93,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out-dir", default=".photobench/phase2/regate-round2-seta")
     parser.add_argument("--gain-scale", default=None, help="force PHOTO_BENCH_SPATIAL_GAIN_SCALE (e.g. for a fixed-kS baseline comparison)")
+    parser.add_argument("--adaptive-version", default=None, help="set PHOTO_BENCH_SPATIAL_ADAPTIVE (v2 / shift-refit / shift-v2ks)")
+    parser.add_argument("--exclude-scenes", nargs="*", default=[], help="scene names to skip (e.g. geometry-mismatch verticals)")
     args = parser.parse_args()
     out_root = ROOT / args.out_dir
     out_root.mkdir(parents=True, exist_ok=True)
 
+    excluded = set(args.exclude_scenes)
     jobs = []
     for variant in VARIANTS:
         for scene, raw_path in RAW_SCENES.items():
+            if scene in excluded:
+                continue
             xmp = xmp_path_for(scene, variant)
             render_dir = out_root / "renders" / variant
             jobs.append((scene, variant, raw_path, xmp, render_dir))
@@ -110,7 +117,7 @@ def main() -> None:
     log(f"rendering {len(jobs)} cases with a clean environment (no PHOTO_BENCH_* vars)")
     errors = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = [pool.submit(render_one, raw_path, xmp, render_dir, args.gain_scale) for _, _, raw_path, xmp, render_dir in jobs]
+        futures = [pool.submit(render_one, raw_path, xmp, render_dir, args.gain_scale, args.adaptive_version) for _, _, raw_path, xmp, render_dir in jobs]
         for fut in futures:
             ok, err = fut.result()
             if not ok:

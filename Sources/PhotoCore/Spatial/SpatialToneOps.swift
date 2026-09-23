@@ -125,13 +125,60 @@ public struct SpatialShift: Sendable, Equatable {
 
     public static let zero = SpatialShift()
 
-    public static var current: SpatialShift {
-        guard let raw = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_SHIFT"] else { return .zero }
+    /// `model.md` §10: `version`-gated -- `.v2` never shifts (`hShift` has
+    /// no measured law either way, `model.md` §10.1); `.shiftRefit`/
+    /// `.shiftV2KS` both use `SpatialAdaptiveLaw.sShift(meanFull:)`.
+    public static func adaptive(meanLn: Double, version: SpatialAdaptiveVersion = .v2) -> SpatialShift {
+        switch version {
+        case .v2:
+            return .zero
+        case .shiftRefit, .shiftV2KS:
+            return SpatialShift(highlights: 0, shadows: SpatialAdaptiveLaw.sShift(meanFull: meanLn))
+        }
+    }
+
+    /// Env-var override/experiment hook, resolved **only** by the pipeline
+    /// entry point, same convention as `SpatialGainScale.current` -- unset
+    /// *or* unparseable falls back to `.adaptive(meanLn:version:)` when a
+    /// per-photo statistic is available, else `.zero`. `PHOTO_BENCH_
+    /// SPATIAL_SHIFT`'s explicit value always wins over the adaptive law.
+    public static func current(meanLn: Double?) -> SpatialShift {
+        let fallback = meanLn.map { SpatialShift.adaptive(meanLn: $0, version: SpatialAdaptiveVersion.current) } ?? .zero
+        guard let raw = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_SHIFT"] else { return fallback }
         let parts = raw.split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
-        guard parts.count == 2 else { return .zero }
+        guard parts.count == 2 else { return fallback }
         let values = parts.compactMap { Double($0) }
-        guard values.count == 2 else { return .zero }
+        guard values.count == 2 else { return fallback }
         return SpatialShift(highlights: values[0], shadows: values[1])
+    }
+
+    /// Non-RAW's adopted shift law (`nonraw-hs/model.md` §5):
+    /// `SpatialAdaptiveLaw.nonRAWSShift(fullP90:)` for shadows, `0` for
+    /// highlights (unmeasured). Single law, no version switch.
+    public static func adaptiveNonRAW(fullP90: Double) -> SpatialShift {
+        SpatialShift(highlights: SpatialAdaptiveLaw.hShiftNonRAW, shadows: SpatialAdaptiveLaw.nonRAWSShift(fullP90: fullP90))
+    }
+
+    /// Non-RAW counterpart to `current(meanLn:)`.
+    public static func currentNonRAW(fullP90: Double?) -> SpatialShift {
+        let fallback = fullP90.map { SpatialShift.adaptiveNonRAW(fullP90: $0) } ?? .zero
+        guard let raw = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_SHIFT"] else { return fallback }
+        let parts = raw.split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count == 2 else { return fallback }
+        let values = parts.compactMap { Double($0) }
+        guard values.count == 2 else { return fallback }
+        return SpatialShift(highlights: values[0], shadows: values[1])
+    }
+
+    /// Single dispatcher `applySpatialToneOps` calls, mirroring
+    /// `SpatialGainScale.current(stats:path:)`.
+    public static func current(stats: SpatialAdaptiveStats.Stats?, path: SpatialAdaptivePath) -> SpatialShift {
+        switch path {
+        case .raw:
+            return current(meanLn: stats?.meanLn)
+        case .nonRAW:
+            return currentNonRAW(fullP90: stats?.fullP90)
+        }
     }
 }
 
@@ -171,8 +218,18 @@ public struct SpatialGainScale: Sendable, Equatable {
     /// `model.md` §5/§8 pending a future round's negative-side measurement.
     /// kH stays at the fixed production value: `model.md` §4.1 found no
     /// usable image-adaptive predictor for it.
-    public static func adaptive(highlightRatioBase: Double) -> SpatialGainScale {
-        let kS = SpatialAdaptiveLaw.kS(highlightRatioBase: highlightRatioBase)
+    /// `version` picks which `SpatialAdaptiveLaw` kS coefficients apply
+    /// (`model.md` §10, `SpatialAdaptiveVersion`'s doc comment); default
+    /// `.v2` keeps every existing call site (including tests) that does not
+    /// pass `version` on today's law, unchanged.
+    public static func adaptive(highlightRatioBase: Double, version: SpatialAdaptiveVersion = .v2) -> SpatialGainScale {
+        let kS: Double
+        switch version {
+        case .v2, .shiftV2KS:
+            kS = SpatialAdaptiveLaw.kS(highlightRatioBase: highlightRatioBase)
+        case .shiftRefit:
+            kS = SpatialAdaptiveLaw.kSRefit(highlightRatioBase: highlightRatioBase)
+        }
         return SpatialGainScale(
             highlightsNeg: SpatialAdaptiveLaw.kHFixed, highlightsPos: SpatialAdaptiveLaw.kHFixed,
             shadowsNeg: kS, shadowsPos: kS
@@ -190,7 +247,7 @@ public struct SpatialGainScale: Sendable, Equatable {
     /// law when both are present, matching `model.md` §6 item 4 (keeps the
     /// env var usable for A/B comparison against the adaptive default).
     public static func current(highlightRatioBase: Double?) -> SpatialGainScale {
-        let fallback = highlightRatioBase.map { SpatialGainScale.adaptive(highlightRatioBase: $0) } ?? .productionDefault
+        let fallback = highlightRatioBase.map { SpatialGainScale.adaptive(highlightRatioBase: $0, version: SpatialAdaptiveVersion.current) } ?? .productionDefault
         guard let raw = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_GAIN_SCALE"] else {
             return fallback
         }
@@ -199,6 +256,54 @@ public struct SpatialGainScale: Sendable, Equatable {
         let values = parts.compactMap { Double($0) }
         guard values.count == 4 else { return fallback }
         return SpatialGainScale(highlightsNeg: values[0], highlightsPos: values[1], shadowsNeg: values[2], shadowsPos: values[3])
+    }
+
+    /// Non-RAW's adopted law (`nonraw-hs/results/presets.json`'s "proposed_
+    /// adaptive"): `nonRAWKH(baseHighlightRatio:)` for both highlight signs,
+    /// `nonRAWKS(fullHighlightRatio:)` for both shadow signs -- a single law,
+    /// no `SpatialAdaptiveVersion` switch (see that type's doc comment).
+    public static func adaptiveNonRAW(baseHighlightRatio: Double, fullHighlightRatio: Double) -> SpatialGainScale {
+        let kH = SpatialAdaptiveLaw.nonRAWKH(baseHighlightRatio: baseHighlightRatio)
+        let kS = SpatialAdaptiveLaw.nonRAWKS(fullHighlightRatio: fullHighlightRatio)
+        return SpatialGainScale(highlightsNeg: kH, highlightsPos: kH, shadowsNeg: kS, shadowsPos: kS)
+    }
+
+    /// Non-RAW counterpart to `current(highlightRatioBase:)` -- same
+    /// override/fallback convention, `.adaptiveNonRAW(baseHighlightRatio:
+    /// fullHighlightRatio:)` instead of the RAW law. Falls back to
+    /// `.productionDefault` unless *both* statistics are available (they
+    /// always come from the same `Stats` value together in production, so
+    /// this only matters for a caller with no cached per-photo context).
+    public static func currentNonRAW(baseHighlightRatio: Double?, fullHighlightRatio: Double?) -> SpatialGainScale {
+        let fallback: SpatialGainScale
+        if let baseHighlightRatio, let fullHighlightRatio {
+            fallback = .adaptiveNonRAW(baseHighlightRatio: baseHighlightRatio, fullHighlightRatio: fullHighlightRatio)
+        } else {
+            fallback = .productionDefault
+        }
+        guard let raw = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_GAIN_SCALE"] else {
+            return fallback
+        }
+        let parts = raw.split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count == 4 else { return fallback }
+        let values = parts.compactMap { Double($0) }
+        guard values.count == 4 else { return fallback }
+        return SpatialGainScale(highlightsNeg: values[0], highlightsPos: values[1], shadowsNeg: values[2], shadowsPos: values[3])
+    }
+
+    /// Single dispatcher `applySpatialToneOps` calls: routes to the RAW or
+    /// non-RAW resolution above by `path` (`SpatialAdaptivePath`'s doc
+    /// comment), reading whichever `stats` field(s) that path's law needs.
+    /// Note `.nonRAW`'s kH and `.raw`'s kS both read the same
+    /// `highlightRatioBase` field -- by design (`Stats`'s doc comment), not
+    /// a mix-up.
+    public static func current(stats: SpatialAdaptiveStats.Stats?, path: SpatialAdaptivePath) -> SpatialGainScale {
+        switch path {
+        case .raw:
+            return current(highlightRatioBase: stats?.highlightRatioBase)
+        case .nonRAW:
+            return currentNonRAW(baseHighlightRatio: stats?.highlightRatioBase, fullHighlightRatio: stats?.fullHighlightRatio)
+        }
     }
 }
 
@@ -227,6 +332,141 @@ public enum SpatialAdaptiveLaw {
     public static func kS(highlightRatioBase: Double) -> Double {
         min(max(intercept + slope * highlightRatioBase, clampMin), clampMax)
     }
+
+    /// `model.md` §10.3's "再fit" kS law: scene-optimal kS re-fit jointly
+    /// with `sShift` (same `highlightRatioBase` feature, new coefficients --
+    /// the shallower slope vs. `slope` above is read there as "shift now
+    /// carries some of the darkness signal, so kS needs less of it"). Paired
+    /// with `sShift` under `PHOTO_BENCH_SPATIAL_ADAPTIVE="shift-refit"`.
+    public static let refitIntercept = 0.6190
+    public static let refitSlope = 0.9441
+    public static let refitClampMin = 0.6
+    public static let refitClampMax = 1.5
+
+    public static func kSRefit(highlightRatioBase: Double) -> Double {
+        min(max(refitIntercept + refitSlope * highlightRatioBase, refitClampMin), refitClampMax)
+    }
+
+    /// `model.md` §10.3: `sShift = clamp(shiftIntercept + shiftSlope *
+    /// meanFull, shiftClampMin, shiftClampMax)` -- a 1-variable regression
+    /// (n=14 scenes) against each scene's jointly-optimal `sShift`
+    /// (`SpatialShift.shadows`). `meanFull` is `SpatialAdaptiveStats.Stats.
+    /// meanLn` -- the *unblurred* Ln plane's plain mean (`model.md`'s
+    /// "mean(全体)"), not the blurred plane `kS`'s own `highlightRatioBase`
+    /// reads. Highlights has no shift law (`hShift` stays `0`; `model.md`
+    /// §10.1 only ever measured Shadows2012). `kHFixed` is unaffected --
+    /// this only changes which `kS` law pairs with it, not `kH` itself.
+    public static let shiftIntercept = 1.5609
+    public static let shiftSlope = 0.5757
+    public static let shiftClampMin = -3.0
+    public static let shiftClampMax = 0.0
+
+    public static func sShift(meanFull: Double) -> Double {
+        min(max(shiftIntercept + shiftSlope * meanFull, shiftClampMin), shiftClampMax)
+    }
+
+    // MARK: - Non-RAW (`.photobench/phase2/nonraw-hs/model.md` §5/§8)
+    //
+    // A **separate** coefficient set, deliberately not shared with the RAW
+    // constants above: `model.md` §3.1 found the RAW-fit law applied as-is
+    // to non-RAW performs *worse* than a flat fixed value, so non-RAW needs
+    // its own fit, not a reuse of RAW's. Both `nonRAWKS`'s and `nonRAWSShift`'s
+    // features are the *unblurred* ("full") Ln plane -- no Gaussian blur is
+    // needed for non-RAW at all (`model.md` §5), unlike RAW's `kS`/`sShift`.
+
+    /// Non-RAW's *former* fixed kH (`model.md` §5: "0.5->0.7"), superseded by
+    /// `nonRAWKH(baseHighlightRatio:)` below: bright-JPEG presets (DSC02072)
+    /// regressed vs. the pre-Turn-B shared law under a flat 0.7 (colorful
+    /// 2.92->3.71 meanΔE00), and `nonraw-hs/results/presets.json`'s
+    /// "proposed_adaptive" config confirmed an image-adaptive kH recovers
+    /// most of that (colorful ->1.99). Kept only as the historical/previous-
+    /// law reference value for regate scripts' comparison baselines -- no
+    /// longer read by any production code path.
+    public static let kHFixedNonRAW = 0.7
+    /// non-RAW hShift: unmeasured/not adopted, stays `0` (`model.md` §5).
+    public static let hShiftNonRAW = 0.0
+
+    /// Non-RAW's image-adaptive kH law (`nonraw-hs/results/presets.json`'s
+    /// "proposed_adaptive": `kH_feature: "base.highlightRatio"`). Unlike
+    /// `kS`/`sShift` (whose feature is the *unblurred* "full" plane),
+    /// `baseHighlightRatio` is the *blurred* (σ32px@1500) plane's ratio --
+    /// the exact same definition as RAW's `highlightRatioBase`, just applied
+    /// to the plain input image instead of a RAW preHS render (`Stats`'s doc
+    /// comment). A bright, already-highlight-heavy input (e.g. DSC02072,
+    /// baseHighlightRatio≈0.711) pushes kH down toward the floor -- a strong
+    /// flat 0.7 highlight pull was over-correcting exactly those images.
+    public static let nonRAWKHIntercept = 1.0217
+    public static let nonRAWKHSlope = -1.9300
+    public static let nonRAWKHClampMin = 0.3
+    public static let nonRAWKHClampMax = 1.1
+
+    public static func nonRAWKH(baseHighlightRatio: Double) -> Double {
+        min(max(nonRAWKHIntercept + nonRAWKHSlope * baseHighlightRatio, nonRAWKHClampMin), nonRAWKHClampMax)
+    }
+
+    public static let nonRAWKSIntercept = 0.6198
+    public static let nonRAWKSSlope = 1.9151
+    public static let nonRAWKSClampMin = 0.6
+    /// `model.md` §5's own caveat: the training data (n=8 scenes) only ever
+    /// observed optimal kS up to 1.2 -- this upper clamp is a "grid search
+    /// ceiling" safety wall, not a validated bound, and DSC02072-like bright
+    /// JPEGs reach it in practice.
+    public static let nonRAWKSClampMax = 2.2
+
+    public static func nonRAWKS(fullHighlightRatio: Double) -> Double {
+        min(max(nonRAWKSIntercept + nonRAWKSSlope * fullHighlightRatio, nonRAWKSClampMin), nonRAWKSClampMax)
+    }
+
+    public static let nonRAWShiftIntercept = 0.2363
+    public static let nonRAWShiftSlope = 0.6521
+    public static let nonRAWShiftClampMin = -2.0
+    public static let nonRAWShiftClampMax = 0.0
+
+    public static func nonRAWSShift(fullP90: Double) -> Double {
+        min(max(nonRAWShiftIntercept + nonRAWShiftSlope * fullP90, nonRAWShiftClampMin), nonRAWShiftClampMax)
+    }
+}
+
+/// Which pipeline resolved a `SpatialGainScale`/`SpatialShift` -- RAW and
+/// non-RAW each have their own `SpatialAdaptiveLaw` coefficient set (and
+/// non-RAW has no `SpatialAdaptiveVersion` concept at all: a single adopted
+/// law, not several to A/B). `PHOTO_BENCH_SPATIAL_DIAG=1`'s diagnostic line
+/// prints this so a log line is unambiguous about which law produced it.
+public enum SpatialAdaptivePath: String, Sendable {
+    case raw
+    case nonRAW = "nonraw"
+}
+
+/// `PHOTO_BENCH_SPATIAL_ADAPTIVE="v2" | "shift-refit" | "shift-v2ks"` (RAW
+/// only -- non-RAW has a single adopted law, see `SpatialAdaptiveLaw`'s
+/// "Non-RAW" section): selects which `SpatialAdaptiveLaw` coefficient set
+/// `SpatialGainScale.current`/`SpatialShift.current` fall back to when their
+/// own explicit env vars (`PHOTO_BENCH_SPATIAL_GAIN_SCALE`/`_SHIFT`) are
+/// unset. Unset/unrecognized defaults to **`.shiftRefit`** -- the
+/// coordinator's adopted RAW default as of `.photobench/phase2/spatial-
+/// adaptive/model.md` §10's real-engine A/B/C comparison (round2 set A:
+/// -3.0% vs `.v2`, the only one of the three that beat `.v2` there); `.v2`
+/// (`SpatialAdaptiveLaw.kS`, `sShift` always `0`) and `.shiftV2KS` remain
+/// selectable for comparison, same experiment-only-switch convention as
+/// `SpatialOrder`/`SpatialGainScale` before it.
+public enum SpatialAdaptiveVersion: String, Sendable {
+    /// Today's production law: `SpatialAdaptiveLaw.kS`, no shift.
+    case v2
+    /// `model.md` §10.4's "shift + 再fitkS法則": `SpatialAdaptiveLaw.kSRefit`
+    /// + `sShift`.
+    case shiftRefit = "shift-refit"
+    /// `model.md` §10.4's "shift + 旧kS法則": today's `kS` law (unchanged)
+    /// + `sShift`.
+    case shiftV2KS = "shift-v2ks"
+
+    public static var current: SpatialAdaptiveVersion {
+        guard let raw = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_ADAPTIVE"],
+              let version = SpatialAdaptiveVersion(rawValue: raw)
+        else {
+            return .shiftRefit
+        }
+        return version
+    }
 }
 
 /// round2 set A (`.photobench/phase2/spatial-adaptive/model.md` §3.1/§6):
@@ -241,7 +481,7 @@ public enum SpatialAdaptiveLaw {
 /// variant) -- the resulting whole-image ratio differs by a negligible
 /// amount at the image border either way. Verified only via a synthetic-
 /// image unit test with an analytically-known ratio, not a Python fixture.
-enum SpatialAdaptiveStats {
+public enum SpatialAdaptiveStats {
     /// `model.md` §3.1's analysis resolution/sigma pair (1500px long edge,
     /// sigma 32px = 2.1333% of that width); other resolutions scale sigma
     /// by the same width fraction (`model.md` §5), matching this file's own
@@ -310,9 +550,7 @@ enum SpatialAdaptiveStats {
     /// (straight RGB) at `width`x`height` -- `longEdge` is `max(width,
     /// height)`, used only to pick the matching blur sigma.
     static func highlightRatioBase(rgb: [SIMD3<Double>], width: Int, height: Int, lumaWeights: SIMD3<Double>) -> Double {
-        let ln = lnPlane(rgb: rgb, width: width, height: height, lumaWeights: lumaWeights)
-        let blurred = gaussianBlur(ln, sigma: sigma(forLongEdge: Double(max(width, height))))
-        return highlightRatio(blurred)
+        computeStats(rgb: rgb, width: width, height: height, lumaWeights: lumaWeights).highlightRatioBase
     }
 
     /// End-to-end from a `CIImage` (any resolution): downscales to at most
@@ -323,16 +561,85 @@ enum SpatialAdaptiveStats {
     /// `0` (the law's most-negative, clamp-floor-adjacent answer) rather
     /// than propagating an error for what is a soft, best-effort feature.
     static func highlightRatioBase(image: CIImage, longEdge: Double, lumaWeights: SIMD3<Double>) -> Double {
+        computeStats(image: image, longEdge: longEdge, lumaWeights: lumaWeights).highlightRatioBase
+    }
+
+    /// The `p` (0...100) percentile of `plane`'s values, linearly
+    /// interpolated between the two closest ranks -- `numpy.percentile`'s
+    /// default method, matching `.photobench/phase2/nonraw-hs/model.md`
+    /// §1.4's own analysis script.
+    static func percentile(_ plane: SpatialPlane, _ p: Double) -> Double {
+        guard !plane.values.isEmpty else { return 0 }
+        let sorted = plane.values.sorted()
+        guard sorted.count > 1 else { return sorted[0] }
+        let rank = (p / 100.0) * Double(sorted.count - 1)
+        let lowIndex = Int(rank.rounded(.down))
+        let highIndex = Int(rank.rounded(.up))
+        guard lowIndex != highIndex else { return sorted[lowIndex] }
+        let frac = rank - Double(lowIndex)
+        return sorted[lowIndex] + (sorted[highIndex] - sorted[lowIndex]) * frac
+    }
+
+    /// Bundles every per-photo(/settings) statistic either family's law
+    /// reads, all cheap derivatives of the exact same one `lnPlane` (so
+    /// computing all four costs one render either way):
+    ///  - `highlightRatioBase`/`meanLn`: RAW's `SpatialAdaptiveLaw.kS`/
+    ///    `sShift` inputs (round2 set A `model.md` §10) -- from the
+    ///    *blurred* ("ベース") plane / the *unblurred* ("全体") plane's mean,
+    ///    both at this file's 750px-equivalent downscale. `highlightRatioBase`
+    ///    is now **also** non-RAW's `nonRAWKH` input (`nonraw-hs/results/
+    ///    presets.json`'s "proposed_adaptive"): same blurred-plane definition,
+    ///    just computed from the plain input image instead of a RAW preHS
+    ///    render -- `RenderEngine.nonRAWAdaptiveStats` already populates this
+    ///    field correctly for that path, it was simply unread before.
+    ///  - `fullHighlightRatio`/`fullP90`: non-RAW's `SpatialAdaptiveLaw.
+    ///    nonRAWKS`/`nonRAWSShift` inputs (`nonraw-hs/model.md` §5) -- both
+    ///    from the *unblurred* ("full") plane directly (no Gaussian blur
+    ///    needed at all for non-RAW, per that model.md's own §5 note).
+    public struct Stats: Equatable, Sendable {
+        public var highlightRatioBase: Double
+        public var meanLn: Double
+        public var fullHighlightRatio: Double
+        public var fullP90: Double
+
+        public init(highlightRatioBase: Double, meanLn: Double, fullHighlightRatio: Double, fullP90: Double) {
+            self.highlightRatioBase = highlightRatioBase
+            self.meanLn = meanLn
+            self.fullHighlightRatio = fullHighlightRatio
+            self.fullP90 = fullP90
+        }
+    }
+
+    static func computeStats(rgb: [SIMD3<Double>], width: Int, height: Int, lumaWeights: SIMD3<Double>) -> Stats {
+        let ln = lnPlane(rgb: rgb, width: width, height: height, lumaWeights: lumaWeights)
+        let meanLn = ln.values.isEmpty ? 0 : ln.values.reduce(0, +) / Double(ln.values.count)
+        let fullHighlightRatio = highlightRatio(ln)
+        let fullP90 = percentile(ln, 90)
+        let blurred = gaussianBlur(ln, sigma: sigma(forLongEdge: Double(max(width, height))))
+        return Stats(
+            highlightRatioBase: highlightRatio(blurred), meanLn: meanLn,
+            fullHighlightRatio: fullHighlightRatio, fullP90: fullP90
+        )
+    }
+
+    /// Renders `image` (downscaled to at most `longEdge`, see
+    /// `highlightRatioBase(image:longEdge:lumaWeights:)`'s doc comment for
+    /// the resize/non-throwing conventions) to a straight-RGB `[SIMD3
+    /// <Double>]` buffer at whatever resolution it ends up at. Split out of
+    /// `computeStats(image:...)` so a degenerate extent's `nil` can be
+    /// distinguished from a real (possibly all-zero) image, without
+    /// `computeStats` needing its own copy of this guard/render logic.
+    private static func renderToStraightRGB(image: CIImage, longEdge: Double) -> (rgb: [SIMD3<Double>], width: Int, height: Int)? {
         let extent = image.extent.integral
-        guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else { return 0 }
+        guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else { return nil }
         let currentLongEdge = max(extent.width, extent.height)
         let scale = min(1, CGFloat(longEdge) / currentLongEdge)
         let scaled = scale < 1 ? image.transformed(by: CGAffineTransform(scaleX: scale, y: scale)) : image
         let scaledExtent = scaled.extent.integral
-        guard scaledExtent.width.isFinite, scaledExtent.height.isFinite, scaledExtent.width > 0, scaledExtent.height > 0 else { return 0 }
+        guard scaledExtent.width.isFinite, scaledExtent.height.isFinite, scaledExtent.width > 0, scaledExtent.height > 0 else { return nil }
         let width = Int(scaledExtent.width)
         let height = Int(scaledExtent.height)
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else { return 0 }
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else { return nil }
 
         let context = CIContext(options: [.cacheIntermediates: false])
         let bytesPerRow = width * 4 * MemoryLayout<Float>.size
@@ -346,7 +653,14 @@ enum SpatialAdaptiveStats {
             let r = Double(buffer[base]), g = Double(buffer[base + 1]), b = Double(buffer[base + 2])
             rgb[i] = a > 1e-7 ? SIMD3(r / a, g / a, b / a) : SIMD3(r, g, b)
         }
-        return highlightRatioBase(rgb: rgb, width: width, height: height, lumaWeights: lumaWeights)
+        return (rgb, width, height)
+    }
+
+    static func computeStats(image: CIImage, longEdge: Double, lumaWeights: SIMD3<Double>) -> Stats {
+        guard let (rgb, width, height) = renderToStraightRGB(image: image, longEdge: longEdge) else {
+            return Stats(highlightRatioBase: 0, meanLn: lnFloor, fullHighlightRatio: 0, fullP90: lnFloor)
+        }
+        return computeStats(rgb: rgb, width: width, height: height, lumaWeights: lumaWeights)
     }
 }
 

@@ -936,55 +936,37 @@ public final class RenderEngine: @unchecked Sendable {
             relativeTemperature: settings.relativeTemperature,
             relativeTint: settings.relativeTint
         )
-        let highlightRatioBase = SpatialToneOps.needsSpatial(settings)
-            ? highlightRatioBase(settings: settings, source: source, sourceURL: sourceURL) : nil
-        image = applyNonRAWStageP(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
-        image = applyNonRAWStageQ(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
+        let stats = SpatialToneOps.needsSpatial(settings)
+            ? nonRAWAdaptiveStats(source: source, sourceURL: sourceURL) : nil
+        image = applyNonRAWStageP(settings: settings, to: image, adaptiveStats: stats)
+        image = applyNonRAWStageQ(settings: settings, to: image, adaptiveStats: stats)
         return image
     }
 
-    // MARK: - round2 set A: per-photo/per-settings image-adaptive Shadows2012 amplitude
+    // MARK: - Non-RAW image-adaptive Highlights2012/Shadows2012
+    // (`.photobench/phase2/nonraw-hs/model.md`)
 
-    /// Non-RAW counterpart to `AdobeBaseRenderer.Handle.highlightRatioBase(
-    /// for:)`. `RenderEngine` has no per-photo `Handle`-like value type to
-    /// attach a cached property to (`DecodedPhoto`, defined in
-    /// `CoreImageDecoder.swift`, is out of scope for this change), so this
-    /// follows the same static-dictionary-plus-lock pattern, keyed by
-    /// `sourceURL` plus the (Highlights/Shadows/Texture/Clarity-zeroed)
-    /// settings instead of `Handle`'s `cacheKey` plus settings.
-    private struct NonRAWStatsCacheKey: Hashable { var url: URL; var settings: EditSettings }
+    /// Keyed by `sourceURL` only, **not** settings -- unlike RAW's
+    /// preHS-based `Handle.adaptiveStats(for:)`, non-RAW's law reads
+    /// `full_highlightRatio`/`full_p90` straight off the *unmodified input*
+    /// (`model.md` §5/§8 item 1: non-RAW's spatial pass [S] already runs
+    /// *first*, `s-p1-p2`, so "the image H/S actually sees" already *is* the
+    /// input -- no preHS render needed at all, unlike RAW). This makes the
+    /// statistic settings-independent: computed once per photo, never
+    /// recomputed for any slider move (RAW's preHS version must recompute
+    /// whenever a non-H/S/Texture/Clarity slider changes).
     private static let nonRawStatsCacheLock = NSLock()
-    nonisolated(unsafe) private static var nonRawStatsCache: [NonRAWStatsCacheKey: Double] = [:]
+    nonisolated(unsafe) private static var nonRawStatsCache: [URL: SpatialAdaptiveStats.Stats] = [:]
+    /// `model.md` §1.4/§5: the input JPEG's own sRGB primaries (Rec.709 luma
+    /// weights), *not* `SpatialToneOps.ppLuma` (RAW's ProPhoto weights) --
+    /// `source` here is still the plain working-space input, never converted
+    /// to ProPhoto.
+    private static let nonRAWLumaWeights = SIMD3<Double>(0.2126, 0.7152, 0.0722)
 
-    /// round2 set A refit (`.photobench/phase2/spatial-adaptive/model.md`
-    /// §6/§7): matches `Handle.highlightRatioBase(for:)`'s "preHS" (post-
-    /// Exposure/Contrast/Whites/Blacks/color, pre-Highlights/Shadows)
-    /// statistic exactly, just built by hand here rather than via a shared
-    /// `image(through:)`-style stage enum, since the non-RAW pipeline has no
-    /// such thing: `source` (working space) -> ProPhoto -> `exposureNonRaw`
-    /// + cube P (`postOpsCube`, unsplit -- the zeroed settings always have
-    /// `needsSpatial == false`, so there is nothing to split *against*,
-    /// same reasoning as `SpatialOrder`'s "nothing to reorder" cases) ->
-    /// cube Q + Calibration (in whichever order `CalibrationOrder.
-    /// calibrationFirst` says) -> **stop, stay in ProPhoto** (mirrors
-    /// `applyNonRAWStageP`/`Q`'s own cube-building calls exactly, just
-    /// without their early-return-in-working-space shortcuts, so this
-    /// always ends in ProPhoto regardless of which settings are zero -- the
-    /// shortcuts exist only to skip a no-op matrix round trip in the real
-    /// render path, irrelevant here). Uses `SpatialToneOps.ppLuma` (ProPhoto
-    /// weights), unlike this method's previous (neutral-render, still-
-    /// working-space) version.
-    private func highlightRatioBase(settings: EditSettings, source: CIImage, sourceURL: URL?) -> Double {
-        var zeroed = settings
-        zeroed.highlights = 0
-        zeroed.shadows = 0
-        zeroed.texture = 0
-        zeroed.clarity = 0
-
+    private func nonRAWAdaptiveStats(source: CIImage, sourceURL: URL?) -> SpatialAdaptiveStats.Stats {
         if let sourceURL {
-            let key = Self.NonRAWStatsCacheKey(url: sourceURL, settings: zeroed)
             Self.nonRawStatsCacheLock.lock()
-            if let cached = Self.nonRawStatsCache[key] {
+            if let cached = Self.nonRawStatsCache[sourceURL] {
                 Self.nonRawStatsCacheLock.unlock()
                 return cached
             }
@@ -994,45 +976,27 @@ public final class RenderEngine: @unchecked Sendable {
         let diagnosticsEnabled = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] != nil
         let startTime = diagnosticsEnabled ? DispatchTime.now() : nil
 
-        var proPhoto = AdobeBaseRenderer.applyMatrix(DNGColorSpace.srgbLinearToProPhoto, to: source)
-        if zeroed.exposure != 0 || ToneOps.needsPostOps(zeroed) {
-            proPhoto = AdobeBaseRenderer.applyCube(
-                AdobeBaseRenderer.postOpsCube(exposureNonRaw: zeroed.exposure, settings: zeroed), to: proPhoto
-            )
-        }
-        if CalibrationOrder.calibrationFirst {
-            if ColorOps.needsCalibration(zeroed.calibration) {
-                proPhoto = AdobeBaseRenderer.applyCalibration(ColorOps.calibrationMatrix(zeroed.calibration), to: proPhoto)
-            }
-            if ColorOps.needsColorOps(zeroed) {
-                proPhoto = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postColorCube(settings: zeroed), to: proPhoto)
-            }
-        } else {
-            if ColorOps.needsColorOps(zeroed) {
-                proPhoto = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postColorCube(settings: zeroed), to: proPhoto)
-            }
-            if ColorOps.needsCalibration(zeroed.calibration) {
-                proPhoto = AdobeBaseRenderer.applyCalibration(ColorOps.calibrationMatrix(zeroed.calibration), to: proPhoto)
-            }
-        }
-
-        let ratio = SpatialAdaptiveStats.highlightRatioBase(
-            image: proPhoto, longEdge: AdobeBaseRenderer.highlightRatioBaseLongEdge, lumaWeights: SpatialToneOps.ppLuma
+        let stats = SpatialAdaptiveStats.computeStats(
+            image: source, longEdge: AdobeBaseRenderer.highlightRatioBaseLongEdge, lumaWeights: Self.nonRAWLumaWeights
         )
         if let startTime {
             let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds &- startTime.uptimeNanoseconds) / 1_000_000
-            FileHandle.standardError.write(Data(
-                "RenderEngine.highlightRatioBase: ratio=\(ratio) kS=\(SpatialAdaptiveLaw.kS(highlightRatioBase: ratio)) (\(String(format: "%.2f", elapsedMs))ms)\n".utf8
-            ))
+            // kH/kS/sShift themselves omitted here, same reasoning as
+            // `AdobeBaseRenderer.Handle.adaptiveStats`'s doc comment --
+            // printed downstream in `applySpatialToneOps`'s own diagnostic
+            // line instead. The raw statistics (including `highlightRatioBase`,
+            // now non-RAW's kH input too) are cheap and printed eagerly here.
+            let message = "RenderEngine.nonRAWAdaptiveStats: baseHighlightRatio=\(stats.highlightRatioBase) fullHighlightRatio=\(stats.fullHighlightRatio) fullP90=\(stats.fullP90) "
+                + "(\(String(format: "%.2f", elapsedMs))ms)\n"
+            FileHandle.standardError.write(Data(message.utf8))
         }
 
         if let sourceURL {
-            let key = Self.NonRAWStatsCacheKey(url: sourceURL, settings: zeroed)
             Self.nonRawStatsCacheLock.lock()
-            Self.nonRawStatsCache[key] = ratio
+            Self.nonRawStatsCache[sourceURL] = stats
             Self.nonRawStatsCacheLock.unlock()
         }
-        return ratio
+        return stats
     }
 
     /// `docs/PHASE2_DEVELOP_PIPELINE.md`'s non-RAW Stage P: working space ->
@@ -1052,7 +1016,7 @@ public final class RenderEngine: @unchecked Sendable {
     /// nor any P-op nor H/S is active, so `.neutral` settings keep the exact
     /// bypass `RelativeColorAdjustmentTests.zeroIsAnExactBypassAndKeepsThe
     /// ExistingPipelineFingerprint` (and this function's own callers) rely on.
-    private func applyNonRAWStageP(settings: EditSettings, to image: CIImage, highlightRatioBase: Double?) -> CIImage {
+    private func applyNonRAWStageP(settings: EditSettings, to image: CIImage, adaptiveStats: SpatialAdaptiveStats.Stats?) -> CIImage {
         let order = SpatialOrder.currentForNonRAW
         let needsSpatial = SpatialToneOps.needsSpatial(settings)
         guard settings.exposure != 0 || ToneOps.needsPostOps(settings) || needsSpatial else {
@@ -1073,12 +1037,12 @@ public final class RenderEngine: @unchecked Sendable {
                     let exposureOnly = AdobeBaseRenderer.buildCubeData { ToneOps.exposureNonRaw($0, ev: settings.exposure) }
                     stage = AdobeBaseRenderer.applyCube(exposureOnly, to: stage)
                 }
-                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, highlightRatioBase: highlightRatioBase)
+                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW)
                 if ToneOps.needsPostOps(settings) {
                     stage = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: stage)
                 }
             case .sP1P2:
-                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, highlightRatioBase: highlightRatioBase)
+                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW)
                 if settings.exposure != 0 || ToneOps.needsPostOps(settings) {
                     stage = AdobeBaseRenderer.applyCube(
                         AdobeBaseRenderer.postOpsCube(exposureNonRaw: settings.exposure, settings: settings), to: stage
@@ -1091,7 +1055,7 @@ public final class RenderEngine: @unchecked Sendable {
                     )
                 }
                 if order == .p1P2S {
-                    stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, highlightRatioBase: highlightRatioBase)
+                    stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW)
                 }
             // `.postQ`: [S] deferred to `applyNonRAWStageQ`'s tail.
             case .p1SP2:
@@ -1103,7 +1067,7 @@ public final class RenderEngine: @unchecked Sendable {
                         to: stage
                     )
                 }
-                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, highlightRatioBase: highlightRatioBase)
+                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW)
                 if ToneOps.needsPostOpsAfterContrast(settings) {
                     stage = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCubeP2(settings: settings), to: stage)
                 }
@@ -1122,7 +1086,7 @@ public final class RenderEngine: @unchecked Sendable {
     /// exact `CIColorMatrix` kept separate from cube Q -- see
     /// `AdobeBaseRenderer.applyCalibration`'s doc comment) -> working space.
     /// Mirrors `applyNonRAWStageP`'s exact-bypass-at-neutral-settings shape.
-    private func applyNonRAWStageQ(settings: EditSettings, to image: CIImage, highlightRatioBase: Double?) -> CIImage {
+    private func applyNonRAWStageQ(settings: EditSettings, to image: CIImage, adaptiveStats: SpatialAdaptiveStats.Stats?) -> CIImage {
         // **Experiment only** (`SpatialOrder`'s doc comment): `.postQ`
         // defers [S] here, after cube Q/Calibration, instead of
         // `applyNonRAWStageP` running it.
@@ -1151,7 +1115,7 @@ public final class RenderEngine: @unchecked Sendable {
             }
         }
         if deferredSpatial {
-            proPhoto = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: proPhoto, highlightRatioBase: highlightRatioBase)
+            proPhoto = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: proPhoto, adaptiveStats: adaptiveStats, path: .nonRAW)
         }
         return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: proPhoto)
     }

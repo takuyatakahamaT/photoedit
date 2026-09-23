@@ -195,7 +195,7 @@ public enum AdobeBaseRenderer {
             // round2 set A (`.photobench/phase2/spatial-adaptive/model.md`):
             // computed (and cached, see `highlightRatioBase()`'s doc
             // comment) only when a spatial pass will actually run.
-            let highlightRatioBase = needsSpatial ? self.highlightRatioBase(for: settings) : nil
+            let stats = needsSpatial ? self.adaptiveStats(for: settings) : nil
 
             var image: CIImage
             if needsSpatial && order == .preTone {
@@ -207,7 +207,7 @@ public enum AdobeBaseRenderer {
                     to: stageM, assets: effectiveAssets, cubes: effectiveCubes,
                     userEV: settings.exposure, variant: variant, through: .exposure
                 )
-                image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
+                image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, adaptiveStats: stats, path: .raw)
                 image = AdobeBaseRenderer.applyCube(effectiveCubes.look, to: image)
                 image = AdobeBaseRenderer.applyCube(effectiveCubes.tone, to: image)
             } else {
@@ -230,7 +230,7 @@ public enum AdobeBaseRenderer {
                         image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image)
                     }
                 case .sP1P2:
-                    image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
+                    image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, adaptiveStats: stats, path: .raw)
                     if ToneOps.needsPostOps(settings) {
                         image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image)
                     }
@@ -239,7 +239,7 @@ public enum AdobeBaseRenderer {
                         image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image)
                     }
                     if order == .p1P2S {
-                        image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
+                        image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, adaptiveStats: stats, path: .raw)
                     }
                     // `.postQ`: [S] deferred to after cube Q/Calibration below.
                 case .p1SP2:
@@ -249,7 +249,7 @@ public enum AdobeBaseRenderer {
                             to: image
                         )
                     }
-                    image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
+                    image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, adaptiveStats: stats, path: .raw)
                     if ToneOps.needsPostOpsAfterContrast(settings) {
                         image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCubeP2(settings: settings), to: image)
                     }
@@ -275,7 +275,7 @@ public enum AdobeBaseRenderer {
                 }
             }
             if needsSpatial && order == .postQ {
-                image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
+                image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, adaptiveStats: stats, path: .raw)
             }
             return image
         }
@@ -306,6 +306,19 @@ public enum AdobeBaseRenderer {
         /// the number to watch for whether recomputing on most non-H/S/
         /// Texture/Clarity slider moves is actually cheap enough.
         public func highlightRatioBase(for settings: EditSettings) -> Double {
+            adaptiveStats(for: settings).highlightRatioBase
+        }
+
+        /// `model.md` §10: `SpatialAdaptiveLaw.sShift`'s input -- see
+        /// `SpatialAdaptiveStats.Stats.meanLn`'s doc comment. Shares
+        /// `highlightRatioBase(for:)`'s exact cache/preHS-render (both are
+        /// read off the same `SpatialAdaptiveStats.Stats` value), so calling
+        /// both for the same `settings` costs one preHS render, not two.
+        public func meanLn(for settings: EditSettings) -> Double {
+            adaptiveStats(for: settings).meanLn
+        }
+
+        private func adaptiveStats(for settings: EditSettings) -> SpatialAdaptiveStats.Stats {
             var zeroed = settings
             zeroed.highlights = 0
             zeroed.shadows = 0
@@ -323,26 +336,32 @@ public enum AdobeBaseRenderer {
             let diagnosticsEnabled = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] != nil
             let startTime = diagnosticsEnabled ? DispatchTime.now() : nil
             let preHSImage = imagePreMatrix(settings: zeroed)
-            let ratio = SpatialAdaptiveStats.highlightRatioBase(
+            let stats = SpatialAdaptiveStats.computeStats(
                 image: preHSImage, longEdge: AdobeBaseRenderer.highlightRatioBaseLongEdge, lumaWeights: SpatialToneOps.ppLuma
             )
             if let startTime {
                 let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds &- startTime.uptimeNanoseconds) / 1_000_000
-                FileHandle.standardError.write(Data(
-                    "AdobeBaseRenderer.Handle.highlightRatioBase: ratio=\(ratio) kS=\(SpatialAdaptiveLaw.kS(highlightRatioBase: ratio)) (\(String(format: "%.2f", elapsedMs))ms)\n".utf8
-                ))
+                // kS/sShift are not printed here (only ratio/meanLn, the raw
+                // inputs) since which law consumes them depends on
+                // `SpatialAdaptiveVersion.current`, resolved downstream in
+                // `applySpatialToneOps`'s own diagnostic line -- printing a
+                // law here too would risk showing a stale/wrong-version
+                // value next to that one.
+                let message = "AdobeBaseRenderer.Handle.adaptiveStats: ratio=\(stats.highlightRatioBase) "
+                    + "meanLn=\(stats.meanLn) (\(String(format: "%.2f", elapsedMs))ms)\n"
+                FileHandle.standardError.write(Data(message.utf8))
             }
 
             AdobeBaseRenderer.statsCacheLock.lock()
-            AdobeBaseRenderer.statsCache[key] = ratio
+            AdobeBaseRenderer.statsCache[key] = stats
             AdobeBaseRenderer.statsCacheLock.unlock()
-            return ratio
+            return stats
         }
     }
 
-    /// `Handle.highlightRatioBase(for:)`'s cache key: a photo identity plus
-    /// the (Highlights/Shadows/Texture/Clarity-zeroed) settings that can
-    /// change what its "preHS" rendering looks like.
+    /// `Handle.highlightRatioBase(for:)`/`meanLn(for:)`'s cache key: a photo
+    /// identity plus the (Highlights/Shadows/Texture/Clarity-zeroed)
+    /// settings that can change what its "preHS" rendering looks like.
     struct StatsCacheKey: Hashable {
         var identity: CacheKey
         var settings: EditSettings
@@ -356,7 +375,7 @@ public enum AdobeBaseRenderer {
     /// not guarantee.
     static let highlightRatioBaseLongEdge = 750.0
     private static let statsCacheLock = NSLock()
-    nonisolated(unsafe) private static var statsCache: [StatsCacheKey: Double] = [:]
+    nonisolated(unsafe) private static var statsCache: [StatsCacheKey: SpatialAdaptiveStats.Stats] = [:]
 
     /// Cube H depends on the DCP and the photo's white point (it is the
     /// CCT-interpolated `ProfileHueSatMap`); cubes L and TC depend only on
@@ -843,23 +862,45 @@ public enum AdobeBaseRenderer {
     /// `RenderEngine.applyNonRAWStageP`/`Q` (non-RAW) each resolve their own
     /// cached value and pass it in; this is the one and only place that
     /// consumes it, matching `SpatialGainScale.current`'s own doc comment.
-    static func applySpatialToneOps(settings: EditSettings, to image: CIImage, highlightRatioBase: Double? = nil) -> CIImage {
+    static func applySpatialToneOps(
+        settings: EditSettings, to image: CIImage,
+        adaptiveStats: SpatialAdaptiveStats.Stats? = nil, path: SpatialAdaptivePath = .raw
+    ) -> CIImage {
         let longEdge = max(image.extent.width, image.extent.height)
         let scalePx = SpatialToneOps.scalePx(forLongEdge: Double(longEdge))
         // This is the one and only production call site that resolves
-        // `SpatialShift.current` (env var, default `.zero`) -- see that
-        // type's doc comment; everything below takes it as an explicit
+        // `SpatialShift.current`/`SpatialGainScale.current` (env vars,
+        // falling back to `path`'s adaptive law) -- see those types' doc
+        // comments; everything below takes the result as an explicit
         // parameter.
-        let shift = SpatialShift.current
-        if ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] != nil, shift != .zero {
-            FileHandle.standardError.write(Data(
-                "AdobeBaseRenderer.applySpatialToneOps: shift.highlights=\(shift.highlights) shift.shadows=\(shift.shadows)\n".utf8
-            ))
+        let shift = SpatialShift.current(stats: adaptiveStats, path: path)
+        let gainScale = SpatialGainScale.current(stats: adaptiveStats, path: path)
+        if ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] != nil {
+            let statsText: String
+            switch path {
+            case .raw:
+                statsText = "highlightRatioBase=\(adaptiveStats.map { String($0.highlightRatioBase) } ?? "nil")"
+                    + " meanLn=\(adaptiveStats.map { String($0.meanLn) } ?? "nil")"
+            case .nonRAW:
+                statsText = "baseHighlightRatio=\(adaptiveStats.map { String($0.highlightRatioBase) } ?? "nil")"
+                    + " fullHighlightRatio=\(adaptiveStats.map { String($0.fullHighlightRatio) } ?? "nil")"
+                    + " fullP90=\(adaptiveStats.map { String($0.fullP90) } ?? "nil")"
+            }
+            // `version` (the v2/shift-refit/shift-v2ks switch) is a RAW-only
+            // concept (`SpatialAdaptiveVersion`'s doc comment) -- omitted
+            // for `.nonRAW` so this line never implies non-RAW respects it.
+            var message = "AdobeBaseRenderer.applySpatialToneOps: path=\(path.rawValue)"
+            if path == .raw {
+                message += " version=\(SpatialAdaptiveVersion.current.rawValue)"
+            }
+            message += " \(statsText)"
+            message += " kH=\(gainScale.highlightsPos) kS=\(gainScale.shadowsPos) shift.highlights=\(shift.highlights) shift.shadows=\(shift.shadows)\n"
+            FileHandle.standardError.write(Data(message.utf8))
         }
         guard let output = try? SpatialToneProcessor.apply(
             to: image, highlights: settings.highlights, shadows: settings.shadows, scalePx: scalePx,
             texture: settings.texture, clarity: settings.clarity,
-            gainScale: SpatialGainScale.current(highlightRatioBase: highlightRatioBase), shift: shift
+            gainScale: gainScale, shift: shift
         ) else {
             preconditionFailure("Photo BenchのHighlights/Shadows空間処理カーネルを画像へ適用できませんでした。")
         }

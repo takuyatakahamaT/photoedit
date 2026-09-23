@@ -860,6 +860,126 @@ struct SpatialToneOpsTests {
         #expect(expected > SpatialAdaptiveLaw.clampMin && expected < SpatialAdaptiveLaw.clampMax, "sanity: this ratio should not need clamping")
     }
 
+    /// Non-RAW's law (`.photobench/phase2/nonraw-hs/model.md` §5): its own
+    /// separate clamp ranges (kS [0.6,2.2], sShift [-2,0]) -- deliberately
+    /// different from RAW's (kS [0.4,1.8]/[0.6,1.5], sShift [-3,0]), since
+    /// the two are independently-fit laws (`SpatialAdaptiveLaw`'s "Non-RAW"
+    /// section doc comment: reusing RAW's coefficients for non-RAW measured
+    /// *worse* than a flat fixed value).
+    @Test func nonRAWSpatialAdaptiveLawClampsAtBothEnds() {
+        #expect(SpatialAdaptiveLaw.nonRAWKS(fullHighlightRatio: -10) == SpatialAdaptiveLaw.nonRAWKSClampMin)
+        #expect(SpatialAdaptiveLaw.nonRAWKS(fullHighlightRatio: 10) == SpatialAdaptiveLaw.nonRAWKSClampMax)
+        #expect(SpatialAdaptiveLaw.nonRAWKS(fullHighlightRatio: 0) == SpatialAdaptiveLaw.nonRAWKSIntercept)
+
+        #expect(SpatialAdaptiveLaw.nonRAWSShift(fullP90: -10) == SpatialAdaptiveLaw.nonRAWShiftClampMin)
+        #expect(SpatialAdaptiveLaw.nonRAWSShift(fullP90: 10) == SpatialAdaptiveLaw.nonRAWShiftClampMax)
+        // Unlike RAW's `sShift` (whose intercept, 1.5609, is also >0 but
+        // that law is untested at meanFull=0), this law's intercept alone
+        // (0.2363) already exceeds the [-2,0] upper clamp, so *every*
+        // `fullP90 >= 0` clamps to exactly 0, not the raw intercept value.
+        #expect(SpatialAdaptiveLaw.nonRAWSShift(fullP90: 0) == SpatialAdaptiveLaw.nonRAWShiftClampMax)
+
+        // DSC02072-like bright JPEG sanity check from `model.md` §5: a
+        // highlightRatio of 0.721 lands close to, but per the model.md text
+        // ("2.001の手前") just *under*, the 2.2 upper clamp -- not clamped.
+        let dsc02072ish = SpatialAdaptiveLaw.nonRAWKSIntercept + SpatialAdaptiveLaw.nonRAWKSSlope * 0.721
+        #expect(abs(SpatialAdaptiveLaw.nonRAWKS(fullHighlightRatio: 0.721) - dsc02072ish) < 1e-9)
+        #expect(dsc02072ish < SpatialAdaptiveLaw.nonRAWKSClampMax, "sanity: model.md describes this as just under the clamp")
+    }
+
+    /// Non-RAW's kH law (`nonraw-hs/results/presets.json`'s "proposed_
+    /// adaptive"): its own clamp range [0.3, 1.1] (a slope of -1.9300 means
+    /// higher clamp input clamps *low*, the mirror image of `nonRAWKS`'s
+    /// positive slope).
+    @Test func nonRAWKHLawClampsAtBothEndsAndMatchesDSC02072() {
+        #expect(SpatialAdaptiveLaw.nonRAWKH(baseHighlightRatio: -10) == SpatialAdaptiveLaw.nonRAWKHClampMax)
+        #expect(SpatialAdaptiveLaw.nonRAWKH(baseHighlightRatio: 10) == SpatialAdaptiveLaw.nonRAWKHClampMin)
+        #expect(SpatialAdaptiveLaw.nonRAWKH(baseHighlightRatio: 0) == SpatialAdaptiveLaw.nonRAWKHIntercept)
+
+        // DSC02072's own measured baseHighlightRatio (~0.711, per the
+        // coordinator's cause analysis): the unclamped formula value is
+        // already below the 0.3 floor, so it lands exactly on the clamp --
+        // confirms *why* the flat 0.7 was too strong for this scene.
+        let dsc02072BaseRatio = 0.711
+        let unclamped = SpatialAdaptiveLaw.nonRAWKHIntercept + SpatialAdaptiveLaw.nonRAWKHSlope * dsc02072BaseRatio
+        #expect(unclamped < SpatialAdaptiveLaw.nonRAWKHClampMin, "sanity: DSC02072 should need the floor clamp")
+        #expect(SpatialAdaptiveLaw.nonRAWKH(baseHighlightRatio: dsc02072BaseRatio) == SpatialAdaptiveLaw.nonRAWKHClampMin)
+
+        // A mid-range ratio that should land inside the clamp, unmodified.
+        let ratio = 0.25
+        let expected = SpatialAdaptiveLaw.nonRAWKHIntercept + SpatialAdaptiveLaw.nonRAWKHSlope * ratio
+        #expect(expected > SpatialAdaptiveLaw.nonRAWKHClampMin && expected < SpatialAdaptiveLaw.nonRAWKHClampMax, "sanity: this ratio should not need clamping")
+        #expect(abs(SpatialAdaptiveLaw.nonRAWKH(baseHighlightRatio: ratio) - expected) < 1e-9)
+    }
+
+    /// `SpatialGainScale.adaptiveNonRAW`/`SpatialShift.adaptiveNonRAW`: kH
+    /// image-adaptive (not RAW's fixed 0.5), hShift fixed at 0 (unmeasured),
+    /// and the `current(stats:path:)` dispatcher actually routes to these
+    /// non-RAW functions for `.nonRAW` (not silently falling through to the
+    /// RAW law).
+    @Test func spatialGainScaleAndShiftAdaptiveNonRAWUseTheirOwnLaw() {
+        let scale = SpatialGainScale.adaptiveNonRAW(baseHighlightRatio: 0.9, fullHighlightRatio: 0.3)
+        #expect(scale.highlightsNeg == SpatialAdaptiveLaw.nonRAWKH(baseHighlightRatio: 0.9))
+        #expect(scale.highlightsPos == SpatialAdaptiveLaw.nonRAWKH(baseHighlightRatio: 0.9))
+        #expect(scale.shadowsNeg == SpatialAdaptiveLaw.nonRAWKS(fullHighlightRatio: 0.3))
+
+        let shift = SpatialShift.adaptiveNonRAW(fullP90: -1.0)
+        #expect(shift.highlights == 0)
+        #expect(shift.shadows == SpatialAdaptiveLaw.nonRAWSShift(fullP90: -1.0))
+
+        let stats = SpatialAdaptiveStats.Stats(highlightRatioBase: 0.9, meanLn: 0.9, fullHighlightRatio: 0.3, fullP90: -1.0)
+        #expect(SpatialGainScale.current(stats: stats, path: .nonRAW) == scale)
+        #expect(SpatialShift.current(stats: stats, path: .nonRAW) == shift)
+        // Same `stats`, `.raw` path: kS reads the same `highlightRatioBase`
+        // field non-RAW's kH just read above (by design -- both paths' laws
+        // legitimately share that one field, see `Stats`'s doc comment), but
+        // shift must read `meanLn` (RAW-only), not non-RAW's fullP90 (-1.0) --
+        // confirms the dispatcher truly branches on `path`, not just on which
+        // fields happen to be set.
+        #expect(SpatialGainScale.current(stats: stats, path: .raw) == SpatialGainScale.current(highlightRatioBase: 0.9))
+        #expect(SpatialShift.current(stats: stats, path: .raw) == SpatialShift.current(meanLn: 0.9))
+    }
+
+    /// `SpatialAdaptiveStats.Stats.fullHighlightRatio`/`fullP90`
+    /// (`nonraw-hs/model.md` §1.4): both read the *unblurred* ("full") Ln
+    /// plane directly, no Gaussian blur -- verified with a uniform image
+    /// (mirrors `highlightRatioBaseIsExactOneOrZeroForAUniformImage`'s
+    /// reasoning: every percentile of a constant plane is that same
+    /// constant) and a simple ramp (known analytic percentile).
+    @Test func fullHighlightRatioAndFullP90ReadTheUnblurredPlane() throws {
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
+        let width = 64, height = 48
+        func uniformImage(value: Float) -> CIImage {
+            var pixels = [Float](repeating: 0, count: width * height * 4)
+            for i in 0..<(width * height) {
+                pixels[i * 4] = value
+                pixels[i * 4 + 3] = 1
+            }
+            return CIImage(
+                bitmapData: pixels.withUnsafeBytes { Data($0) }, bytesPerRow: width * 4 * MemoryLayout<Float>.size,
+                size: CGSize(width: width, height: height), format: .RGBAf, colorSpace: colorSpace
+            )
+        }
+        let redOnly = SIMD3<Double>(1, 0, 0)
+        // A uniform Y=1.0 plane has Ln=log2(1)=0 everywhere: every
+        // percentile (including p90) is exactly 0, and the whole plane is
+        // above the -1 stop threshold (ratio exactly 1).
+        let bright = SpatialAdaptiveStats.computeStats(image: uniformImage(value: 1.0), longEdge: 64, lumaWeights: redOnly)
+        #expect(bright.fullHighlightRatio == 1.0)
+        #expect(bright.fullP90 == 0.0)
+
+        // A uniform Y=0.1 plane: Ln=log2(0.1)~=-3.32, below -1, so ratio is
+        // exactly 0, and p90 equals that same constant (no blur to smear it).
+        let dark = SpatialAdaptiveStats.computeStats(image: uniformImage(value: 0.1), longEdge: 64, lumaWeights: redOnly)
+        #expect(dark.fullHighlightRatio == 0.0)
+        // 1e-5, not 1e-9: `computeStats(image:...)` renders through Core
+        // Image's `Float` (32-bit) `RGBAf` buffer format, so a `Double`-exact
+        // comparison is unrealistic here -- `SpatialAdaptiveStats`'s own
+        // arithmetic is `Double` throughout, but its *input* already lost
+        // precision at the GPU/CPU render-to-buffer step.
+        #expect(abs(dark.fullP90 - log2(0.1)) < 1e-5)
+    }
+
     /// `SpatialGainScale.adaptive`: kH stays fixed at 0.5 regardless of the
     /// ratio (`model.md` §4.1/§5), kSneg/kSpos both get the same
     /// `SpatialAdaptiveLaw.kS` value (kSneg was never measured separately --
@@ -880,10 +1000,18 @@ struct SpatialToneOpsTests {
     /// elsewhere in this file; the env var's precedence itself is already
     /// covered by `SpatialGainScale.current`'s existing behavior (unchanged
     /// by this refactor -- only its parameter list changed).
+    /// `SpatialAdaptiveVersion.current`'s own default is `.shiftRefit`
+    /// (`.photobench/phase2/spatial-adaptive/model.md` §10's real-engine
+    /// A/B/C comparison), not `.v2` -- so `.current(highlightRatioBase:)`'s
+    /// fallback must be compared against `.adaptive(highlightRatioBase:
+    /// version:)` called with that *same* resolved version explicitly, not
+    /// `.adaptive`'s own bare (`.v2`) default, which this test used to
+    /// (silently) rely matching before the production default moved.
     @Test func spatialGainScaleCurrentFallsBackToProductionDefaultWithoutAStatistic() {
         #expect(SpatialGainScale.current(highlightRatioBase: nil) == SpatialGainScale.productionDefault)
         let adaptive = SpatialGainScale.current(highlightRatioBase: 0.3)
-        #expect(adaptive == SpatialGainScale.adaptive(highlightRatioBase: 0.3))
+        #expect(adaptive == SpatialGainScale.adaptive(highlightRatioBase: 0.3, version: SpatialAdaptiveVersion.current))
+        #expect(SpatialAdaptiveVersion.current == .shiftRefit, "this test assumes the production default; update it if that changes again")
     }
 
     // MARK: - Helpers
