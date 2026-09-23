@@ -42,6 +42,9 @@ public struct LibRawDecoder: ImageDecoding {
     /// no full AHD demosaic) for interactive speed; anything larger, and
     /// every `.fullResolution` request, decodes at native size.
     public static let halfSizeMaximumDimension = 3_000
+    /// `DecodeInfo.lensCorrection` label used whenever a Panasonic RW2's
+    /// embedded `DistortionInfo` is applied (`.photobench/phase4/lens/model.md`).
+    static let panasonicLensCorrectionLabel = "内蔵歪曲補正（Panasonic DistortionInfo）"
 
     private let profileLocator: AdobeProfileLocator
     private let toneCurveVariant: ToneCurveVariant
@@ -80,8 +83,15 @@ public struct LibRawDecoder: ImageDecoding {
         guard width > 0, height > 0, let pixelPointer = shimResult.pixels else {
             throw LibRawDecoderError.invalidPixelBuffer(url)
         }
+        // Read early: the lens-distortion block below (right before
+        // `AdobeBaseRenderer.makeHandle`) needs `appliedHalfSize` to size
+        // its corrected canvas, and `nativeWidth`/`nativeHeight` feed that
+        // same block's no-correction fallback.
+        let appliedHalfSize = shimResult.appliedHalfSize != 0
+        let nativeWidth = Int(shimResult.nativeWidth)
+        let nativeHeight = Int(shimResult.nativeHeight)
 
-        let cameraImage = try Self.makeCameraImage(
+        let rawCameraImage = try Self.makeCameraImage(
             pixels: pixelPointer, width: width, height: height, url: url
         )
 
@@ -124,14 +134,43 @@ public struct LibRawDecoder: ImageDecoding {
             exposureEV: assets.baselineEV,
             variant: toneCurveVariant
         )
+
+        // Lumix RW2s the camera itself declares a `DistortionInfo` for
+        // (`.photobench/phase4/lens/model.md`) get their in-body radial
+        // distortion correction applied here, to `rawCameraImage` --
+        // camera RGB, linear light, before Stage M / any color processing
+        // -- exactly like Lightroom's own always-on handling of the same
+        // embedded correction. Everything else (no RW2 tag, or the file's
+        // own `DistortionCorrection` flag off) decodes exactly as before.
+        let scaleFactor: Double = appliedHalfSize ? 0.5 : 1.0
+        let distortionInfo = PanasonicRW2Metadata.readDistortionInfo(url: url)
+        let cameraImage: CIImage
+        let correctedWidth: Int
+        let correctedHeight: Int
+        let correctedNativeWidth: Int
+        let correctedNativeHeight: Int
+        let lensCorrection: String?
+        if let distortionInfo, distortionInfo.correctionEnabled {
+            cameraImage = LensDistortion.apply(to: rawCameraImage, info: distortionInfo, scaleFactor: scaleFactor)
+            correctedWidth = Int((Double(distortionInfo.cropWidth) * scaleFactor).rounded())
+            correctedHeight = Int((Double(distortionInfo.cropHeight) * scaleFactor).rounded())
+            correctedNativeWidth = distortionInfo.cropWidth
+            correctedNativeHeight = distortionInfo.cropHeight
+            lensCorrection = Self.panasonicLensCorrectionLabel
+        } else {
+            cameraImage = rawCameraImage
+            correctedWidth = width
+            correctedHeight = height
+            correctedNativeWidth = nativeWidth > 0 ? nativeWidth : width
+            correctedNativeHeight = nativeHeight > 0 ? nativeHeight : height
+            lensCorrection = nil
+        }
+
         let handle = AdobeBaseRenderer.makeHandle(
             cameraImage: cameraImage, assets: assets, cacheKey: cacheKey, variant: toneCurveVariant
         )
         let renderedImage = handle.image(userExposureEV: 0)
 
-        let appliedHalfSize = shimResult.appliedHalfSize != 0
-        let nativeWidth = Int(shimResult.nativeWidth)
-        let nativeHeight = Int(shimResult.nativeHeight)
         let metadata = CoreImageDecoder.readMetadata(url: url)
 
         let duration = started.duration(to: .now)
@@ -144,8 +183,8 @@ public struct LibRawDecoder: ImageDecoding {
             metadata: metadata,
             info: DecodeInfo(
                 backend: Self.backendLabel,
-                width: width,
-                height: height,
+                width: correctedWidth,
+                height: correctedHeight,
                 durationMilliseconds: milliseconds,
                 isRAW: true,
                 isBoundedSRGBRaster: false,
@@ -157,10 +196,11 @@ public struct LibRawDecoder: ImageDecoding {
                 ),
                 intent: intent,
                 requestedMaximumDimension: intent.requestedMaximumDimension,
-                nativeWidth: nativeWidth > 0 ? nativeWidth : width,
-                nativeHeight: nativeHeight > 0 ? nativeHeight : height,
-                appliedScaleFactor: appliedHalfSize ? 0.5 : 1.0,
-                asShotWhiteXY: assets.whiteXY
+                nativeWidth: correctedNativeWidth,
+                nativeHeight: correctedNativeHeight,
+                appliedScaleFactor: Float(scaleFactor),
+                asShotWhiteXY: assets.whiteXY,
+                lensCorrection: lensCorrection
             ),
             adobeBase: handle
         )

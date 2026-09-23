@@ -55,6 +55,16 @@ public struct DecodeInfo: Equatable, Sendable {
     /// (`ColorSpec.temperatureAndTint(fromXY:)`) are gated on this being
     /// non-nil rather than on `isRAW` alone.
     public let asShotWhiteXY: ChromaticityXY?
+    /// Human-readable label for an in-body lens correction baked into the
+    /// output pixels (currently just `LibRawDecoder`'s Panasonic RW2
+    /// `DistortionInfo` radial-distortion correction,
+    /// `.photobench/phase4/lens/model.md`), or `nil` when none was applied
+    /// -- not a RAW, not an RW2, the file's `DistortionCorrection` flag was
+    /// off, or the decode path doesn't support it (`CoreImageDecoder`'s own
+    /// RAW path always leaves this `nil`; Apple's own RAW decoder applies
+    /// its own, separate lens corrections that this project does not model
+    /// or report).
+    public let lensCorrection: String?
 
     public init(
         backend: String,
@@ -72,7 +82,8 @@ public struct DecodeInfo: Equatable, Sendable {
         nativeWidth: Int? = nil,
         nativeHeight: Int? = nil,
         appliedScaleFactor: Float? = nil,
-        asShotWhiteXY: ChromaticityXY? = nil
+        asShotWhiteXY: ChromaticityXY? = nil,
+        lensCorrection: String? = nil
     ) {
         self.backend = backend
         self.width = width
@@ -90,6 +101,7 @@ public struct DecodeInfo: Equatable, Sendable {
         self.nativeHeight = nativeHeight ?? height
         self.appliedScaleFactor = appliedScaleFactor
         self.asShotWhiteXY = asShotWhiteXY
+        self.lensCorrection = lensCorrection
     }
 }
 

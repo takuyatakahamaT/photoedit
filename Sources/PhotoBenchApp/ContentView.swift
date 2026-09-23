@@ -397,6 +397,9 @@ struct ContentView: View {
                             if let calibrationLabel = info.calibrationLabel, info.isRAW {
                                 LabeledContent("RAW基準", value: calibrationLabel)
                             }
+                            if let lensCorrection = info.lensCorrection {
+                                LabeledContent("レンズ補正", value: lensCorrection)
+                            }
                             LabeledContent("読込", value: String(format: "%.0f ms", info.durationMilliseconds))
                         }
                         if let render = model.renderMilliseconds {

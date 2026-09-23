@@ -1,4 +1,5 @@
 import CLibRawShim
+import CoreGraphics
 import Foundation
 import Testing
 @testable import PhotoCore
@@ -64,6 +65,74 @@ struct LibRawDecoderTests {
             let relDiff = abs(a - b) / max(1.0, abs(b))
             #expect(relDiff <= 1e-3, "channel \(channel): shim=\(a) prototype=\(b) relDiff=\(relDiff)")
         }
+    }
+
+    // MARK: - Phase4 lens correction: `LibRawDecoder.decode` end-to-end wiring
+    //
+    // Unlike the shim-only test above, `LibRawDecoder.decode` needs the
+    // Adobe DCP/"Adobe Color" assets (`AdobeBaseRendererTests.swift`'s own
+    // convention), so these skip on both that *and* the RW2 fixture being
+    // absent.
+
+    /// Full-resolution decode of a DC-S5 RW2 with an embedded, enabled
+    /// `DistortionInfo` must report -- and actually produce -- the
+    /// camera-declared active-area canvas (6000x4000), not LibRaw's own
+    /// wider 6024x4016 active-area guess (`.photobench/phase4/lens/model.md`
+    /// §2), with `lensCorrection` set.
+    @Test func decodesP1013558WithLensCorrectionAtFullResolution() throws {
+        let url = projectRoot.appendingPathComponent(
+            "exports/editing-mvp-20260922/lightroom-reference/P1013558.RW2"
+        )
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            print("SKIP: P1013558.RW2 がこの環境に無いため、この環境ではスキップします。")
+            return
+        }
+        guard AdobeProfileLocator().locateDCP(uniqueCameraModel: "Panasonic DC-S5") != nil,
+              AdobeProfileLocator().locateAdobeColorLookXMP() != nil
+        else {
+            print("SKIP: Panasonic DC-S5のAdobe DCP/Adobe Color.xmpが見つからないため、この環境ではスキップします。")
+            return
+        }
+
+        let decoded = try LibRawDecoder().decode(url: url)
+        #expect(decoded.info.width == 6_000)
+        #expect(decoded.info.height == 4_000)
+        #expect(decoded.info.nativeWidth == 6_000)
+        #expect(decoded.info.nativeHeight == 4_000)
+        #expect(decoded.info.appliedScaleFactor == 1)
+        #expect(decoded.info.lensCorrection == LibRawDecoder.panasonicLensCorrectionLabel)
+        #expect(decoded.image.extent == CGRect(x: 0, y: 0, width: 6_000, height: 4_000))
+    }
+
+    /// Same file, half-size (`interactivePreview(maxDimension: 3000)`)
+    /// decode: the corrected canvas halves too (3000x2000), while
+    /// `nativeWidth/Height` keep reporting the full corrected size --
+    /// exactly the existing `CoreImageDecoder` preview-vs-native convention
+    /// (`PhotoCoreTests.decodesInteractiveLumixRAWAtTheRequestedPreviewDimension`),
+    /// just applied to the corrected numbers instead of LibRaw's raw ones.
+    @Test func decodesP1013558WithLensCorrectionAtHalfSize() throws {
+        let url = projectRoot.appendingPathComponent(
+            "exports/editing-mvp-20260922/lightroom-reference/P1013558.RW2"
+        )
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            print("SKIP: P1013558.RW2 がこの環境に無いため、この環境ではスキップします。")
+            return
+        }
+        guard AdobeProfileLocator().locateDCP(uniqueCameraModel: "Panasonic DC-S5") != nil,
+              AdobeProfileLocator().locateAdobeColorLookXMP() != nil
+        else {
+            print("SKIP: Panasonic DC-S5のAdobe DCP/Adobe Color.xmpが見つからないため、この環境ではスキップします。")
+            return
+        }
+
+        let decoded = try LibRawDecoder().decode(url: url, intent: .interactivePreview(maxDimension: 3_000))
+        #expect(decoded.info.width == 3_000)
+        #expect(decoded.info.height == 2_000)
+        #expect(decoded.info.nativeWidth == 6_000)
+        #expect(decoded.info.nativeHeight == 4_000)
+        #expect(decoded.info.appliedScaleFactor == 0.5)
+        #expect(decoded.info.lensCorrection == LibRawDecoder.panasonicLensCorrectionLabel)
+        #expect(decoded.image.extent == CGRect(x: 0, y: 0, width: 3_000, height: 2_000))
     }
 
     // MARK: - Helpers

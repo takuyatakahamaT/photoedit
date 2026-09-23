@@ -1,0 +1,322 @@
+{
+  "scenes": [
+    {
+      "a": -0.034088134765625,
+      "b": 0.003387451171875,
+      "c": -0.001495361328125,
+      "cropBottom": 4008.0,
+      "cropHeight": 4000.0,
+      "cropLeft": 12.0,
+      "cropRight": 6012.0,
+      "cropTop": 8.0,
+      "cropWidth": 6000.0,
+      "inputCenterX": 3012.0,
+      "inputCenterY": 2008.0,
+      "librawNativeHeight": 4016,
+      "librawNativeWidth": 6024,
+      "outputCenterX": 3000.0,
+      "outputCenterY": 2000.0,
+      "r0": 3605.0,
+      "samples": [
+        {
+          "expectedSourceX": 3012.0,
+          "expectedSourceY": 2008.0,
+          "name": "center",
+          "outputX": 3000.0,
+          "outputY": 2000.0
+        },
+        {
+          "expectedSourceX": 13.48648084346405,
+          "expectedSourceY": 8.990987228975882,
+          "name": "corner_tl",
+          "outputX": 0.0,
+          "outputY": 0.0
+        },
+        {
+          "expectedSourceX": 6010.513519156536,
+          "expectedSourceY": 8.990987228975882,
+          "name": "corner_tr",
+          "outputX": 6000.0,
+          "outputY": 0.0
+        },
+        {
+          "expectedSourceX": 13.48648084346405,
+          "expectedSourceY": 4007.009012771024,
+          "name": "corner_bl",
+          "outputX": 0.0,
+          "outputY": 4000.0
+        },
+        {
+          "expectedSourceX": 6010.513519156536,
+          "expectedSourceY": 4007.009012771024,
+          "name": "corner_br",
+          "outputX": 6000.0,
+          "outputY": 4000.0
+        },
+        {
+          "expectedSourceX": 3012.0,
+          "expectedSourceY": 54.24294571224755,
+          "name": "edge_top",
+          "outputX": 3000.0,
+          "outputY": 0.0
+        },
+        {
+          "expectedSourceX": 3012.0,
+          "expectedSourceY": 3961.7570542877525,
+          "name": "edge_bottom",
+          "outputX": 3000.0,
+          "outputY": 4000.0
+        },
+        {
+          "expectedSourceX": 44.66355774188969,
+          "expectedSourceY": 2008.0,
+          "name": "edge_left",
+          "outputX": 0.0,
+          "outputY": 2000.0
+        },
+        {
+          "expectedSourceX": 5979.336442258111,
+          "expectedSourceY": 2008.0,
+          "name": "edge_right",
+          "outputX": 6000.0,
+          "outputY": 2000.0
+        },
+        {
+          "expectedSourceX": 3727.6877760848206,
+          "expectedSourceY": 2509.129975819134,
+          "name": "radius_25pct",
+          "outputX": 3738.3736745212773,
+          "outputY": 2517.014812915401
+        },
+        {
+          "expectedSourceX": 4451.950050861538,
+          "expectedSourceY": 3016.263880258704,
+          "name": "radius_50pct",
+          "outputX": 4476.747349042555,
+          "outputY": 3034.0296258308017
+        },
+        {
+          "expectedSourceX": 5193.710992394353,
+          "expectedSourceY": 3535.650483069512,
+          "name": "radius_75pct",
+          "outputX": 5215.121023563832,
+          "outputY": 3551.044438746203
+        }
+      ],
+      "scale": 1.03375607293836,
+      "scene": "P1013558"
+    },
+    {
+      "a": -0.03326416015625,
+      "b": 0.003326416015625,
+      "c": -0.00152587890625,
+      "cropBottom": 4008.0,
+      "cropHeight": 4000.0,
+      "cropLeft": 12.0,
+      "cropRight": 6012.0,
+      "cropTop": 8.0,
+      "cropWidth": 6000.0,
+      "inputCenterX": 3012.0,
+      "inputCenterY": 2008.0,
+      "librawNativeHeight": 4016,
+      "librawNativeWidth": 6024,
+      "outputCenterX": 3000.0,
+      "outputCenterY": 2000.0,
+      "r0": 3605.0,
+      "samples": [
+        {
+          "expectedSourceX": 3012.0,
+          "expectedSourceY": 2008.0,
+          "name": "center",
+          "outputX": 3000.0,
+          "outputY": 2000.0
+        },
+        {
+          "expectedSourceX": 13.382868699234223,
+          "expectedSourceY": 8.921912466156073,
+          "name": "corner_tl",
+          "outputX": 0.0,
+          "outputY": 0.0
+        },
+        {
+          "expectedSourceX": 6010.617131300765,
+          "expectedSourceY": 8.921912466156073,
+          "name": "corner_tr",
+          "outputX": 6000.0,
+          "outputY": 0.0
+        },
+        {
+          "expectedSourceX": 13.382868699234223,
+          "expectedSourceY": 4007.078087533844,
+          "name": "corner_bl",
+          "outputX": 0.0,
+          "outputY": 4000.0
+        },
+        {
+          "expectedSourceX": 6010.617131300765,
+          "expectedSourceY": 4007.078087533844,
+          "name": "corner_br",
+          "outputX": 6000.0,
+          "outputY": 4000.0
+        },
+        {
+          "expectedSourceX": 3012.0,
+          "expectedSourceY": 53.14725242828263,
+          "name": "edge_top",
+          "outputX": 3000.0,
+          "outputY": 0.0
+        },
+        {
+          "expectedSourceX": 3012.0,
+          "expectedSourceY": 3962.8527475717174,
+          "name": "edge_bottom",
+          "outputX": 3000.0,
+          "outputY": 4000.0
+        },
+        {
+          "expectedSourceX": 43.869723896942105,
+          "expectedSourceY": 2008.0,
+          "name": "edge_left",
+          "outputX": 0.0,
+          "outputY": 2000.0
+        },
+        {
+          "expectedSourceX": 5980.130276103058,
+          "expectedSourceY": 2008.0,
+          "name": "edge_right",
+          "outputX": 6000.0,
+          "outputY": 2000.0
+        },
+        {
+          "expectedSourceX": 3728.219719102404,
+          "expectedSourceY": 2509.5024463299437,
+          "name": "radius_25pct",
+          "outputX": 3738.3736745212773,
+          "outputY": 2517.014812915401
+        },
+        {
+          "expectedSourceX": 4452.8201337428,
+          "expectedSourceY": 3016.8731188510305,
+          "name": "radius_50pct",
+          "outputX": 4476.747349042555,
+          "outputY": 3034.0296258308017
+        },
+        {
+          "expectedSourceX": 5194.5113077972965,
+          "expectedSourceY": 3536.210869947599,
+          "name": "radius_75pct",
+          "outputX": 5215.121023563832,
+          "outputY": 3551.044438746203
+        }
+      ],
+      "scale": 1.03294139898496,
+      "scene": "P1013207"
+    },
+    {
+      "a": 0.0474853515625,
+      "b": 0.0223388671875,
+      "c": 0.026092529296875,
+      "cropBottom": 4008.0,
+      "cropHeight": 4000.0,
+      "cropLeft": 12.0,
+      "cropRight": 6012.0,
+      "cropTop": 8.0,
+      "cropWidth": 6000.0,
+      "inputCenterX": 3012.0,
+      "inputCenterY": 2008.0,
+      "librawNativeHeight": 4016,
+      "librawNativeWidth": 6024,
+      "outputCenterX": 3000.0,
+      "outputCenterY": 2000.0,
+      "r0": 3605.0,
+      "samples": [
+        {
+          "expectedSourceX": 3012.0,
+          "expectedSourceY": 2008.0,
+          "name": "center",
+          "outputX": 3000.0,
+          "outputY": 2000.0
+        },
+        {
+          "expectedSourceX": 222.94559090913526,
+          "expectedSourceY": 148.63039393942358,
+          "name": "corner_tl",
+          "outputX": 0.0,
+          "outputY": 0.0
+        },
+        {
+          "expectedSourceX": 5801.054409090864,
+          "expectedSourceY": 148.63039393942358,
+          "name": "corner_tr",
+          "outputX": 6000.0,
+          "outputY": 0.0
+        },
+        {
+          "expectedSourceX": 222.94559090913526,
+          "expectedSourceY": 3867.369606060576,
+          "name": "corner_bl",
+          "outputX": 0.0,
+          "outputY": 4000.0
+        },
+        {
+          "expectedSourceX": 5801.054409090864,
+          "expectedSourceY": 3867.369606060576,
+          "name": "corner_br",
+          "outputX": 6000.0,
+          "outputY": 4000.0
+        },
+        {
+          "expectedSourceX": 3012.0,
+          "expectedSourceY": 42.84332044406415,
+          "name": "edge_top",
+          "outputX": 3000.0,
+          "outputY": 0.0
+        },
+        {
+          "expectedSourceX": 3012.0,
+          "expectedSourceY": 3973.1566795559356,
+          "name": "edge_bottom",
+          "outputX": 3000.0,
+          "outputY": 4000.0
+        },
+        {
+          "expectedSourceX": 145.41552445170782,
+          "expectedSourceY": 2008.0,
+          "name": "edge_left",
+          "outputX": 0.0,
+          "outputY": 2000.0
+        },
+        {
+          "expectedSourceX": 5878.584475548292,
+          "expectedSourceY": 2008.0,
+          "name": "edge_right",
+          "outputX": 6000.0,
+          "outputY": 2000.0
+        },
+        {
+          "expectedSourceX": 3747.441331931263,
+          "expectedSourceY": 2522.9615645292597,
+          "name": "radius_25pct",
+          "outputX": 3738.3736745212773,
+          "outputY": 2517.014812915401
+        },
+        {
+          "expectedSourceX": 4468.071646461844,
+          "expectedSourceY": 3027.552343026006,
+          "name": "radius_50pct",
+          "outputX": 4476.747349042555,
+          "outputY": 3034.0296258308017
+        },
+        {
+          "expectedSourceX": 5150.5763975155805,
+          "expectedSourceY": 3505.4473145777747,
+          "name": "radius_75pct",
+          "outputX": 5215.121023563832,
+          "outputY": 3551.044438746203
+        }
+      ],
+      "scale": 1.00094694077038,
+      "scene": "P1012822"
+    }
+  ]
+}
