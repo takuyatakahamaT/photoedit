@@ -196,6 +196,12 @@ public enum AdobeBaseRenderer {
         /// are read off the pixels, so `StatsCacheKey` carries this too and a
         /// working-copy statistic is never served to a full-resolution export.
         let previewWorkingCopyLongEdge: Int?
+        /// Which photo's pixels `cameraImage` holds, for `StatsCacheKey`:
+        /// `cacheKey` only names the camera profile and as-shot white, which
+        /// two photos taken with the same fixed white balance share. A preview
+        /// working copy keeps its source's identity (same photo;
+        /// `previewWorkingCopyLongEdge` keeps the two statistics apart).
+        let photoIdentity: UUID
 
         /// Stage H -> Stage E (exposure) -> Stage L -> Stage T+C -> Stage M's
         /// ProPhoto -> the app's extended-linear-sRGB working space (negative
@@ -478,7 +484,8 @@ public enum AdobeBaseRenderer {
             return Handle(
                 stageMImage: AdobeBaseRenderer.applyStageM(to: reduced, matrix: assets.combinedMatrix),
                 cameraImage: reduced, assets: assets, cubes: cubes, variant: variant, cacheKey: cacheKey,
-                previewWorkingCopyLongEdge: Int(max(reduced.extent.width, reduced.extent.height))
+                previewWorkingCopyLongEdge: Int(max(reduced.extent.width, reduced.extent.height)),
+                photoIdentity: photoIdentity
             )
         }
 
@@ -494,7 +501,7 @@ public enum AdobeBaseRenderer {
             zeroed.texture = 0
             zeroed.clarity = 0
             let key = AdobeBaseRenderer.StatsCacheKey(
-                identity: cacheKey, settings: zeroed, quality: quality,
+                photo: photoIdentity, identity: cacheKey, settings: zeroed, quality: quality,
                 previewWorkingCopyLongEdge: previewWorkingCopyLongEdge
             )
 
@@ -542,6 +549,10 @@ public enum AdobeBaseRenderer {
     /// later `.final` (export) request, so it gets its own cache slot rather
     /// than sharing `.final`'s.
     struct StatsCacheKey: Hashable {
+        /// `Handle.photoIdentity`: without it, two photos sharing a camera
+        /// profile and as-shot white (a fixed white balance) shared one
+        /// statistic, export included.
+        var photo: UUID
         var identity: CacheKey
         var settings: EditSettings
         var quality: SpatialToneQuality
@@ -688,7 +699,7 @@ public enum AdobeBaseRenderer {
         let cubes = cachedCubes(for: assets, key: cacheKey, variant: variant)!
         return Handle(
             stageMImage: stageMImage, cameraImage: cameraImage, assets: assets, cubes: cubes,
-            variant: variant, cacheKey: cacheKey, previewWorkingCopyLongEdge: nil
+            variant: variant, cacheKey: cacheKey, previewWorkingCopyLongEdge: nil, photoIdentity: UUID()
         )
     }
 

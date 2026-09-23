@@ -239,4 +239,29 @@ struct AdobeBaseRendererTests {
         #expect(ratioNeutral == ratioShadows, "Shadows alone must not change the preHS statistic")
         #expect(ratioExposure > ratioNeutral, "raising Exposure should raise the fraction of pixels above -1 stop")
     }
+
+    /// Two photos taken with the same camera profile and the same fixed
+    /// white balance share `CacheKey` (profile + as-shot white), but the
+    /// statistic is read off each photo's own pixels: the second photo must
+    /// not be served the first one's cached value (it used to be, export
+    /// included).
+    @Test func highlightRatioBaseIsNotSharedBetweenPhotosWithTheSameProfileAndWhite() throws {
+        guard let dcp = loadRealDCP(), let look = loadRealAdobeLook() else { return }
+        let assets = try AdobeBaseAssets(dcp: dcp, look: look, neutralG1: SIMD3(1, 1, 1))
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
+        let gradient = Self.makeGradientImage(width: 48, height: 32, colorSpace: colorSpace)
+        let brighter = gradient.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: 1.5])
+        let cacheKey = AdobeBaseRenderer.CacheKey(
+            dcpIdentity: "test-fixture-dcp-two-photos", lookIdentity: "test-fixture-look-two-photos",
+            whiteXY: assets.whiteXY, exposureEV: assets.baselineEV, variant: .b
+        )
+        let first = AdobeBaseRenderer.makeHandle(cameraImage: gradient, assets: assets, cacheKey: cacheKey, variant: .b)
+        let second = AdobeBaseRenderer.makeHandle(cameraImage: brighter, assets: assets, cacheKey: cacheKey, variant: .b)
+
+        let firstRatio = first.highlightRatioBase(for: .neutral)
+        let secondRatio = second.highlightRatioBase(for: .neutral)
+
+        #expect(secondRatio > firstRatio, "the brighter photo has more pixels above -1 stop; it must get its own statistic")
+        #expect(first.highlightRatioBase(for: .neutral) == firstRatio, "each photo still reuses its own cached statistic")
+    }
 }
