@@ -319,6 +319,13 @@ Texture / Clarity2012（Laplacian 段別線形ゲイン、Clarity は +3 段）�
 
 HSL Blue の輝度再 fit は、純度の高い青で `yMid` 除算が発散し白飛びする副作用のため見送った（ColorOps のコメント）。飽和ガードを入れてから再検討する。
 
+**round2 セット A: H/S の画像適応（2026-09-23、`.photobench/phase2/spatial-adaptive/model.md`、実エンジンで 6 scene）**: scene ごとに kH ∈ {0.3〜1.2}、kS ∈ {0.4〜1.8} を格子で当てた（186 描画）。
+
+- **kS は画像適応が明確**（scene 別最適 0.4〜1.2）。中立レンダーのベース層（σ32px @1500×1000）で **明部（Ln > −1 段）の面積比** `highlightRatioBase` と r=0.996 で相関し、leave-one-out で S ケースの平均 ΔE 3.52 → 2.31（−34%）。採用式 `kS = clamp(0.4184 + 1.6664·highlightRatioBase, 0.4, 1.8)`。「暗部比率」「中央値正規化」は LOO では効かない。
+- **kH は画像適応の根拠なし**（LOO で改善せず）→ 0.5 固定。
+- 複合（H−80&S+40）でも平均 −23%。n=6（明るい scene は 1 枚）なので、追加 10 scene の書き出し後に再 fit する（スクリプトは scene 自動検出で再実行可）。kSneg は未計測。
+- 実装: 写真ごとに中立レンダーを長辺 750px に縮小して統計量を 1 回計算し、kS を決める（`SpatialGainScale.adaptive`）。
+
 **4 プリセットの残差分解（2026-09-23、`.photobench/phase5/preset-residuals/model.md`）**: 4 プリセット × 11 操作グループの中立化 XMP（48 種）を RAW / JPEG で 104 枚描画し、LR 参照と比較。
 
 - 共通の 1 位は **C3 の Highlights／Shadows**（確定）: 8 組中 7 組で「外すと改善」し、改善幅は |Highlights2012| にほぼ比例（colorful −88 / night −87 で最大、pastel −44 で最小）。RAW では中間調（相対輝度 0.33〜0.56）で EV 誤差がピーク。→ 振幅の再フィット（spatial-v2.1）が対処。
