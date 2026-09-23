@@ -381,6 +381,29 @@ C が A と一致するのは、明るい編集（露出＋など）では preHS
 - night の有彩画素の 99% を占める Red/Orange（肌・木床）で chroma 比 0.65〜0.76、色相 −11〜−15° のドリフト。bluesky2 は Blue/Aqua 帯で +8〜+42°、colorful は Blue/Purple で −7° の色相ドリフト（`hsl/model.md` の既知の弱点: LuminanceAdjustmentBlue が 48 変種中最悪、スライダー線形性未検証）。
 - 次の計測案: P1524180 / DSC02072 のプリセット無し LR 書き出し、night の H/S 個別 ablation、Calibration 順序入れ替えの再検証、Hue 系スライダーの多点実写。
 
+### round4: night の色（Calibration / Split Toning / HSL）の修正（2026-09-24、`3aa3e33`、`.photobench/phase5/round4/model.md`）
+
+round4（5 scene × 14 variant）を、描画を通さない「LR 書き出し同士（基準 → variant）」の比較で分解した。基準現像の誤差と切り離して、操作の式・順序だけを検証できる。
+
+- **Calibration はチャート行列が白を保っていなかった。** +50 行列の行の和が 0.95〜1.03 で、無彩色に最大 5% の色かぶり（BlueSaturation+50 は R/G −4.4%/−4.7%）。実写 RAW 17 組で出力側 3×3 を当てはめると行の和は全件ほぼ 1。合成行列を行の和で正規化すると LR 内部比較 1.67 → 0.72（理想の 3×3 0.56、何もしない 1.67）。チャート行列のままではどの位置（カメラ RGB・行列直後・Look 前・トーンカーブ前・cube P 前・cube Q 前後）でも「掛けない方が良い」状態だった。位置は出力参照のまま、**cube Q の前**へ（組み合わせで改善、HALD の Calibration → HSL と一致）。
+- **HSL の彩度を下げるときの支点は HSL の L=(max+min)/2**（画素ごとに解くと p/L = 0.984、上げるときは HSV の V で p/V = 1.004）。旧式は両方 V 固定で、下げると輝度が上がっていた。Orange −40 0.76 → 0.40、night の全帯 1.31 → 0.73。
+- **Split Toning の向きは「線形 ProPhoto の HSV 純色 − その輝度」**（輝度保存。250° で実測との差 2°、186° で 3°。旧 U/V 基底は 186° で 24° ずれ輝度を上げていた）。Blending 50 は Blending 100 形状に輝度マスク（shadow 暗部 0.9 → 中間以上 0.25、highlight 暗部 0.25 → 明部 0.7）。旧 `_blend_shape` は highlight の山を暗部側へ動かしていた。彩度保護は Blending 50 で shadow 0.5 / highlight なし。night（Blending 50）1.84 → 0.91、round0（Blending 100）0.64 → 0.67。
+- **XMP 読み取りのバグ（`df94bb1`）**: LR サイドカーの `crs:Look` > `crs:Parameters` に入っている Adobe Color 自身の点カーブを、ルートの Linear カーブの代わりに読んでいた（Adobe Color のカーブが 2 回掛かり EV −0.07〜−0.11）。計測用サイドカーの基準 3 scene（round0/1 の 111 本、round2 の 135 本、round4 の 42 本）が該当。オーナーのプリセット 5 本とゲート用 XMP（c3/c4 など）は該当しない。
+
+| ケース群 | n | 変更前（`46b4989`） | v2（`3aa3e33`） |
+|---|---:|---:|---:|
+| round4 night の色すべて（WB+Cal+Split+HSL） | 5 | 4.11 | **2.16** |
+| round4 cal_only / night_wb_split | 5 / 5 | 2.90 / 2.79 | **1.91 / 2.09** |
+| round4 中立 | 5 | 1.78 | 1.72 |
+| 色の単体ゲート（c2 抜粋: LumBlue+60 ×3、only-calibration、only-hsl） | 5 | 1.38 | **1.17** |
+| full_bluesky2 | 3 | 2.64 | **2.29** |
+| 4 プリセット × RAW P1524180 | 4 | bluesky2 1.89 / colorful 2.26 / night 6.04 / pastel 1.16 | 1.74 / 2.39 / **4.02** / 1.20 |
+| 4 プリセット × JPEG DSC02072 | 4 | bluesky2 2.74 / colorful 1.99 / night 5.43 / pastel 1.83 | **1.19** / 2.09 / **3.43** / 2.02 |
+| 4 プリセット × 2 scene 平均 | 8 | 2.92 | **2.26** |
+| H/S 単体 / round2 セット A / round3 | 18 / 42 / 48 | 1.95 / 3.05 / 1.92 | 1.95 / 3.06 / 1.93 |
+
+colorful・pastel の +0.04〜+0.19 は、旧 HSL の「彩度を下げると明るくなる」誤りが基準現像の暗さ（P1524180 の中立で EV −0.06、DSC02072 の非RAW で −0.03〜−0.14）を打ち消していた分が消えたため。残差は基準現像側（露出）で扱う。
+
 ### フェーズ4 レンズ補正の調査（2026-09-23、`.photobench/phase4/lens/`）
 
 - **歪曲は確定。** LR は RW2 埋め込みの補正（`LensProfileSetup=LensDefaults`、`LensProfileIsEmbedded=True`）を使っており、ExifTool `PanasonicRaw.pm` の式 `Ru = scale·(Rd + a·Rd³ + b·Rd⁵ + c·Rd⁷)` に、IFD0 タグ 0x0119（DistortionInfo、int16×16）の `scale = 1/(1+data[5]/32768)`、`a = data[8]/32768`、`b = data[4]/32768`、`c = data[11]/32768`、正規化半径 **`R0 = data[12]`（DistortionN、DC-S5 は 3605 = 6000×4000 の半対角）** を入れると、自由パラメータ 0 個で LR との格子点対応が RMS 0.42〜0.63 px（Sigma 50/1.4 と Lumix S 35/1.8）。中心は画像の幾何中心、接線成分なし。
