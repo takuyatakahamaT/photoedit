@@ -248,6 +248,25 @@ round1 の freq チャート（Texture±100、Clarity±100、Dehaze±50）と実
 - 合成順序は round0 の資産では検証できず未決着。暫定は「トーンカーブ後・ハイライト／シャドウ直後・Texture → Clarity → Dehaze」。
 - 追加計測が有効な XMP: Texture／Clarity／Dehaze の ±20／±40／±80（線形性）、Dehaze −40（彩度負側）、明部限定チャートの Clarity±60（明るさ依存）。
 
+### フェーズ3 C4 の結果（2026-09-23、`8c1569f`）と、合成時の暗さの切り分け
+
+Texture / Clarity2012（Laplacian 段別線形ゲイン、Clarity は +3 段）と Dehaze（pointwise の大域カーブ＋彩度倍率、cube に焼く）を実装。fixture は Python 参照と相対誤差 0.0、GPU/CPU 一致は最大 OKLab 距離 0.0037。実写ゲート（Studio、領域平均 ΔE）: Texture±60 0.95〜1.29、Clarity−60 1.21〜1.63、Clarity+60 4.06 / 2.60 / 2.18、Dehaze+40 3.29 / 5.19 / 4.21、**15 ケース平均 2.18**（≤ 2.3）。
+
+一方、4 プリセット × 2 scene（RAW P1524180、JPEG DSC02072）は C2 時点より悪化し、8 組すべてが **一様に暗い**（EV −0.24〜−0.58、L* −4〜−13。RAW: bluesky2 4.19 / night 9.78 / pastel 3.90 / colorful 6.53、JPEG: 4.90 / 10.43 / 5.62 / 7.59。C2 時点は RAW 2.44 / 7.45 / 5.47 / 4.44、JPEG 2.71 / 5.29 / 1.63 / 1.89）。
+
+原因の切り分け（round0 の **JPEG 入力**は LR と幾何・基準現像が同一なので、モデルの誤差だけが出る。`.photobench/phase2/nonraw-gate/`）:
+
+| 変種（JPEG 入力、P1013558） | 平均ΔE | EV | chroma |
+|---|---:|---:|---:|
+| only-highlights（−79） | 1.88 | −0.10 | 0.93 |
+| only-shadows（+46） | 1.57 | −0.15 | 0.95 |
+| only-blacks（+90） | 0.81 | −0.02 | 0.89 |
+| tone-all | 6.19 | −0.38 | 0.71 |
+| LR 中立の再書き出し vs 入力（LR 自身の no-op 残差） | 0.09 | 0.00 | 1.00 |
+
+- ハイライトは 3 scene とも我々が暗い（H−100 で −0.11〜−0.18 EV）＝**モデルの効きが強すぎる**。シャドウは写真によって強すぎ／弱すぎ（LR の画像適応）。両者と Blacks の偏りが同符号で積み上がり、tone-all で −0.38 EV になる。合成順序の問題ではなく、単体の振幅の問題が主。
+- 対応中: (1) 空間処理の位置の切替実験（Contrast 前／後、点カーブ後、トーンカーブ前、出力参照の最後）、(2) ゲイン表の振幅 4 係数（H±、S±）を実写 20 ケースで再フィット（spatial-v2.1）、(3) 4 プリセットの残差分解（色相帯・トーン別）。結果は本節に追記する。
+
 ### フェーズ4 レンズ補正の調査（2026-09-23、`.photobench/phase4/lens/`）
 
 - **歪曲は確定。** LR は RW2 埋め込みの補正（`LensProfileSetup=LensDefaults`、`LensProfileIsEmbedded=True`）を使っており、ExifTool `PanasonicRaw.pm` の式 `Ru = scale·(Rd + a·Rd³ + b·Rd⁵ + c·Rd⁷)` に、IFD0 タグ 0x0119（DistortionInfo、int16×16）の `scale = 1/(1+data[5]/32768)`、`a = data[8]/32768`、`b = data[4]/32768`、`c = data[11]/32768`、正規化半径 **`R0 = data[12]`（DistortionN、DC-S5 は 3605 = 6000×4000 の半対角）** を入れると、自由パラメータ 0 個で LR との格子点対応が RMS 0.42〜0.63 px（Sigma 50/1.4 と Lumix S 35/1.8）。中心は画像の幾何中心、接線成分なし。
