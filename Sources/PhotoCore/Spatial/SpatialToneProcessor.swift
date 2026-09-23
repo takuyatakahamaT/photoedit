@@ -176,6 +176,24 @@ public enum SpatialToneProcessor {
         return try applyGPU(
             device: device, to: image, highlights: highlights, shadows: shadows, scalePx: scalePx,
             texture: texture, clarity: clarity, gainScale: gainScale, shift: shift, quality: quality
+        ).image
+    }
+
+    /// Test-only: `apply(...)`'s GPU path, also returning the bytes of every
+    /// distinct texture that one call held at once (its pooled input and
+    /// intermediates, not the output that escapes into the `CIImage`). Per
+    /// call, so a test running concurrently with other suites cannot race it.
+    static func applyGPUMeasuringMemory(
+        to image: CIImage, highlights: Double, shadows: Double, scalePx: Double,
+        texture: Double = 0, clarity: Double = 0, gainScale: SpatialGainScale = .identity,
+        shift: SpatialShift = .zero, quality: SpatialToneQuality = .final
+    ) throws -> (image: CIImage, peakBytes: Int) {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw ProcessorError.deviceUnavailable
+        }
+        return try applyGPU(
+            device: device, to: image, highlights: highlights, shadows: shadows, scalePx: scalePx,
+            texture: texture, clarity: clarity, gainScale: gainScale, shift: shift, quality: quality
         )
     }
 
@@ -195,12 +213,12 @@ public enum SpatialToneProcessor {
         device: MTLDevice, to image: CIImage, highlights: Double, shadows: Double, scalePx: Double,
         texture: Double, clarity: Double, gainScale: SpatialGainScale, shift: SpatialShift,
         quality: SpatialToneQuality = .final
-    ) throws -> CIImage {
+    ) throws -> (image: CIImage, peakBytes: Int) {
         let resources = try metalResources(for: device)
 
         let extent = image.extent.integral
         guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else {
-            return image
+            return (image, 0)
         }
         let width = Int(extent.width)
         let height = Int(extent.height)
@@ -249,42 +267,49 @@ public enum SpatialToneProcessor {
 
         let levelsH = max(1, Int(log2(max(scalePx, 2.0)).rounded(.toNearestOrEven)))
         var currentLn = ln0
+        // Each op below reads `currentLn` and returns a new plane; the one it
+        // replaced is dead from then on, except `ln0`, which `runApplyRatio`
+        // still reads at the end.
+        func advance(to next: MTLTexture) {
+            if currentLn !== ln0 { allocator.release(currentLn) }
+            currentLn = next
+        }
 
         if highlights != 0 {
             let curveBuffer = makeCurveBuffer(device: device, values: SpatialToneOps.highlightsGainCurve(highlights, scale: gainScale))
-            currentLn = applySingleOpLLF(
+            advance(to: applySingleOpLLF(
                 encoder: encoder, resources: resources, allocator: allocator,
                 ln: currentLn, curveBuffer: curveBuffer,
                 alpha: SpatialToneOps.highlightsParams.alpha,
                 beta: SpatialToneOps.highlightsParams.beta,
                 sigmaR: SpatialToneOps.highlightsParams.sigmaR,
                 levels: levelsH, shift: shift.highlights
-            )
+            ))
         }
         if shadows != 0 {
             let levelsS = max(1, levelsH + SpatialToneOps.shadowsLevelsOffset)
             let curveBuffer = makeCurveBuffer(device: device, values: SpatialToneOps.shadowsGainCurve(shadows, scale: gainScale))
-            currentLn = applySingleOpLLF(
+            advance(to: applySingleOpLLF(
                 encoder: encoder, resources: resources, allocator: allocator,
                 ln: currentLn, curveBuffer: curveBuffer,
                 alpha: SpatialToneOps.shadowsParams.alpha,
                 beta: SpatialToneOps.shadowsParams.beta,
                 sigmaR: SpatialToneOps.shadowsParams.sigmaR,
                 levels: levelsS, nDisc: quality.shadowsDiscretizationCount, shift: shift.shadows
-            )
+            ))
         }
         if texture != 0 {
             let gains = SpatialToneOps.gainProfile(
                 amount: texture, pos: SpatialToneOps.textureGain60Pos, neg: SpatialToneOps.textureGain60Neg, levelsTotal: levelsH
             )
-            currentLn = applyMultiscaleGainGPU(encoder: encoder, resources: resources, allocator: allocator, ln: currentLn, gains: gains)
+            advance(to: applyMultiscaleGainGPU(encoder: encoder, resources: resources, allocator: allocator, ln: currentLn, gains: gains))
         }
         if clarity != 0 {
             let levelsC = levelsH + SpatialToneOps.clarityLevelOffset
             let gains = SpatialToneOps.gainProfile(
                 amount: clarity, pos: SpatialToneOps.clarityGain60Pos, neg: SpatialToneOps.clarityGain60Neg, levelsTotal: levelsC
             )
-            currentLn = applyMultiscaleGainGPU(encoder: encoder, resources: resources, allocator: allocator, ln: currentLn, gains: gains)
+            advance(to: applyMultiscaleGainGPU(encoder: encoder, resources: resources, allocator: allocator, ln: currentLn, gains: gains))
         }
 
         // Not pooled: this texture escapes into the returned `CIImage` and
@@ -300,6 +325,11 @@ public enum SpatialToneProcessor {
         commandBuffer.waitUntilCompleted()
         let waitEndTime = verboseDiagnosticsEnabled ? DispatchTime.now() : nil
         checkinTextures(allocator.allocated)
+        if diagnosticsEnabled {
+            FileHandle.standardError.write(Data(
+                "SpatialToneProcessor.applyGPU memory: call peak \(allocator.allocatedBytes / 1_048_576) MB, pool \(pooledTextureBytes / 1_048_576) MB\n".utf8
+            ))
+        }
 
         if let error = commandBuffer.error {
             throw ProcessorError.commandBufferFailed(String(describing: error))
@@ -330,7 +360,7 @@ public enum SpatialToneProcessor {
         if extent.origin != .zero {
             output = output.transformed(by: CGAffineTransform(translationX: extent.origin.x, y: extent.origin.y))
         }
-        return output
+        return (output, allocator.allocatedBytes)
     }
 
     /// Materializes `image` into `texture` and returns only once Core Image
@@ -400,7 +430,12 @@ public enum SpatialToneProcessor {
             let newBase = allocator.plane(width: lap[lastIndex].width, height: lap[lastIndex].height)
             runAddCurve(encoder: encoder, resources: resources, src: lap[lastIndex], dst: newBase, curveBuffer: curveBuffer, shift: shift)
             lap[lastIndex] = newBase
-            return reconstruct(encoder: encoder, resources: resources, allocator: allocator, lap: lap)
+            let result = reconstruct(encoder: encoder, resources: resources, allocator: allocator, lap: lap)
+            // `g[0]` is the caller's `ln`; `g.last` was `lap`'s coarsest band
+            // before `newBase` replaced it, so it is released once, with `g`.
+            allocator.release(Array(g.dropFirst()))
+            allocator.release(lap)
+            return result
         }
 
         // Shadows: the whole-image min/max, the g0 discretization grid, and
@@ -439,14 +474,24 @@ public enum SpatialToneProcessor {
                     k: k, isFirst: k == 0
                 )
             }
+            // Step `k` is folded into `acc`; its pyramid is dead. `gk[0]` is
+            // `remapped`, and `gk.last` doubles as `lk.last`. Reusing these
+            // for step `k + 1` is what keeps the sweep's footprint to one
+            // pyramid instead of `n`.
+            allocator.release(gk)
+            allocator.release(Array(lk.dropLast()))
         }
+        allocator.release(idxTextures + fracTextures)
 
         let baseFinal = allocator.plane(width: g[levels].width, height: g[levels].height)
         runAddCurve(encoder: encoder, resources: resources, src: g[levels], dst: baseFinal, curveBuffer: curveBuffer, shift: shift)
+        allocator.release(Array(g.dropFirst()))
 
         var lapFull = acc
         lapFull.append(baseFinal)
-        return reconstruct(encoder: encoder, resources: resources, allocator: allocator, lap: lapFull)
+        let result = reconstruct(encoder: encoder, resources: resources, allocator: allocator, lap: lapFull)
+        allocator.release(lapFull)
+        return result
     }
 
     /// `SpatialToneOps.applyMultiscaleGain`'s GPU counterpart (Phase2 C4
@@ -463,12 +508,18 @@ public enum SpatialToneProcessor {
         guard levels > 0 else { return ln }
         let g = gaussianPyramid(encoder: encoder, resources: resources, allocator: allocator, base: ln, levels: levels)
         var lap = laplacianPyramid(encoder: encoder, resources: resources, allocator: allocator, g: g)
+        let unscaledBands = lap
         for i in 0..<lap.count {
             let scaled = allocator.plane(width: lap[i].width, height: lap[i].height)
             runMultiplyScalar(encoder: encoder, resources: resources, src: lap[i], dst: scaled, scalar: gains[i])
             lap[i] = scaled
         }
-        return reconstruct(encoder: encoder, resources: resources, allocator: allocator, lap: lap)
+        let result = reconstruct(encoder: encoder, resources: resources, allocator: allocator, lap: lap)
+        // `g[0]` is the caller's `ln`; `g.last` is also `unscaledBands.last`.
+        allocator.release(Array(g.dropFirst()))
+        allocator.release(Array(unscaledBands.dropLast()))
+        allocator.release(lap)
+        return result
     }
 
     /// Kept as separate vertical-blur + horizontal-blur-and-downsample
@@ -487,6 +538,7 @@ public enum SpatialToneProcessor {
             let outHeight = (previous.height + 1) / 2
             let down = allocator.plane(width: outWidth, height: outHeight)
             runDownsampleHorizontal(encoder: encoder, resources: resources, src: vBlurred, dst: down)
+            allocator.release(vBlurred)
             g.append(down)
         }
         return g
@@ -501,6 +553,7 @@ public enum SpatialToneProcessor {
         runUpsampleVertical(encoder: encoder, resources: resources, src: src, dst: vUp)
         let out = allocator.plane(width: outWidth, height: outHeight)
         runUpsampleHorizontalScaled(encoder: encoder, resources: resources, src: vUp, dst: out)
+        allocator.release(vUp)
         return out
     }
 
@@ -513,6 +566,7 @@ public enum SpatialToneProcessor {
             let up = pyrUp(encoder: encoder, resources: resources, allocator: allocator, src: g[i + 1], outWidth: g[i].width, outHeight: g[i].height)
             let diff = allocator.plane(width: g[i].width, height: g[i].height)
             runSubtract(encoder: encoder, resources: resources, a: g[i], b: up, out: diff)
+            allocator.release(up)
             lap.append(diff)
         }
         lap.append(g[g.count - 1])
@@ -523,12 +577,17 @@ public enum SpatialToneProcessor {
         encoder: MTLComputeCommandEncoder, resources: MetalResources, allocator: TextureAllocator, lap: [MTLTexture]
     ) -> MTLTexture {
         var x = lap[lap.count - 1]
+        var ownsX = false
         var i = lap.count - 2
         while i >= 0 {
             let up = pyrUp(encoder: encoder, resources: resources, allocator: allocator, src: x, outWidth: lap[i].width, outHeight: lap[i].height)
             let sum = allocator.plane(width: lap[i].width, height: lap[i].height)
             runAdd(encoder: encoder, resources: resources, a: up, b: lap[i], out: sum)
+            allocator.release(up)
+            // `lap` belongs to the caller; only the partial sums are ours.
+            if ownsX { allocator.release(x) }
             x = sum
+            ownsX = true
             i -= 1
         }
         return x
@@ -849,9 +908,23 @@ public enum SpatialToneProcessor {
     /// reading/writing them. Not thread-safe by itself (one instance per
     /// `apply()` call, used only from that call's thread); the pool it
     /// checks in/out of is what needs (and has) its own lock.
+    ///
+    /// `release` makes a plane whose last reader has already been encoded
+    /// available to a later `plane(...)` of the *same* call. That is safe
+    /// because one call encodes every dispatch into one serial compute
+    /// encoder, so a later dispatch that overwrites the plane runs only
+    /// after the earlier readers finish, and every kernel writes its whole
+    /// output. A released plane never reaches another call before
+    /// `checkinTextures`. Without it, Shadows' discretization sweep kept a
+    /// fresh pyramid per step alive to the end of the call, about 8 GB of
+    /// Metal allocation at 24 MP.
     private final class TextureAllocator {
         let device: MTLDevice
         private(set) var allocated: [MTLTexture] = []
+        /// Bytes of every distinct texture this call holds -- its peak.
+        private(set) var allocatedBytes = 0
+        private var reusable: [TextureKey: [MTLTexture]] = [:]
+        private var reusableIDs: Set<ObjectIdentifier> = []
 
         init(device: MTLDevice) {
             self.device = device
@@ -860,60 +933,124 @@ public enum SpatialToneProcessor {
         @discardableResult
         func track(_ texture: MTLTexture) -> MTLTexture {
             allocated.append(texture)
+            allocatedBytes += texture.allocatedSize
             return texture
         }
 
         func plane(width: Int, height: Int) -> MTLTexture {
-            track(SpatialToneProcessor.checkoutTexture(
+            let key = TextureKey(width: max(width, 1), height: max(height, 1), format: .r32Float)
+            if var bucket = reusable[key], let texture = bucket.popLast() {
+                reusable[key] = bucket
+                reusableIDs.remove(ObjectIdentifier(texture))
+                return texture
+            }
+            return track(SpatialToneProcessor.checkoutTexture(
                 device: device, width: width, height: height, format: .r32Float, usage: [.shaderRead, .shaderWrite]
             ))
         }
+
+        func release(_ texture: MTLTexture) {
+            let id = ObjectIdentifier(texture)
+            precondition(!reusableIDs.contains(id), "SpatialToneProcessor: a plane was released twice in one call")
+            precondition(
+                allocated.contains { $0 === texture },
+                "SpatialToneProcessor: released a texture this call did not allocate"
+            )
+            reusableIDs.insert(id)
+            let key = TextureKey(width: texture.width, height: texture.height, format: texture.pixelFormat)
+            reusable[key, default: []].append(texture)
+        }
+
+        func release(_ textures: [MTLTexture]) {
+            for texture in textures {
+                release(texture)
+            }
+        }
     }
 
-    private struct TextureKey: Hashable {
+    struct TextureKey: Hashable {
         let width: Int
         let height: Int
         let format: MTLPixelFormat
     }
 
-    private static let texturePoolLock = NSLock()
-    nonisolated(unsafe) private static var texturePool: [TextureKey: [MTLTexture]] = [:]
+    /// Textures kept between `apply()` calls so the next call with the same
+    /// shapes skips allocation. A class so tests can check the retention
+    /// rule on their own instance instead of racing the shared one.
+    final class TexturePool: @unchecked Sendable {
+        private let lock = NSLock()
+        private var buckets: [TextureKey: [MTLTexture]] = [:]
 
-    /// Reuses a pooled texture of the exact same `(width, height, format)`
-    /// if one is free, else allocates a fresh one. Every texture that ever
-    /// enters the pool was created with the same `usage` for that
-    /// `(width, height, format)` key in practice (`.r32Float` intermediates
-    /// via `TextureAllocator.plane`; `.rgba32Float` *input* textures here --
-    /// the *output* texture is deliberately never pooled, see `applyGPU`),
-    /// so a pooled hit's usage always matches what the caller needs.
-    private static func checkoutTexture(device: MTLDevice, width: Int, height: Int, format: MTLPixelFormat, usage: MTLTextureUsage) -> MTLTexture {
-        let key = TextureKey(width: max(width, 1), height: max(height, 1), format: format)
-        texturePoolLock.lock()
-        if var bucket = texturePool[key], let texture = bucket.popLast() {
-            texturePool[key] = bucket
-            texturePoolLock.unlock()
+        /// Reuses a pooled texture of the exact same `(width, height, format)`
+        /// if one is free, else allocates a fresh one. Every texture that ever
+        /// enters the pool was created with the same `usage` for that
+        /// `(width, height, format)` key in practice (`.r32Float` intermediates
+        /// via `TextureAllocator.plane`; `.rgba32Float` *input* textures --
+        /// the *output* texture is deliberately never pooled, see `applyGPU`),
+        /// so a pooled hit's usage always matches what the caller needs.
+        func checkout(
+            device: MTLDevice, width: Int, height: Int, format: MTLPixelFormat, usage: MTLTextureUsage
+        ) -> MTLTexture {
+            let key = TextureKey(width: max(width, 1), height: max(height, 1), format: format)
+            lock.lock()
+            if var bucket = buckets[key], let texture = bucket.popLast() {
+                buckets[key] = bucket
+                lock.unlock()
+                return texture
+            }
+            lock.unlock()
+
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: format, width: key.width, height: key.height, mipmapped: false
+            )
+            descriptor.usage = usage
+            descriptor.storageMode = .private
+            guard let texture = device.makeTexture(descriptor: descriptor) else {
+                preconditionFailure("SpatialToneProcessor: failed to allocate a \(key.width)x\(key.height) texture (format \(format.rawValue))")
+            }
             return texture
         }
-        texturePoolLock.unlock()
 
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: format, width: key.width, height: key.height, mipmapped: false
-        )
-        descriptor.usage = usage
-        descriptor.storageMode = .private
-        guard let texture = device.makeTexture(descriptor: descriptor) else {
-            preconditionFailure("SpatialToneProcessor: failed to allocate a \(key.width)x\(key.height) texture (format \(format.rawValue))")
+        /// Replaces the pool with one finished call's textures. Reuse only
+        /// pays off when the next call has the same shapes (slider drags on
+        /// one photo, repeated exports); keeping every earlier shape (other
+        /// photos, the other orientation, other preview sizes) held gigabytes
+        /// of Metal allocation for the life of the process.
+        func checkin(_ textures: [MTLTexture]) {
+            let replacement = Dictionary(grouping: textures) {
+                TextureKey(width: $0.width, height: $0.height, format: $0.pixelFormat)
+            }
+            lock.lock()
+            buckets = replacement
+            lock.unlock()
         }
-        return texture
+
+        /// Bytes of Metal allocation kept between calls.
+        var pooledBytes: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return buckets.values.joined().reduce(0) { $0 + $1.allocatedSize }
+        }
+
+        func removeAll() {
+            lock.lock()
+            buckets.removeAll()
+            lock.unlock()
+        }
+    }
+
+    static let sharedTexturePool = TexturePool()
+
+    private static func checkoutTexture(device: MTLDevice, width: Int, height: Int, format: MTLPixelFormat, usage: MTLTextureUsage) -> MTLTexture {
+        sharedTexturePool.checkout(device: device, width: width, height: height, format: format, usage: usage)
     }
 
     private static func checkinTextures(_ textures: [MTLTexture]) {
-        texturePoolLock.lock()
-        for texture in textures {
-            let key = TextureKey(width: texture.width, height: texture.height, format: texture.pixelFormat)
-            texturePool[key, default: []].append(texture)
-        }
-        texturePoolLock.unlock()
+        sharedTexturePool.checkin(textures)
+    }
+
+    static var pooledTextureBytes: Int {
+        sharedTexturePool.pooledBytes
     }
 
     /// Test-only escape hatch: pooled textures are keyed only by size/format,
@@ -921,9 +1058,7 @@ public enum SpatialToneProcessor {
     /// principle be handed back out. Production never needs this (the pool
     /// is a pure performance optimization, not a correctness dependency).
     static func clearTexturePoolForTesting() {
-        texturePoolLock.lock()
-        texturePool.removeAll()
-        texturePoolLock.unlock()
+        sharedTexturePool.removeAll()
     }
 
     private static func makeRGBATexture(device: MTLDevice, width: Int, height: Int) -> MTLTexture {
