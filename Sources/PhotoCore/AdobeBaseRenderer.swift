@@ -846,10 +846,20 @@ public enum AdobeBaseRenderer {
     static func applySpatialToneOps(settings: EditSettings, to image: CIImage, highlightRatioBase: Double? = nil) -> CIImage {
         let longEdge = max(image.extent.width, image.extent.height)
         let scalePx = SpatialToneOps.scalePx(forLongEdge: Double(longEdge))
+        // This is the one and only production call site that resolves
+        // `SpatialShift.current` (env var, default `.zero`) -- see that
+        // type's doc comment; everything below takes it as an explicit
+        // parameter.
+        let shift = SpatialShift.current
+        if ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] != nil, shift != .zero {
+            FileHandle.standardError.write(Data(
+                "AdobeBaseRenderer.applySpatialToneOps: shift.highlights=\(shift.highlights) shift.shadows=\(shift.shadows)\n".utf8
+            ))
+        }
         guard let output = try? SpatialToneProcessor.apply(
             to: image, highlights: settings.highlights, shadows: settings.shadows, scalePx: scalePx,
             texture: settings.texture, clarity: settings.clarity,
-            gainScale: SpatialGainScale.current(highlightRatioBase: highlightRatioBase)
+            gainScale: SpatialGainScale.current(highlightRatioBase: highlightRatioBase), shift: shift
         ) else {
             preconditionFailure("Photo BenchのHighlights/Shadows空間処理カーネルを画像へ適用できませんでした。")
         }

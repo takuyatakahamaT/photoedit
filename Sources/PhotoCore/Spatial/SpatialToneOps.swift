@@ -93,6 +93,48 @@ public enum SpatialOrder: String {
 /// directly (and passes `.identity`, or omits the parameter) byte-identical
 /// to the fixtures generated before this type existed, regardless of what
 /// the production default is.
+/// **Experiment only** (not a production setting): shifts the *global gain
+/// curve's* reference Ln position -- the coarsest Gaussian/Laplacian-
+/// pyramid base level's value, i.e. `applySingleOpLLF`'s `curve($0)` /
+/// `curve(g[levels].values[i])` calls -- by subtracting `highlights`/
+/// `shadows` (in stops) before the 29-point table lookup: `curve(x - shift)`
+/// instead of `curve(x)`. Deliberately leaves the per-pixel local-Laplacian
+/// remap (`remapMagnitude`, the discretized `g0` sweep) untouched -- only
+/// where the resulting *global* gain is read from the measured table moves.
+///
+/// Motivated by a very dark scene (P1581237) where Lightroom's Shadows2012
+/// gain band appears to sit roughly 2 stops darker in Ln than this table's
+/// own calibrated position (P1013558, a normally-exposed scene, matches
+/// without a shift) -- an effect `SpatialGainScale` (amplitude-only) cannot
+/// express. Controlled by `PHOTO_BENCH_SPATIAL_SHIFT="hShift,sShift"` (two
+/// comma-separated `Double`s in stops); unset or unparseable leaves both at
+/// `0`, i.e. today's production curve, byte-identical. Composes freely with
+/// `PHOTO_BENCH_SPATIAL_GAIN_SCALE`. Resolved only by the pipeline entry
+/// point (`AdobeBaseRenderer.applySpatialToneOps`), same convention as
+/// `SpatialGainScale`; `applyHighlightsShadows`/`SpatialToneProcessor.apply`
+/// and beneath take it as an explicit parameter (default `.zero`), so every
+/// fixture/parity test is unaffected by this default.
+public struct SpatialShift: Sendable, Equatable {
+    public let highlights: Double
+    public let shadows: Double
+
+    public init(highlights: Double = 0, shadows: Double = 0) {
+        self.highlights = highlights
+        self.shadows = shadows
+    }
+
+    public static let zero = SpatialShift()
+
+    public static var current: SpatialShift {
+        guard let raw = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_SHIFT"] else { return .zero }
+        let parts = raw.split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count == 2 else { return .zero }
+        let values = parts.compactMap { Double($0) }
+        guard values.count == 2 else { return .zero }
+        return SpatialShift(highlights: values[0], shadows: values[1])
+    }
+}
+
 public struct SpatialGainScale: Sendable, Equatable {
     public let highlightsNeg: Double
     public let highlightsPos: Double
@@ -869,7 +911,8 @@ public enum SpatialToneOps {
         scalePx: Double,
         texture: Double = 0,
         clarity: Double = 0,
-        gainScale: SpatialGainScale = .identity
+        gainScale: SpatialGainScale = .identity,
+        shift: SpatialShift = .zero
     ) -> [SIMD3<Double>] {
         precondition(rgb.count == width * height, "SpatialToneOps: rgb.count must equal width*height")
         guard highlights != 0 || shadows != 0 || texture != 0 || clarity != 0 else { return rgb }
@@ -880,8 +923,9 @@ public enum SpatialToneOps {
         var ln = ln0
         if highlights != 0 {
             let curveTable = highlightsGainCurve(highlights, scale: gainScale)
+            let hShift = shift.highlights
             ln = applySingleOpLLF(
-                ln, curve: { interpCurve($0, curveTable) },
+                ln, curve: { interpCurve($0 - hShift, curveTable) },
                 alpha: highlightsParams.alpha, beta: highlightsParams.beta, sigmaR: highlightsParams.sigmaR,
                 levels: levelsH
             )
@@ -889,8 +933,9 @@ public enum SpatialToneOps {
         if shadows != 0 {
             let levelsS = max(1, levelsH + shadowsLevelsOffset)
             let curveTable = shadowsGainCurve(shadows, scale: gainScale)
+            let sShift = shift.shadows
             ln = applySingleOpLLF(
-                ln, curve: { interpCurve($0, curveTable) },
+                ln, curve: { interpCurve($0 - sShift, curveTable) },
                 alpha: shadowsParams.alpha, beta: shadowsParams.beta, sigmaR: shadowsParams.sigmaR,
                 levels: levelsS
             )

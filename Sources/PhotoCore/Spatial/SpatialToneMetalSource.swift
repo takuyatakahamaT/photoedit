@@ -229,15 +229,20 @@ enum SpatialToneMetalSource {
     /// `lap[-1] = lap[-1] + curve_fn(lap[-1])` (Highlights fast path) /
     /// `base_final = G[levels] + curve_fn(G[levels])` (Shadows): both are
     /// this same "add the global curve to this one base level" operation.
+    /// `shift`: **experiment only** (`SpatialShift`'s doc comment) -- looks
+    /// up `spatialInterpCurve(v - shift, curve)` instead of `spatialInterpCurve
+    /// (v, curve)`. `0` in production, byte-identical to before this
+    /// parameter existed.
     kernel void spatialAddCurve(
         texture2d<float, access::read> src [[texture(0)]],
         texture2d<float, access::write> dst [[texture(1)]],
         device const float *curve [[buffer(0)]],
+        constant float &shift [[buffer(1)]],
         uint2 gid [[thread_position_in_grid]]
     ) {
         if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) { return; }
         float v = src.read(gid).r;
-        dst.write(float4(v + spatialInterpCurve(v, curve), 0.0, 0.0, 0.0), gid);
+        dst.write(float4(v + spatialInterpCurve(v - shift, curve), 0.0, 0.0, 0.0), gid);
     }
 
     // MARK: - Shadows' discretized `g0` sweep (`_apply_single_op_llf`'s non-fast-path)

@@ -379,7 +379,26 @@ struct SpatialToneOpsTests {
         try runGPUParityTest(context: context, maxOKLabDelta: 0.02, label: "software-fallback")
     }
 
-    private func runGPUParityTest(context: CIContext, maxOKLabDelta: Double, label: String) throws {
+    /// **Experiment only** (`SpatialShift`'s doc comment): the same GPU/CPU
+    /// parity check, at a non-zero shift for both Highlights and Shadows --
+    /// the shift's GPU implementation is a brand-new Metal kernel parameter
+    /// (`spatialAddCurve`'s `shift` buffer), so this is the one test that
+    /// would catch a mismatch between it and the CPU reference's `curve($0 -
+    /// shift)` (e.g. a buffer-index mixup, or `Float`-vs-`Double` cast
+    /// error) that the two existing (shift-less) parity tests cannot.
+    @Test func gpuProcessorMatchesCPUReferenceWithANonZeroShift() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
+        let context = CIContext(mtlDevice: device, options: [
+            .workingColorSpace: colorSpace, .outputColorSpace: colorSpace
+        ])
+        try runGPUParityTest(
+            context: context, maxOKLabDelta: 0.3, label: "hardware-metal-shifted",
+            shift: SpatialShift(highlights: 1.5, shadows: -2.0)
+        )
+    }
+
+    private func runGPUParityTest(context: CIContext, maxOKLabDelta: Double, label: String, shift: SpatialShift = .zero) throws {
         let width = 600
         let height = 400
         let (image, rgb) = makeParityTestImage(width: width, height: height)
@@ -394,7 +413,7 @@ struct SpatialToneOpsTests {
         SpatialToneProcessor.resetDiagnostics()
         let processed = try SpatialToneProcessor.apply(
             to: image, highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity,
-            gainScale: .identity
+            gainScale: .identity, shift: shift
         )
 
         var rendered = [Float](repeating: 0, count: width * height * 4)
@@ -406,7 +425,7 @@ struct SpatialToneOpsTests {
 
         let expected = SpatialToneOps.applyHighlightsShadows(
             rgb: rgb, width: width, height: height, highlights: highlights, shadows: shadows, scalePx: scalePx,
-            texture: texture, clarity: clarity, gainScale: .identity
+            texture: texture, clarity: clarity, gainScale: .identity, shift: shift
         )
 
         var maxDelta = 0.0
