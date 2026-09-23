@@ -362,6 +362,94 @@ struct PreparedOutputGraph: @unchecked Sendable {
     let extent: CGRect
 }
 
+/// The one-time reduction behind `RenderEngine.makePreviewWorkingCopy`
+/// (`PreviewWorkingCopyInfo`): the full-resolution preview's final Lanczos
+/// resize, applied to the decoded image instead of the finished render, and
+/// rendered once into an RGBA float bitmap so no later preview re-evaluates
+/// the full-resolution decode graph (24 MP camera bitmap, lens warp,
+/// orientation) or resamples it again. (A private Metal texture instead of
+/// the CPU bitmap measured the same per preview on the Mac mini: 77 ms vs
+/// 78 ms per Exposure tick, 49 ms vs 51 ms per Shadows tick.)
+struct PreviewWorkingRaster {
+    static let bytesPerPixel = 4 * MemoryLayout<Float>.size
+    /// `context`'s working space and the bitmap's color space, so the render
+    /// is a numeric passthrough of working-space values -- the same
+    /// convention as `SpatialToneProcessor.renderInput`.
+    static let passthroughColorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+
+    /// Float intermediates for this single, one-time render (preview renders
+    /// keep their own contexts' defaults).
+    static var contextOptions: [CIContextOption: Any] {
+        [
+            .workingColorSpace: passthroughColorSpace,
+            .workingFormat: NSNumber(value: CIFormat.RGBAf.rawValue),
+            .cacheIntermediates: false,
+            .name: "PhotoBench.PreviewWorkingCopy"
+        ]
+    }
+
+    let context: CIContext
+
+    /// `RenderEngine.resize`'s production branch (`.lanczos` with
+    /// `.afterDownsampling`: edge clamp, `CILanczosScaleTransform`, crop to
+    /// the integral scaled extent) applied to `image` moved to a zero
+    /// origin -- the identical scale and pixel grid the full-resolution
+    /// preview ends on. An image already within `maxDimension` is only moved,
+    /// never enlarged.
+    static func reduce(_ image: CIImage, maxDimension: CGFloat) -> CIImage {
+        let extent = image.extent
+        let normalized = extent.origin == .zero
+            ? image
+            : image.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+        let bounds = normalized.extent
+        let longest = max(bounds.width, bounds.height)
+        guard longest > maxDimension else { return normalized }
+        let scale = maxDimension / longest
+        let scaledExtent = bounds.applying(CGAffineTransform(scaleX: scale, y: scale)).integral
+        return normalized.clampedToExtent().applyingFilter(
+            "CILanczosScaleTransform",
+            parameters: [
+                kCIInputScaleKey: scale,
+                kCIInputAspectRatioKey: 1
+            ]
+        ).cropped(to: scaledExtent)
+    }
+
+    /// Renders `image` (a finite extent at the origin) once into an RGBAf
+    /// bitmap and wraps it back as a `CIImage` tagged `colorSpace`: `nil`
+    /// keeps the values numeric, exactly like the decoder's camera image; a
+    /// color space (non-RAW: `passthroughColorSpace`) keeps them converted
+    /// correctly by any context. `nil` when the image has no usable extent.
+    func materialize(_ image: CIImage, taggedAs colorSpace: CGColorSpace?) -> CIImage? {
+        let bounds = image.extent.integral
+        guard bounds.origin == .zero,
+              let width = CoreImageDecoder.validatedPixelDimension(bounds.width),
+              let height = CoreImageDecoder.validatedPixelDimension(bounds.height)
+        else {
+            return nil
+        }
+        let rowBytes = width * Self.bytesPerPixel
+        let byteCount = rowBytes * height
+        guard let pixels = malloc(byteCount) else { return nil }
+        context.render(
+            image,
+            toBitmap: pixels,
+            rowBytes: rowBytes,
+            bounds: bounds,
+            format: .RGBAf,
+            colorSpace: Self.passthroughColorSpace
+        )
+        let data = Data(bytesNoCopy: pixels, count: byteCount, deallocator: .free)
+        return CIImage(
+            bitmapData: data,
+            bytesPerRow: rowBytes,
+            size: CGSize(width: width, height: height),
+            format: .RGBAf,
+            colorSpace: colorSpace
+        )
+    }
+}
+
 public final class RenderEngine: @unchecked Sendable {
     public static let processingIdentifier =
         "extended-linear-srgb-edits-resize-before-final-srgb-v1"
@@ -376,6 +464,8 @@ public final class RenderEngine: @unchecked Sendable {
     /// changing export output or hash stability.
     private let previewContext: CIContext
     private let exportContext: CIContext
+    /// Preview-side only (`makePreviewWorkingCopy`): never shared with export.
+    private let workingCopyRaster: PreviewWorkingRaster
     private let outputColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
 
     public init() {
@@ -387,6 +477,9 @@ public final class RenderEngine: @unchecked Sendable {
             ]
             previewContext = CIContext(mtlDevice: device, options: options)
             exportContext = CIContext(mtlDevice: device, options: options)
+            workingCopyRaster = PreviewWorkingRaster(
+                context: CIContext(mtlDevice: device, options: PreviewWorkingRaster.contextOptions)
+            )
         } else {
             let options: [CIContextOption: Any] = [
                 .workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB) as Any,
@@ -395,8 +488,12 @@ public final class RenderEngine: @unchecked Sendable {
             ]
             previewContext = CIContext(options: options)
             exportContext = CIContext(options: options)
+            workingCopyRaster = PreviewWorkingRaster(
+                context: CIContext(options: PreviewWorkingRaster.contextOptions)
+            )
         }
         precondition(previewContext !== exportContext)
+        precondition(workingCopyRaster.context !== exportContext)
     }
 
     var hasIsolatedPreviewAndExportContexts: Bool {
@@ -452,12 +549,32 @@ public final class RenderEngine: @unchecked Sendable {
         guard maxDimension.isFinite, maxDimension > 0 else {
             throw RenderEngineError.renderFailed(decoded.sourceURL)
         }
+        return try preparePreviewFrame(
+            decoded: decoded,
+            settings: settings,
+            resizeMaxDimension: maxDimension,
+            frameMaxDimension: maxDimension,
+            quality: quality
+        )
+    }
+
+    /// `preparePreview`'s body, shared with `preparePreviewFromWorkingCopy`:
+    /// the same production graph (`.lanczos`, `.afterDownsampling`), with the
+    /// final resize optional so a working copy already on the preview's
+    /// pixel grid is not resampled a second time.
+    private func preparePreviewFrame(
+        decoded: DecodedPhoto,
+        settings: EditSettings,
+        resizeMaxDimension: CGFloat?,
+        frameMaxDimension: CGFloat,
+        quality: SpatialToneQuality
+    ) throws -> PreparedPreviewFrame {
         os_signpost(.begin, log: Self.performanceLog, name: "PreviewGraph")
         let graphStarted = ContinuousClock.now
         let output = try makeOutputGraph(
             decoded: decoded,
             settings: settings,
-            maxDimension: maxDimension,
+            maxDimension: resizeMaxDimension,
             downsamplingFilter: .lanczos,
             outputTransformPlacement: .afterDownsampling,
             quality: quality
@@ -477,13 +594,14 @@ public final class RenderEngine: @unchecked Sendable {
             extent: extent,
             sourceURL: decoded.sourceURL,
             graphAndKernelSetupMilliseconds: graphMilliseconds,
-            maxDimension: maxDimension
+            maxDimension: frameMaxDimension
         )
     }
 
     /// Fail-closed entry point for the production UI. Preview-scale RAW
     /// candidates remain calibration-only until a candidate passes the formal
-    /// parity gate.
+    /// parity gate. A preview working copy is refused here too: it has its
+    /// own entry point, `preparePreviewFromWorkingCopy`.
     public func prepareProductionPreview(
         decoded: DecodedPhoto,
         settings: EditSettings,
@@ -492,7 +610,8 @@ public final class RenderEngine: @unchecked Sendable {
     ) throws -> PreparedPreviewFrame {
         guard decoded.info.intent == .fullResolution,
               decoded.info.requestedMaximumDimension == nil,
-              !decoded.info.isRAW || decoded.info.appliedScaleFactor == 1
+              !decoded.info.isRAW || decoded.info.appliedScaleFactor == 1,
+              decoded.info.previewWorkingCopy == nil
         else {
             throw RenderEngineError.previewResolutionPresentationForbidden(
                 decoded.sourceURL
@@ -502,6 +621,145 @@ public final class RenderEngine: @unchecked Sendable {
             decoded: decoded,
             settings: settings,
             maxDimension: maxDimension,
+            quality: quality
+        )
+    }
+
+    /// Reduces a full-resolution decode once into a preview working copy
+    /// (`PreviewWorkingCopyInfo`): RAW keeps its full-resolution demosaic,
+    /// lens correction and orientation and reduces the resulting camera
+    /// image (`AdobeBaseRenderer.Handle.downscaled`); non-RAW reduces its
+    /// input image in the extended-linear-sRGB working space. The reduction
+    /// is the full-resolution preview's own final Lanczos step, moved to the
+    /// front of the pipeline and materialized as RGBA float pixels, so
+    /// `preparePreviewFromWorkingCopy` then runs every edit (spatial
+    /// Highlights/Shadows/Texture/Clarity included, whose `scalePx` and
+    /// adaptive statistics follow the processed image's size) on about a
+    /// fifth of a 24 MP photo's pixels. The returned photo can only be
+    /// previewed: export and `prepareProductionPreview` reject it; keep the
+    /// full-resolution `decoded` for export.
+    public func makePreviewWorkingCopy(
+        from decoded: DecodedPhoto,
+        maxDimension: CGFloat = 2_560
+    ) throws -> DecodedPhoto {
+        guard maxDimension.isFinite, maxDimension >= 1,
+              maxDimension == maxDimension.rounded(.down)
+        else {
+            throw RenderEngineError.renderFailed(decoded.sourceURL)
+        }
+        guard Self.isFullResolutionDecode(decoded) else {
+            throw RenderEngineError.previewResolutionPresentationForbidden(decoded.sourceURL)
+        }
+        let raster = workingCopyRaster
+        os_signpost(.begin, log: Self.performanceLog, name: "PreviewWorkingCopy")
+        defer { os_signpost(.end, log: Self.performanceLog, name: "PreviewWorkingCopy") }
+        let started = ContinuousClock.now
+
+        let image: CIImage
+        let workingExtent: CGRect
+        let handle: AdobeBaseRenderer.Handle?
+        if let source = decoded.adobeBase {
+            guard let reduced = source.downscaled(maxDimension: maxDimension, using: raster) else {
+                throw RenderEngineError.renderFailed(decoded.sourceURL)
+            }
+            handle = reduced
+            image = reduced.image(userExposureEV: 0)
+            workingExtent = reduced.cameraImage.extent
+        } else {
+            guard let reduced = raster.materialize(
+                PreviewWorkingRaster.reduce(decoded.image, maxDimension: maxDimension),
+                taggedAs: PreviewWorkingRaster.passthroughColorSpace
+            ) else {
+                throw RenderEngineError.renderFailed(decoded.sourceURL)
+            }
+            handle = nil
+            image = reduced
+            workingExtent = reduced.extent
+        }
+        // The long edge must be the bound (a reduced copy; `.integral` may
+        // round a floating-point product up by one pixel, exactly as the
+        // full-resolution preview's own resize would) or the source's own.
+        let info = decoded.info
+        let sourceLongest = max(info.width, info.height)
+        let expectedLongest = min(sourceLongest, Int(maxDimension))
+        guard workingExtent.origin == .zero,
+              let width = CoreImageDecoder.validatedPixelDimension(workingExtent.width),
+              let height = CoreImageDecoder.validatedPixelDimension(workingExtent.height),
+              abs(max(width, height) - expectedLongest) <= 1
+        else {
+            throw RenderEngineError.renderFailed(decoded.sourceURL)
+        }
+        return DecodedPhoto(
+            sourceURL: decoded.sourceURL,
+            image: image,
+            metadata: decoded.metadata,
+            info: DecodeInfo(
+                backend: info.backend,
+                width: width,
+                height: height,
+                durationMilliseconds: info.durationMilliseconds,
+                isRAW: info.isRAW,
+                isBoundedSRGBRaster: info.isBoundedSRGBRaster,
+                cameraMake: info.cameraMake,
+                cameraModel: info.cameraModel,
+                calibrationID: info.calibrationID,
+                calibrationLabel: info.calibrationLabel,
+                intent: info.intent,
+                requestedMaximumDimension: info.requestedMaximumDimension,
+                nativeWidth: info.nativeWidth,
+                nativeHeight: info.nativeHeight,
+                appliedScaleFactor: info.appliedScaleFactor,
+                asShotWhiteXY: info.asShotWhiteXY,
+                lensCorrection: info.lensCorrection,
+                previewWorkingCopy: PreviewWorkingCopyInfo(
+                    maxDimension: Int(maxDimension),
+                    sourceWidth: info.width,
+                    sourceHeight: info.height,
+                    durationMilliseconds: Self.milliseconds(started.duration(to: .now)),
+                    byteCount: width * height * PreviewWorkingRaster.bytesPerPixel
+                )
+            ),
+            adobeBase: handle
+        )
+    }
+
+    /// Production preview entry point for a preview working copy
+    /// (`makePreviewWorkingCopy`). Builds exactly `preparePreview`'s graph;
+    /// at the copy's own `maxDimension` the final resize is skipped, since
+    /// the copy already is that resize's pixel grid. Only working copies of
+    /// full-resolution decodes are accepted, and a reduced copy cannot serve
+    /// a preview larger than it was reduced to.
+    public func preparePreviewFromWorkingCopy(
+        workingCopy: DecodedPhoto,
+        settings: EditSettings,
+        maxDimension: CGFloat = 2_560,
+        quality: SpatialToneQuality = .final
+    ) throws -> PreparedPreviewFrame {
+        guard let provenance = workingCopy.info.previewWorkingCopy,
+              workingCopy.info.intent == .fullResolution,
+              workingCopy.info.requestedMaximumDimension == nil,
+              !workingCopy.info.isRAW || workingCopy.info.appliedScaleFactor == 1
+        else {
+            throw RenderEngineError.previewResolutionPresentationForbidden(
+                workingCopy.sourceURL
+            )
+        }
+        guard maxDimension.isFinite, maxDimension > 0 else {
+            throw RenderEngineError.renderFailed(workingCopy.sourceURL)
+        }
+        let workingCopyMaxDimension = CGFloat(provenance.maxDimension)
+        if provenance.isReduced, maxDimension > workingCopyMaxDimension {
+            throw RenderEngineError.previewResolutionPresentationForbidden(
+                workingCopy.sourceURL
+            )
+        }
+        let resizeMaxDimension: CGFloat? =
+            provenance.isReduced && maxDimension == workingCopyMaxDimension ? nil : maxDimension
+        return try preparePreviewFrame(
+            decoded: workingCopy,
+            settings: settings,
+            resizeMaxDimension: resizeMaxDimension,
+            frameMaxDimension: maxDimension,
             quality: quality
         )
     }
@@ -679,6 +937,11 @@ public final class RenderEngine: @unchecked Sendable {
         allowDestinationReplacement: Bool = true,
         quality: SpatialToneQuality = .final
     ) throws -> Double {
+        // A preview working copy is never an output source, not even for a
+        // comparison TIFF with an explicit `maxDimension`.
+        guard decoded.info.previewWorkingCopy == nil else {
+            throw RenderEngineError.previewResolutionExportForbidden(decoded.sourceURL)
+        }
         if maxDimension == nil {
             try Self.requireFullResolutionDecodeForExport(decoded)
         }
@@ -733,38 +996,49 @@ public final class RenderEngine: @unchecked Sendable {
             + Double(duration.components.attoseconds) / 1_000_000_000_000_000
     }
 
-    /// Full-size output must never inherit an interactive decode. The app
-    /// is required to reopen the protected source with `.fullResolution`.
+    /// Full-size output must never inherit an interactive decode or a
+    /// preview working copy. The app is required to reopen the protected
+    /// source with `.fullResolution` (and to keep that decode for export).
     /// Calibration TIFFs remain allowed when an explicit comparison dimension
     /// is supplied, because those artifacts intentionally exercise both paths.
     private static func requireFullResolutionDecodeForExport(
         _ decoded: DecodedPhoto
     ) throws {
-        guard decoded.info.intent == .fullResolution,
-              decoded.info.requestedMaximumDimension == nil
-        else {
+        guard isFullResolutionDecode(decoded) else {
             throw RenderEngineError.previewResolutionExportForbidden(decoded.sourceURL)
         }
+    }
+
+    /// Whether `decoded` is exactly a full-resolution decode: the export
+    /// contract, and the only input `makePreviewWorkingCopy` accepts.
+    private static func isFullResolutionDecode(_ decoded: DecodedPhoto) -> Bool {
+        guard decoded.info.previewWorkingCopy == nil,
+              decoded.info.intent == .fullResolution,
+              decoded.info.requestedMaximumDimension == nil
+        else {
+            return false
+        }
         guard decoded.info.nativeWidth > 0, decoded.info.nativeHeight > 0 else {
-            throw RenderEngineError.previewResolutionExportForbidden(decoded.sourceURL)
+            return false
         }
         guard let imageWidth = CoreImageDecoder.validatedPixelDimension(
             decoded.image.extent.width
         ), let imageHeight = CoreImageDecoder.validatedPixelDimension(
             decoded.image.extent.height
         ) else {
-            throw RenderEngineError.previewResolutionExportForbidden(decoded.sourceURL)
+            return false
         }
         guard decoded.info.width == decoded.info.nativeWidth,
               decoded.info.height == decoded.info.nativeHeight,
               imageWidth == decoded.info.nativeWidth,
               imageHeight == decoded.info.nativeHeight
         else {
-            throw RenderEngineError.previewResolutionExportForbidden(decoded.sourceURL)
+            return false
         }
         if decoded.info.isRAW, decoded.info.appliedScaleFactor != 1 {
-            throw RenderEngineError.previewResolutionExportForbidden(decoded.sourceURL)
+            return false
         }
+        return true
     }
 
     static func installAtomically(
@@ -934,12 +1208,16 @@ public final class RenderEngine: @unchecked Sendable {
     /// `source` every call instead of skipping it, since a bare `CIImage`
     /// has no other stable identity to cache against. `needsSpatial` gates
     /// this so a photo whose settings never touch Highlights/Shadows/
-    /// Texture/Clarity never pays for it.
+    /// Texture/Clarity never pays for it. `previewWorkingCopyLongEdge`
+    /// (non-nil only for a preview working copy's pixels) joins that cache
+    /// key, so the statistic of a reduced copy is never served to the
+    /// full-resolution decode export reads.
     func apply(
         settings: EditSettings,
         to source: CIImage,
         sourceURL: URL? = nil,
-        quality: SpatialToneQuality = .final
+        quality: SpatialToneQuality = .final,
+        previewWorkingCopyLongEdge: Int? = nil
     ) -> CIImage {
         var image = RelativeColorAdjustment.apply(
             to: source,
@@ -947,7 +1225,10 @@ public final class RenderEngine: @unchecked Sendable {
             relativeTint: settings.relativeTint
         )
         let stats = SpatialToneOps.needsSpatial(settings)
-            ? nonRAWAdaptiveStats(source: source, sourceURL: sourceURL, quality: quality) : nil
+            ? nonRAWAdaptiveStats(
+                source: source, sourceURL: sourceURL, quality: quality,
+                previewWorkingCopyLongEdge: previewWorkingCopyLongEdge
+            ) : nil
         image = applyNonRAWStageP(settings: settings, to: image, adaptiveStats: stats, quality: quality)
         image = applyNonRAWStageQ(settings: settings, to: image, adaptiveStats: stats, quality: quality)
         return image
@@ -969,7 +1250,11 @@ public final class RenderEngine: @unchecked Sendable {
     /// `AdobeBaseRenderer.StatsCacheKey` gained it: an `.interactive`
     /// (halved-resolution) statistic must never be served back to a later
     /// `.final` (export) request.
-    struct NonRAWStatsCacheKey: Hashable { var url: URL; var quality: SpatialToneQuality }
+    struct NonRAWStatsCacheKey: Hashable {
+        var url: URL
+        var quality: SpatialToneQuality
+        var previewWorkingCopyLongEdge: Int? = nil
+    }
     private static let nonRawStatsCacheLock = NSLock()
     nonisolated(unsafe) private static var nonRawStatsCache: [NonRAWStatsCacheKey: SpatialAdaptiveStats.Stats] = [:]
     /// `model.md` §1.4/§5: the input JPEG's own sRGB primaries (Rec.709 luma
@@ -978,8 +1263,15 @@ public final class RenderEngine: @unchecked Sendable {
     /// to ProPhoto.
     private static let nonRAWLumaWeights = SIMD3<Double>(0.2126, 0.7152, 0.0722)
 
-    private func nonRAWAdaptiveStats(source: CIImage, sourceURL: URL?, quality: SpatialToneQuality = .final) -> SpatialAdaptiveStats.Stats {
-        let cacheKey = sourceURL.map { NonRAWStatsCacheKey(url: $0, quality: quality) }
+    private func nonRAWAdaptiveStats(
+        source: CIImage, sourceURL: URL?, quality: SpatialToneQuality = .final,
+        previewWorkingCopyLongEdge: Int? = nil
+    ) -> SpatialAdaptiveStats.Stats {
+        let cacheKey = sourceURL.map {
+            NonRAWStatsCacheKey(
+                url: $0, quality: quality, previewWorkingCopyLongEdge: previewWorkingCopyLongEdge
+            )
+        }
         if let cacheKey {
             Self.nonRawStatsCacheLock.lock()
             if let cached = Self.nonRawStatsCache[cacheKey] {
@@ -1153,7 +1445,11 @@ public final class RenderEngine: @unchecked Sendable {
     /// see `LibRawDecoder`).
     private func baseImage(decoded: DecodedPhoto, settings: EditSettings, quality: SpatialToneQuality = .final) -> CIImage {
         guard let handle = decoded.adobeBase else {
-            return apply(settings: settings, to: decoded.image, sourceURL: decoded.sourceURL, quality: quality)
+            return apply(
+                settings: settings, to: decoded.image, sourceURL: decoded.sourceURL, quality: quality,
+                previewWorkingCopyLongEdge: decoded.info.previewWorkingCopy == nil
+                    ? nil : max(decoded.info.width, decoded.info.height)
+            )
         }
         let rendered = handle.image(settings: settings, quality: quality)
         return RelativeColorAdjustment.apply(

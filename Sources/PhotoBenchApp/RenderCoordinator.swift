@@ -21,6 +21,38 @@ actor RenderCoordinator {
         return frame
     }
 
+    /// Reduces the full-resolution decode once into the preview working copy
+    /// every preview render then uses (`RenderEngine.makePreviewWorkingCopy`).
+    func makePreviewWorkingCopy(
+        from decoded: DecodedPhoto,
+        maxDimension: CGFloat = 2_560
+    ) throws -> DecodedPhoto {
+        try Task.checkCancellation()
+        let workingCopy = try renderer.makePreviewWorkingCopy(
+            from: decoded,
+            maxDimension: maxDimension
+        )
+        try Task.checkCancellation()
+        return workingCopy
+    }
+
+    func preparePreviewFromWorkingCopy(
+        workingCopy: DecodedPhoto,
+        settings: EditSettings,
+        maxDimension: CGFloat = 2_560,
+        quality: SpatialToneQuality = .final
+    ) throws -> PreparedPreviewFrame {
+        try Task.checkCancellation()
+        let frame = try renderer.preparePreviewFromWorkingCopy(
+            workingCopy: workingCopy,
+            settings: settings,
+            maxDimension: maxDimension,
+            quality: quality
+        )
+        try Task.checkCancellation()
+        return frame
+    }
+
     func materializePreview(
         _ frame: PreparedPreviewFrame
     ) throws -> RenderedPreview {

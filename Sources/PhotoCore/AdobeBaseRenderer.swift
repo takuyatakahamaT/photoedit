@@ -120,6 +120,13 @@ public enum AdobeBaseRenderer {
         /// through the same `dcpIdentity`/`lookIdentity`-keyed cache
         /// `makeHandle` used, rather than introducing a second cache.
         let cacheKey: CacheKey
+        /// `nil` for a decoder-built handle; the reduced `cameraImage`'s long
+        /// edge for a preview working copy (`downscaled(maxDimension:
+        /// using:)`). Cubes depend only on the profile, so the copy
+        /// shares `cacheKey` and every cube cache; the adaptive statistics
+        /// are read off the pixels, so `StatsCacheKey` carries this too and a
+        /// working-copy statistic is never served to a full-resolution export.
+        let previewWorkingCopyLongEdge: Int?
 
         /// Stage H -> Stage E (exposure) -> Stage L -> Stage T+C -> Stage M's
         /// ProPhoto -> the app's extended-linear-sRGB working space (negative
@@ -318,13 +325,41 @@ public enum AdobeBaseRenderer {
             adaptiveStats(for: settings).meanLn
         }
 
+        /// A preview working copy of this handle (`PreviewWorkingCopyInfo`):
+        /// `cameraImage` -- camera RGB the decoder already demosaiced, as-shot
+        /// white balanced, lens corrected and oriented at full resolution --
+        /// reduced to at most `maxDimension` on its long edge by the
+        /// full-resolution preview's own final Lanczos step
+        /// (`PreviewWorkingRaster.reduce`) and materialized once as numeric
+        /// (`colorSpace` nil) RGBA float pixels. Stage M is redone on those
+        /// pixels; assets, cubes, variant and `cacheKey` stay shared, so every
+        /// setting (a custom white balance re-running Stage M included)
+        /// renders through the identical graph, just on fewer pixels. `nil`
+        /// when the materialization fails.
+        func downscaled(maxDimension: CGFloat, using raster: PreviewWorkingRaster) -> Handle? {
+            guard let reduced = raster.materialize(
+                PreviewWorkingRaster.reduce(cameraImage, maxDimension: maxDimension),
+                taggedAs: nil
+            ) else {
+                return nil
+            }
+            return Handle(
+                stageMImage: AdobeBaseRenderer.applyStageM(to: reduced, matrix: assets.combinedMatrix),
+                cameraImage: reduced, assets: assets, cubes: cubes, variant: variant, cacheKey: cacheKey,
+                previewWorkingCopyLongEdge: Int(max(reduced.extent.width, reduced.extent.height))
+            )
+        }
+
         private func adaptiveStats(for settings: EditSettings, quality: SpatialToneQuality = .final) -> SpatialAdaptiveStats.Stats {
             var zeroed = settings
             zeroed.highlights = 0
             zeroed.shadows = 0
             zeroed.texture = 0
             zeroed.clarity = 0
-            let key = AdobeBaseRenderer.StatsCacheKey(identity: cacheKey, settings: zeroed, quality: quality)
+            let key = AdobeBaseRenderer.StatsCacheKey(
+                identity: cacheKey, settings: zeroed, quality: quality,
+                previewWorkingCopyLongEdge: previewWorkingCopyLongEdge
+            )
 
             AdobeBaseRenderer.statsCacheLock.lock()
             if let cached = AdobeBaseRenderer.statsCache[key] {
@@ -371,6 +406,10 @@ public enum AdobeBaseRenderer {
         var identity: CacheKey
         var settings: EditSettings
         var quality: SpatialToneQuality
+        /// `Handle.previewWorkingCopyLongEdge`: keeps a preview working
+        /// copy's statistic (computed from its reduced pixels) apart from the
+        /// full-resolution decode's, which export reads.
+        var previewWorkingCopyLongEdge: Int? = nil
     }
 
     /// Fixed long edge `Handle.highlightRatioBase()`/`RenderEngine`'s non-RAW
@@ -504,7 +543,7 @@ public enum AdobeBaseRenderer {
         let cubes = cachedCubes(for: assets, key: cacheKey, variant: variant)
         return Handle(
             stageMImage: stageMImage, cameraImage: cameraImage, assets: assets, cubes: cubes,
-            variant: variant, cacheKey: cacheKey
+            variant: variant, cacheKey: cacheKey, previewWorkingCopyLongEdge: nil
         )
     }
 

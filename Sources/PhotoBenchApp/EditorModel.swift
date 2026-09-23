@@ -113,6 +113,11 @@ final class EditorModel: ObservableObject {
     private let folderAccess: FolderAccessCoordinator
     private let store: PhotoBenchStore
     private var decodedPhoto: DecodedPhoto?
+    /// Preview-sized copy of `decodedPhoto` (`RenderEngine.
+    /// makePreviewWorkingCopy`) that every preview render uses; `nil` falls
+    /// back to rendering previews from `decodedPhoto`. Export always uses
+    /// `decodedPhoto`.
+    private var previewWorkingCopy: DecodedPhoto?
     private var assetsByID: [String: PhotoAsset] = [:]
     private var scanTask: Task<Void, Never>?
     private var loadTask: Task<Void, Never>?
@@ -443,6 +448,7 @@ final class EditorModel: ObservableObject {
         directPreviewRequest = nil
         hasPreviewInFlight = false
         decodedPhoto = nil
+        previewWorkingCopy = nil
         decodeInfo = nil
         reloadLibrary()
     }
@@ -492,6 +498,7 @@ final class EditorModel: ObservableObject {
 
     func scheduleRender() {
         guard let decodedPhoto else { return }
+        let workingCopy = previewWorkingCopy
         let inputHostTime = CACurrentMediaTime()
         renderTask?.cancel()
         renderRevision &+= 1
@@ -515,11 +522,20 @@ final class EditorModel: ObservableObject {
         )
         renderTask = Task { [weak self] in
             do {
-                let frame = try await coordinator.prepareProductionPreview(
-                    decoded: decodedPhoto,
-                    settings: capturedSettings,
-                    quality: quality
-                )
+                let frame: PreparedPreviewFrame
+                if let workingCopy {
+                    frame = try await coordinator.preparePreviewFromWorkingCopy(
+                        workingCopy: workingCopy,
+                        settings: capturedSettings,
+                        quality: quality
+                    )
+                } else {
+                    frame = try await coordinator.prepareProductionPreview(
+                        decoded: decodedPhoto,
+                        settings: capturedSettings,
+                        quality: quality
+                    )
+                }
                 try Task.checkCancellation()
                 guard let self, self.renderRevision == revision else { return }
                 try await self.presentPreparedFrame(
@@ -702,6 +718,7 @@ final class EditorModel: ObservableObject {
             directPreviewRequest = nil
             hasPreviewInFlight = false
             decodedPhoto = nil
+            previewWorkingCopy = nil
             decodeInfo = nil
             return
         }
@@ -717,6 +734,7 @@ final class EditorModel: ObservableObject {
         preview = nil
         directPreviewRequest = nil
         decodedPhoto = nil
+        previewWorkingCopy = nil
         decodeInfo = nil
         renderMilliseconds = nil
         statusMessage = "\(asset.filename)を現像しています…"
@@ -742,18 +760,48 @@ final class EditorModel: ObservableObject {
                 }
                 try Task.checkCancellation()
                 guard let self, self.loadGeneration == generation else { return }
+                // Reduce the full-resolution decode once; every preview of
+                // this photo then renders from the working copy. A failure
+                // only costs speed: previews fall back to the full decode.
+                let workingCopy: DecodedPhoto?
+                do {
+                    workingCopy = try await coordinator.makePreviewWorkingCopy(from: decoded)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    workingCopy = nil
+                    os_signpost(
+                        .event,
+                        log: Self.presentationLog,
+                        name: "PreviewWorkingCopyUnavailable",
+                        "request=%{public}llu error=%{public}@",
+                        revision,
+                        error.localizedDescription as NSString
+                    )
+                }
+                try Task.checkCancellation()
+                guard self.loadGeneration == generation else { return }
                 // Resolve settings after decoding. The top-level controls are
                 // disabled while busy, but taking the value here also prevents
                 // an old pre-decode snapshot from reaching the screen.
-                let frame = try await coordinator.prepareProductionPreview(
-                    decoded: decoded,
-                    settings: self.renderSettings
-                )
+                let frame: PreparedPreviewFrame
+                if let workingCopy {
+                    frame = try await coordinator.preparePreviewFromWorkingCopy(
+                        workingCopy: workingCopy,
+                        settings: self.renderSettings
+                    )
+                } else {
+                    frame = try await coordinator.prepareProductionPreview(
+                        decoded: decoded,
+                        settings: self.renderSettings
+                    )
+                }
                 try Task.checkCancellation()
                 guard self.loadGeneration == generation,
                       self.renderRevision == revision
                 else { return }
                 self.decodedPhoto = decoded
+                self.previewWorkingCopy = workingCopy
                 self.decodeInfo = decoded.info
                 try await self.presentPreparedFrame(
                     frame,
@@ -772,6 +820,7 @@ final class EditorModel: ObservableObject {
                 self?.preview = nil
                 self?.directPreviewRequest = nil
                 self?.decodedPhoto = nil
+                self?.previewWorkingCopy = nil
                 self?.statusMessage = error.localizedDescription
             }
         }

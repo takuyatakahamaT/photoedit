@@ -65,6 +65,14 @@ public struct DecodeInfo: Equatable, Sendable {
     /// its own, separate lens corrections that this project does not model
     /// or report).
     public let lensCorrection: String?
+    /// Non-nil only for a preview working copy built by
+    /// `RenderEngine.makePreviewWorkingCopy(from:maxDimension:)` -- a
+    /// full-resolution decode reduced *after* decoding (see
+    /// `PreviewWorkingCopyInfo`). Every decoder leaves this nil. The other
+    /// fields keep describing the decode the copy came from (`intent`,
+    /// `appliedScaleFactor`, `nativeWidth`/`nativeHeight`), except
+    /// `width`/`height`, which are the working copy's own pixel size.
+    public let previewWorkingCopy: PreviewWorkingCopyInfo?
 
     public init(
         backend: String,
@@ -83,7 +91,8 @@ public struct DecodeInfo: Equatable, Sendable {
         nativeHeight: Int? = nil,
         appliedScaleFactor: Float? = nil,
         asShotWhiteXY: ChromaticityXY? = nil,
-        lensCorrection: String? = nil
+        lensCorrection: String? = nil,
+        previewWorkingCopy: PreviewWorkingCopyInfo? = nil
     ) {
         self.backend = backend
         self.width = width
@@ -102,6 +111,53 @@ public struct DecodeInfo: Equatable, Sendable {
         self.appliedScaleFactor = appliedScaleFactor
         self.asShotWhiteXY = asShotWhiteXY
         self.lensCorrection = lensCorrection
+        self.previewWorkingCopy = previewWorkingCopy
+    }
+}
+
+/// Provenance of a preview working copy: a full-resolution decode whose
+/// camera image (RAW: demosaiced, as-shot white balanced, lens corrected and
+/// oriented, i.e. `AdobeBaseRenderer.Handle`'s input) or input image
+/// (non-RAW) `RenderEngine.makePreviewWorkingCopy(from:maxDimension:)`
+/// reduced once with Lanczos and materialized as RGBA float pixels, so every
+/// interactive preview render runs the edit pipeline on preview-sized pixels
+/// instead of the full decode. This is not a reduced RAW *decode* (the
+/// half-size demosaic `CALIBRATION.md`'s preview parity rejected): demosaic
+/// and lens correction still run at full resolution, exactly as export.
+/// Export entry points and `RenderEngine.prepareProductionPreview` reject
+/// any photo carrying this; the full-resolution `DecodedPhoto` the copy came
+/// from remains the only export input.
+public struct PreviewWorkingCopyInfo: Equatable, Sendable {
+    /// The long-edge bound the copy was reduced to (the preview size it
+    /// serves). A source already within this bound is materialized at its
+    /// own size instead of being enlarged.
+    public let maxDimension: Int
+    /// Pixel size of the full-resolution decode the copy was reduced from.
+    public let sourceWidth: Int
+    public let sourceHeight: Int
+    /// Wall-clock time spent reducing and materializing (excludes the decode).
+    public let durationMilliseconds: Double
+    /// Bytes held by the materialized RGBA float pixels.
+    public let byteCount: Int
+
+    public init(
+        maxDimension: Int,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        durationMilliseconds: Double,
+        byteCount: Int
+    ) {
+        self.maxDimension = maxDimension
+        self.sourceWidth = sourceWidth
+        self.sourceHeight = sourceHeight
+        self.durationMilliseconds = durationMilliseconds
+        self.byteCount = byteCount
+    }
+
+    /// True when the copy has fewer pixels than its source, i.e. a preview
+    /// larger than `maxDimension` would need the full-resolution decode.
+    public var isReduced: Bool {
+        max(sourceWidth, sourceHeight) > maxDimension
     }
 }
 
@@ -129,6 +185,11 @@ public struct DecodedPhoto: @unchecked Sendable {
         self.metadata = metadata
         self.info = info
         self.adobeBase = adobeBase
+    }
+
+    /// See `PreviewWorkingCopyInfo`: preview-only pixels, never an export input.
+    public var isPreviewWorkingCopy: Bool {
+        info.previewWorkingCopy != nil
     }
 }
 
