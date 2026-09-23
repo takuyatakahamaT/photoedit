@@ -222,20 +222,15 @@ struct WhiteBalanceObservationTests {
                     + WhiteBalanceObservationManifestLoader.observationOnlySourceFiles
         )
 
-        let fileManager = FileManager.default
         var expected = Set(production.manifest.processing.sourceFiles)
         expected.formUnion(WhiteBalanceObservationManifestLoader.observationOnlySourceFiles)
         for relativeDirectory in [
             "Sources/PhotoCore",
             "Sources/PhotoBenchCalibrationSupport"
         ] {
-            let files = try fileManager.contentsOfDirectory(
-                at: projectRoot.appendingPathComponent(relativeDirectory),
-                includingPropertiesForKeys: nil
+            expected.formUnion(
+                try swiftSourcePaths(under: relativeDirectory, root: projectRoot)
             )
-            for file in files where file.pathExtension == "swift" {
-                expected.insert("\(relativeDirectory)/\(file.lastPathComponent)")
-            }
         }
         #expect(Set(observation.manifest.processing.sourceFiles) == expected)
     }

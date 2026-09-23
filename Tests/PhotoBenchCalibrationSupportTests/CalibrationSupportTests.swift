@@ -22,7 +22,7 @@ struct CalibrationSupportTests {
         #expect(loaded.manifest.schemaVersion == 4)
         #expect(loaded.manifest.scenes.count == 2)
         #expect(loaded.manifest.stageMatrix.count == 12)
-        #expect(loaded.manifest.processing.sourceFiles.count == 26)
+        #expect(loaded.manifest.processing.sourceFiles.count == 42)
         #expect(loaded.manifest.processing.fingerprint == .current)
         #expect(previewParity.maxDimension == nil)
         #expect(
@@ -607,7 +607,6 @@ struct CalibrationSupportTests {
 
     @Test func sourceFingerprintManifestCoversEveryProductionRenderingSource() throws {
         let loaded = try CalibrationManifestLoader.load(root: projectRoot)
-        let fileManager = FileManager.default
         var expected: Set<String> = [
             "Package.swift",
             "Sources/PhotoBenchApp/ContentView.swift",
@@ -620,13 +619,9 @@ struct CalibrationSupportTests {
             "scripts/analyze-calibration.py"
         ]
         for directory in ["Sources/PhotoCore", "Sources/PhotoBenchCalibrationSupport"] {
-            let files = try fileManager.contentsOfDirectory(
-                at: projectRoot.appendingPathComponent(directory),
-                includingPropertiesForKeys: nil
+            expected.formUnion(
+                try swiftSourcePaths(under: directory, root: projectRoot)
             )
-            for file in files where file.pathExtension == "swift" {
-                expected.insert("\(directory)/\(file.lastPathComponent)")
-            }
         }
 
         #expect(Set(loaded.manifest.processing.sourceFiles) == expected)
