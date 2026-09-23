@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""round5 gate: `make_round5.py` の 150 枚（RAW 5 scene × 21 variant、JPEG 5 scene × 9 variant）を描画し、
+"""round5 gate: `make_round5.py` の 198 枚（RAW 5 scene × 21 variant、LR 由来 JPEG 5 scene × 9 variant、カメラ JPEG 3 枚 × 16 variant）を描画し、
 `exports/lr-measure/round5/lr-export/` の LR 書き出しと比べる（ΔE00・EV・彩度比）。
 
 - RAW: 元 RAW ＋ round5 のサイドカー XMP を `--preset` で渡す。比較は `--no-align`（歪曲補正済みで幾何が揃う）。
-- JPEG: round2 の LR 中立 JPEG を `--engine coreimage` で読み、variant の設定だけの XMP を `--preset` で渡す
-  （round3 と同じ方式）。比較は倍率合わせあり。
+- JPEG: round2 の LR 中立 JPEG（camera はカメラ JPEG の原本）を `--engine coreimage` で読み、variant の設定だけの XMP を
+  `--preset` で渡す（round3 と同じ方式）。比較は倍率合わせあり。
 `--env KEY=VALUE` で実験フックを上書きできる。指定しない `PHOTO_BENCH_*` は消してから描画する。
 
 Usage: python3 scripts/lr_measure/round5_gate.py --out-dir .photobench/phase5/round5/baseline [--kinds raw jpeg] [--variants ...]

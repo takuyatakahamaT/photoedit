@@ -69,7 +69,7 @@
 
 ## オーナーにお願いする作業
 
-0. **LR 追加書き出し（round5、生成済み、2026-09-24）**: Lightroom「ローカル」で `exports/lr-measure/round5/round5-photos/`（150 枚: RAW 105 枚は APFS クローン＋サイドカー、JPEG 45 枚は設定埋め込み）を開き、全選択 → 書き出し（JPG 100%・フルサイズ・sRGB・出力シャープ OFF・ファイル名そのまま）→ `exports/lr-measure/round5/lr-export/`。10〜15 分。手順は同フォルダの `README.md`。目的: night・colorful に残る差（強い Whites −83 / Blacks +89 / Contrast −43 で自前の彩度が LR より落ちる、JPEG では Whites が暗くなりすぎる）を極端な値の実写で直接測る。あわせて 4 プリセット全体を 5 枚の写真で確認し、Split Toning の Blending と未検証の Calibration スライダーを測る。
+0. **LR 追加書き出し（round5、生成済み、2026-09-24）**: Lightroom「ローカル」で `exports/lr-measure/round5/round5-photos/`（198 枚: RAW 105 枚は APFS クローン＋サイドカー、JPEG 45 枚とカメラ JPEG 48 枚は設定埋め込み）を開き、全選択 → 書き出し（JPG 100%・フルサイズ・sRGB・出力シャープ OFF・ファイル名そのまま）→ `exports/lr-measure/round5/lr-export/`。15〜20 分。手順は同フォルダの `README.md`。目的: night・colorful に残る差（強い Whites −83 / Blacks +89 / Contrast −43 で自前の彩度が LR より落ちる、カメラ JPEG では Highlights と Whites が効きすぎる）を極端な値の実写で直接測る。あわせて 4 プリセット全体を 5 枚の写真で確認し、Split Toning の Blending と未検証の Calibration スライダーを測る。
 1. **再ビルドしたアプリの確認（2026-09-24）**: `dist/Photo Bench.app`（デスクトップのリンク）を開き直す。ad-hoc 署名のため写真フォルダの再選択が必要な場合がある。
    - night・bluesky2 の色（肌や木の赤み、青空、影の色付き）が Lightroom に近づいたか。
    - スライダーのドラッグ中の更新の体感（mini の実測では空間処理だけで 1 回 0.4〜0.7 秒。改善は次の作業）。
