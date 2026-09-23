@@ -97,7 +97,7 @@ public enum SpatialToneProcessor {
     /// exact, not an approximation.
     public static func apply(
         to image: CIImage, highlights: Double, shadows: Double, scalePx: Double,
-        texture: Double = 0, clarity: Double = 0
+        texture: Double = 0, clarity: Double = 0, gainScale: SpatialGainScale = .identity
     ) throws -> CIImage {
         diagnosticsLock.lock()
         applyCallCount += 1
@@ -116,13 +116,14 @@ public enum SpatialToneProcessor {
         guard let device = MTLCreateSystemDefaultDevice() else {
             diagnosticsLock.lock(); cpuFallbackCallCount += 1; diagnosticsLock.unlock()
             return try applyCPUFallback(
-                to: image, highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity
+                to: image, highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity,
+                gainScale: gainScale
             )
         }
         diagnosticsLock.lock(); gpuCallCount += 1; diagnosticsLock.unlock()
         return try applyGPU(
             device: device, to: image, highlights: highlights, shadows: shadows, scalePx: scalePx,
-            texture: texture, clarity: clarity
+            texture: texture, clarity: clarity, gainScale: gainScale
         )
     }
 
@@ -140,7 +141,7 @@ public enum SpatialToneProcessor {
 
     private static func applyGPU(
         device: MTLDevice, to image: CIImage, highlights: Double, shadows: Double, scalePx: Double,
-        texture: Double, clarity: Double
+        texture: Double, clarity: Double, gainScale: SpatialGainScale
     ) throws -> CIImage {
         let resources = try metalResources(for: device)
 
@@ -201,7 +202,7 @@ public enum SpatialToneProcessor {
         var currentLn = ln0
 
         if highlights != 0 {
-            let curveBuffer = makeCurveBuffer(device: device, values: SpatialToneOps.highlightsGainCurve(highlights))
+            let curveBuffer = makeCurveBuffer(device: device, values: SpatialToneOps.highlightsGainCurve(highlights, scale: gainScale))
             currentLn = applySingleOpLLF(
                 encoder: encoder, resources: resources, allocator: allocator,
                 ln: currentLn, curveBuffer: curveBuffer,
@@ -213,7 +214,7 @@ public enum SpatialToneProcessor {
         }
         if shadows != 0 {
             let levelsS = max(1, levelsH + SpatialToneOps.shadowsLevelsOffset)
-            let curveBuffer = makeCurveBuffer(device: device, values: SpatialToneOps.shadowsGainCurve(shadows))
+            let curveBuffer = makeCurveBuffer(device: device, values: SpatialToneOps.shadowsGainCurve(shadows, scale: gainScale))
             currentLn = applySingleOpLLF(
                 encoder: encoder, resources: resources, allocator: allocator,
                 ln: currentLn, curveBuffer: curveBuffer,
@@ -602,7 +603,7 @@ public enum SpatialToneProcessor {
     /// path's single round trip, just entirely on the CPU.
     private static func applyCPUFallback(
         to image: CIImage, highlights: Double, shadows: Double, scalePx: Double,
-        texture: Double = 0, clarity: Double = 0
+        texture: Double = 0, clarity: Double = 0, gainScale: SpatialGainScale = .identity
     ) throws -> CIImage {
         let extent = image.extent.integral
         guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else {
@@ -627,7 +628,8 @@ public enum SpatialToneProcessor {
                     inputBase: inRaw.baseAddress!, inputBytesPerRow: bytesPerRow, inputWidth: width, inputHeight: height,
                     outputBase: outRaw.baseAddress!, outputBytesPerRow: bytesPerRow,
                     outputWidth: width, outputHeight: height, offsetX: 0, offsetY: 0,
-                    highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity
+                    highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity,
+                    gainScale: gainScale
                 )
             }
         }
@@ -668,7 +670,8 @@ public enum SpatialToneProcessor {
         shadows: Double,
         scalePx: Double,
         texture: Double = 0,
-        clarity: Double = 0
+        clarity: Double = 0,
+        gainScale: SpatialGainScale = .identity
     ) throws {
         guard inputWidth > 0, inputHeight > 0 else { throw ProcessorError.outputConstructionFailed }
         guard offsetX >= 0, offsetY >= 0,
@@ -695,7 +698,8 @@ public enum SpatialToneProcessor {
 
         let resultStraight = SpatialToneOps.applyHighlightsShadows(
             rgb: rgb, width: inputWidth, height: inputHeight,
-            highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity
+            highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity,
+            gainScale: gainScale
         )
 
         for y in 0..<outputHeight {

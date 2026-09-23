@@ -191,7 +191,8 @@ struct SpatialToneOpsTests {
         let output = SpatialToneOps.applyHighlightsShadows(
             rgb: rgb, width: fixture.width, height: fixture.height,
             highlights: fixture.chainedCase.highlights, shadows: fixture.chainedCase.shadows,
-            scalePx: fixture.chainedCase.scalePx, texture: fixture.chainedCase.texture, clarity: fixture.chainedCase.clarity
+            scalePx: fixture.chainedCase.scalePx, texture: fixture.chainedCase.texture, clarity: fixture.chainedCase.clarity,
+            gainScale: .identity  // fixture was generated with no amplitude scaling (SpatialGainScale's doc comment)
         )
         var worst = 0.0
         assertMatches(output, fixture.chainedCase.output, label: "chained", worst: &worst)
@@ -253,7 +254,8 @@ struct SpatialToneOpsTests {
         for testCase in fixture.cases {
             let output = SpatialToneOps.applyHighlightsShadows(
                 rgb: rgb, width: fixture.width, height: fixture.height,
-                highlights: testCase.highlights, shadows: testCase.shadows, scalePx: testCase.scalePx
+                highlights: testCase.highlights, shadows: testCase.shadows, scalePx: testCase.scalePx,
+                gainScale: .identity  // fixture was generated with no amplitude scaling
             )
             #expect(output.count == testCase.output.count)
             for (index, expectedArray) in testCase.output.enumerated() {
@@ -292,7 +294,7 @@ struct SpatialToneOpsTests {
             rgb.append(SIMD3(0.1 + 0.8 * v, 0.05 + 0.5 * v, 0.2 + 0.3 * v))
         }
         let output = SpatialToneOps.applyHighlightsShadows(
-            rgb: rgb, width: width, height: height, highlights: 0, shadows: 0, scalePx: 16
+            rgb: rgb, width: width, height: height, highlights: 0, shadows: 0, scalePx: 16, gainScale: .identity
         )
         #expect(output == rgb)
     }
@@ -312,7 +314,8 @@ struct SpatialToneOpsTests {
 
         for (highlights, shadows) in [(-80.0, 0.0), (60.0, 0.0), (0.0, -70.0), (0.0, 90.0), (-40.0, 55.0)] {
             let output = SpatialToneOps.applyHighlightsShadows(
-                rgb: rgb, width: width, height: height, highlights: highlights, shadows: shadows, scalePx: 32
+                rgb: rgb, width: width, height: height, highlights: highlights, shadows: shadows, scalePx: 32,
+                gainScale: .identity
             )
             let first = output[0]
             for sample in output {
@@ -390,7 +393,8 @@ struct SpatialToneOpsTests {
 
         SpatialToneProcessor.resetDiagnostics()
         let processed = try SpatialToneProcessor.apply(
-            to: image, highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity
+            to: image, highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity,
+            gainScale: .identity
         )
 
         var rendered = [Float](repeating: 0, count: width * height * 4)
@@ -402,7 +406,7 @@ struct SpatialToneOpsTests {
 
         let expected = SpatialToneOps.applyHighlightsShadows(
             rgb: rgb, width: width, height: height, highlights: highlights, shadows: shadows, scalePx: scalePx,
-            texture: texture, clarity: clarity
+            texture: texture, clarity: clarity, gainScale: .identity
         )
 
         var maxDelta = 0.0
@@ -524,13 +528,14 @@ struct SpatialToneOpsTests {
                     inputWidth: width, inputHeight: height,
                     outputBase: outRaw.baseAddress!, outputBytesPerRow: inputBytesPerRow,
                     outputWidth: width, outputHeight: height, offsetX: 0, offsetY: 0,
-                    highlights: highlights, shadows: shadows, scalePx: scalePx
+                    highlights: highlights, shadows: shadows, scalePx: scalePx, gainScale: .identity
                 )
             }
         }
 
         let expected = SpatialToneOps.applyHighlightsShadows(
-            rgb: rgb, width: width, height: height, highlights: highlights, shadows: shadows, scalePx: scalePx
+            rgb: rgb, width: width, height: height, highlights: highlights, shadows: shadows, scalePx: scalePx,
+            gainScale: .identity
         )
         for index in 0..<(width * height) {
             let actual = SIMD3(
@@ -557,7 +562,7 @@ struct SpatialToneOpsTests {
                     inputWidth: width, inputHeight: height,
                     outputBase: outRaw.baseAddress!, outputBytesPerRow: tileBytesPerRow,
                     outputWidth: tileWidth, outputHeight: tileHeight, offsetX: tileX, offsetY: tileY,
-                    highlights: highlights, shadows: shadows, scalePx: scalePx
+                    highlights: highlights, shadows: shadows, scalePx: scalePx, gainScale: .identity
                 )
             }
         }
@@ -601,7 +606,7 @@ struct SpatialToneOpsTests {
                     inputBase: inRaw.baseAddress!, inputBytesPerRow: bytesPerRow, inputWidth: width, inputHeight: height,
                     outputBase: outRaw.baseAddress!, outputBytesPerRow: bytesPerRow,
                     outputWidth: width, outputHeight: height, offsetX: 0, offsetY: 0,
-                    highlights: -55, shadows: 65, scalePx: 8
+                    highlights: -55, shadows: 65, scalePx: 8, gainScale: .identity
                 )
             }
         }
@@ -654,7 +659,8 @@ struct SpatialToneOpsTests {
 
         SpatialToneProcessor.resetDiagnostics()
         let output = try SpatialToneProcessor.apply(
-            to: cubed, highlights: -88, shadows: 37, scalePx: SpatialToneOps.scalePx(forLongEdge: Double(max(width, height)))
+            to: cubed, highlights: -88, shadows: 37, scalePx: SpatialToneOps.scalePx(forLongEdge: Double(max(width, height))),
+            gainScale: .identity
         )
         let context = CIContext(options: [.workingColorSpace: colorSpace, .outputColorSpace: colorSpace])
         var rendered = [Float](repeating: 0, count: width * height * 4)
@@ -705,7 +711,7 @@ struct SpatialToneOpsTests {
             size: CGSize(width: width, height: height), format: .RGBAf, colorSpace: colorSpace
         )
 
-        let output = try SpatialToneProcessor.apply(to: image, highlights: 0, shadows: 0, scalePx: 16)
+        let output = try SpatialToneProcessor.apply(to: image, highlights: 0, shadows: 0, scalePx: 16, gainScale: .identity)
         let context = CIContext(options: [.workingColorSpace: colorSpace, .outputColorSpace: colorSpace])
         var rendered = [Float](repeating: 0, count: width * height * 4)
         context.render(

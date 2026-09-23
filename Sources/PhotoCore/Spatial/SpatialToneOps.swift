@@ -15,18 +15,22 @@ import Foundation
 /// the CPU reference (`Double`, matching the Python reference's `float64`);
 /// `SpatialToneProcessor` is the GPU (`CIImageProcessorKernel`/Metal) version
 /// this CPU code is also the software-renderer fallback for.
-/// **Experiment only** (not a production setting): where the spatial pass
-/// [S] (Highlights/Shadows/Texture/Clarity, `AdobeBaseRenderer.
-/// applySpatialToneOps`) runs relative to cube P (Contrast/Dehaze/Whites/
-/// Blacks/Parametric/Point curve), cube Q (color), and Calibration.
-/// Controlled by `PHOTO_BENCH_SPATIAL_ORDER` purely so the C4-era
-/// full-recipe darkness regression (4 presets x 2 scenes, uniformly -0.24..
-/// -0.58 EV vs C2's +0.06..+0.34) can be measured under every plausible [S]
-/// position without hand-editing the pipeline each time. Production code
-/// never sets this env var, so `.p1SP2` (today's actual pipeline) is always
-/// what real renders get; this type exists purely for
-/// `AdobeBaseRenderer.Handle.image(settings:)`/`RenderEngine.
-/// applyNonRAWStageP`'s `switch` on it.
+/// Where the spatial pass [S] (Highlights/Shadows/Texture/Clarity,
+/// `AdobeBaseRenderer.applySpatialToneOps`) runs relative to cube P
+/// (Contrast/Dehaze/Whites/Blacks/Parametric/Point curve), cube Q (color),
+/// and Calibration. Originally an experiment-only switch (`PHOTO_BENCH_
+/// SPATIAL_ORDER`) added to measure the C4-era full-recipe darkness
+/// regression (4 presets x 2 scenes, uniformly -0.24..-0.58 EV vs C2's
+/// +0.06..+0.34) under every plausible [S] position; the coordinator's
+/// grid-search review adopted **RAW = `.preTone`, non-RAW = `.sP1P2`** as
+/// the new production default (`currentForRAW`/`currentForNonRAW` below) --
+/// `.p1SP2` (the old default) is kept only as a case, no longer privileged.
+/// The env var stays as an experiment/override hook: when set to a valid
+/// raw value it forces *both* paths to that one order (unchanged semantics
+/// from before); when unset, each path falls back to its own new default
+/// instead of both falling back to `.p1SP2`. Used by `AdobeBaseRenderer.
+/// Handle.image(settings:)` (RAW, via `currentForRAW`) and `RenderEngine.
+/// applyNonRAWStageP`/`applyNonRAWStageQ` (non-RAW, via `currentForNonRAW`).
 public enum SpatialOrder: String {
     /// Today's production order: cube P1 (Contrast -> Dehaze) -> [S] ->
     /// cube P2 (Whites -> Blacks -> Parametric -> Point curve).
@@ -48,13 +52,89 @@ public enum SpatialOrder: String {
     /// ProPhoto -> working-space matrix.
     case postQ = "post-q"
 
-    public static var current: SpatialOrder {
-        guard let raw = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_ORDER"],
-              let order = SpatialOrder(rawValue: raw)
-        else {
-            return .p1SP2
+    /// The raw env var, unresolved (`nil` = unset or an unrecognized raw
+    /// value) -- callers should use `currentForRAW`/`currentForNonRAW`
+    /// instead of this directly, so that "unset" resolves to *this path's*
+    /// new default rather than a single shared one.
+    public static var current: SpatialOrder? {
+        guard let raw = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_ORDER"] else {
+            return nil
         }
-        return order
+        return SpatialOrder(rawValue: raw)
+    }
+
+    /// RAW pipeline default (`AdobeBaseRenderer.Handle.image(settings:)`):
+    /// `.preTone` unless the env var forces something else.
+    public static var currentForRAW: SpatialOrder { current ?? .preTone }
+
+    /// Non-RAW pipeline default (`RenderEngine.applyNonRAWStageP`/
+    /// `applyNonRAWStageQ`): `.sP1P2` unless the env var forces something
+    /// else (the old shared default for both paths was `.p1SP2`).
+    public static var currentForNonRAW: SpatialOrder { current ?? .sP1P2 }
+}
+
+/// A per-sign amplitude multiplier applied to `SpatialToneOps.
+/// highlightsGainCurve`/`shadowsGainCurve`'s output (the `_interp_table`-
+/// equivalent 29-point curve). Added to re-fit H/S's amplitude once
+/// `SpatialOrder`'s new defaults (RAW `.preTone`, non-RAW `.sP1P2`) moved
+/// the spatial pass to a different position than the one the gain tables
+/// were originally measured at (output-referred, after the tone curve).
+///
+/// This type itself, and `highlightsGainCurve`/`shadowsGainCurve`/
+/// `applyHighlightsShadows` below, are **pure** -- they take a
+/// `SpatialGainScale` as an explicit parameter (default `.identity`, a
+/// true no-op) and never read the environment themselves. Only the
+/// pipeline entry point (`AdobeBaseRenderer.applySpatialToneOps`) resolves
+/// `.current` (env var, falling back to `.productionDefault`) and passes it
+/// down explicitly through `SpatialToneProcessor.apply` -> `applyGPU`/
+/// `applyCPUFallback`/`processCPUBuffers` -> `applyHighlightsShadows`. This
+/// keeps every fixture/parity/regression test that calls those functions
+/// directly (and passes `.identity`, or omits the parameter) byte-identical
+/// to the fixtures generated before this type existed, regardless of what
+/// the production default is.
+public struct SpatialGainScale: Sendable {
+    public let highlightsNeg: Double
+    public let highlightsPos: Double
+    public let shadowsNeg: Double
+    public let shadowsPos: Double
+
+    public init(highlightsNeg: Double = 1.0, highlightsPos: Double = 1.0, shadowsNeg: Double = 1.0, shadowsPos: Double = 1.0) {
+        self.highlightsNeg = highlightsNeg
+        self.highlightsPos = highlightsPos
+        self.shadowsNeg = shadowsNeg
+        self.shadowsPos = shadowsPos
+    }
+
+    /// The mathematically neutral value -- every fixture test should pass
+    /// this explicitly (see the type's doc comment).
+    public static let identity = SpatialGainScale()
+
+    /// Adopted from the coordinator's real-engine 16-combination grid
+    /// search + one round of neg/pos-split fine-tuning (kH shared-neg/pos
+    /// training-optimum was 0.65, kS 0.6, but real composite presets/
+    /// full_bluesky2 holdout prefers kS close to 1.0 -- the opposite
+    /// direction -- so this is a deliberately balanced point rather than
+    /// the pure training-argmin: training avg meanDeltaE00 2.68 (best was
+    /// 2.36 at kH/kS 0.65/0.6), holdout avg meanDeltaE00 3.41 (best was
+    /// 3.36 at kH/kS 0.5/1.0), both within ~0.05-0.32 of their respective
+    /// bests. See the grid-search report for the full 16-combo table.
+    public static let productionDefault = SpatialGainScale(highlightsNeg: 0.5, highlightsPos: 0.5, shadowsNeg: 0.8, shadowsPos: 0.8)
+
+    /// Env-var override/experiment hook, resolved **only** by the pipeline
+    /// entry point (see the type's doc comment) -- unset *or* unparseable
+    /// (wrong count, non-numeric) both fall back to `.productionDefault`,
+    /// not `.identity`, since an explicitly-set-but-malformed value should
+    /// fail toward today's real production behavior, not silently revert to
+    /// the pre-fit-amplitude behavior.
+    public static var current: SpatialGainScale {
+        guard let raw = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_GAIN_SCALE"] else {
+            return .productionDefault
+        }
+        let parts = raw.split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count == 4 else { return .productionDefault }
+        let values = parts.compactMap { Double($0) }
+        guard values.count == 4 else { return .productionDefault }
+        return SpatialGainScale(highlightsNeg: values[0], highlightsPos: values[1], shadowsNeg: values[2], shadowsPos: values[3])
     }
 }
 
@@ -159,20 +239,30 @@ public enum SpatialToneOps {
         return zip(g50, g100).map { lo, hi in lo + (hi - lo) * t }
     }
 
-    static func highlightsGainCurve(_ value: Double) -> [Double] {
-        interpTable(
+    /// `scale` is an explicit parameter, not `SpatialGainScale.current` --
+    /// see that type's doc comment for why (pure function, pipeline resolves
+    /// the env var/default exactly once and threads it down).
+    static func highlightsGainCurve(_ value: Double, scale: SpatialGainScale = .identity) -> [Double] {
+        let curve = interpTable(
             value,
             neg50: gainTable50HighlightsNeg, neg100: gainTable100HighlightsNeg,
             pos50: gainTable50HighlightsPos, pos100: gainTable100HighlightsPos
         )
+        let k = value > 0 ? scale.highlightsPos : scale.highlightsNeg
+        guard k != 1.0 else { return curve }
+        return curve.map { $0 * k }
     }
 
-    static func shadowsGainCurve(_ value: Double) -> [Double] {
-        interpTable(
+    /// `scale` is an explicit parameter -- see `highlightsGainCurve`.
+    static func shadowsGainCurve(_ value: Double, scale: SpatialGainScale = .identity) -> [Double] {
+        let curve = interpTable(
             value,
             neg50: gainTable50ShadowsNeg, neg100: gainTable100ShadowsNeg,
             pos50: gainTable50ShadowsPos, pos100: gainTable100ShadowsPos
         )
+        let k = value > 0 ? scale.shadowsPos : scale.shadowsNeg
+        guard k != 1.0 else { return curve }
+        return curve.map { $0 * k }
     }
 
     /// `np.interp(x, _GRID, curve)`: clamps outside `grid`'s range, exact
@@ -595,6 +685,11 @@ public enum SpatialToneOps {
     /// something a caller could get wrong by chaining calls in the wrong
     /// way. `texture`/`clarity` default to `0` (no-op) so every pre-C4 call
     /// site keeps compiling and behaving identically.
+    /// `gainScale` is an explicit parameter, default `.identity` -- see
+    /// `SpatialGainScale`'s doc comment. Every fixture/parity test below
+    /// passes `.identity` explicitly; only `SpatialToneProcessor.
+    /// processCPUBuffers` (the CPU/software-fallback production path)
+    /// threads through a caller-resolved value.
     public static func applyHighlightsShadows(
         rgb: [SIMD3<Double>],
         width: Int,
@@ -603,7 +698,8 @@ public enum SpatialToneOps {
         shadows: Double,
         scalePx: Double,
         texture: Double = 0,
-        clarity: Double = 0
+        clarity: Double = 0,
+        gainScale: SpatialGainScale = .identity
     ) -> [SIMD3<Double>] {
         precondition(rgb.count == width * height, "SpatialToneOps: rgb.count must equal width*height")
         guard highlights != 0 || shadows != 0 || texture != 0 || clarity != 0 else { return rgb }
@@ -613,7 +709,7 @@ public enum SpatialToneOps {
 
         var ln = ln0
         if highlights != 0 {
-            let curveTable = highlightsGainCurve(highlights)
+            let curveTable = highlightsGainCurve(highlights, scale: gainScale)
             ln = applySingleOpLLF(
                 ln, curve: { interpCurve($0, curveTable) },
                 alpha: highlightsParams.alpha, beta: highlightsParams.beta, sigmaR: highlightsParams.sigmaR,
@@ -622,7 +718,7 @@ public enum SpatialToneOps {
         }
         if shadows != 0 {
             let levelsS = max(1, levelsH + shadowsLevelsOffset)
-            let curveTable = shadowsGainCurve(shadows)
+            let curveTable = shadowsGainCurve(shadows, scale: gainScale)
             ln = applySingleOpLLF(
                 ln, curve: { interpCurve($0, curveTable) },
                 alpha: shadowsParams.alpha, beta: shadowsParams.beta, sigmaR: shadowsParams.sigmaR,

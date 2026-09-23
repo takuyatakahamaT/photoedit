@@ -16,6 +16,30 @@ import Foundation
 /// adds an exact bypass so a neutral `EditSettings.hsl` never perturbs a
 /// pixel even by float-rounding noise, matching `ToneOps`'s own stated
 /// convention).
+/// **Experiment only** (not a production setting): whether Camera
+/// Calibration (`ColorOps.calibrationMatrix`, applied via
+/// `AdobeBaseRenderer.applyCalibration`'s exact `CIColorMatrix`) runs
+/// *before* cube Q (Vibrance -> Saturation -> HSL -> Color Grading,
+/// `ColorOps.postColorCube`... i.e. `AdobeBaseRenderer.postColorCube`)
+/// instead of after it (today's production order). Requested alongside
+/// `PHOTO_BENCH_SPATIAL_GAIN_SCALE` to check whether some of the "night"
+/// preset's residual (`.photobench/phase2/detail/model.md`) is Calibration
+/// fighting an already-graded image rather than grading a calibrated one.
+/// Only the Calibration/cube-Q relative order changes -- the
+/// output-referred position relative to the final ProPhoto -> working-space
+/// matrix (`DNGColorSpace.proPhotoToSRGBLinear`/equivalent) is unaffected,
+/// since both still run strictly before that matrix in either order.
+/// Controlled by `PHOTO_BENCH_CALIBRATION_FIRST=1`; unset (or any value
+/// other than exactly `"1"`) leaves today's order (`false`, cube Q then
+/// Calibration) unchanged. Production code never sets this env var. Used by
+/// both `AdobeBaseRenderer.Handle.image(settings:)` (RAW) and
+/// `RenderEngine.applyNonRAWStageQ` (non-RAW).
+public enum CalibrationOrder {
+    public static var calibrationFirst: Bool {
+        ProcessInfo.processInfo.environment["PHOTO_BENCH_CALIBRATION_FIRST"] == "1"
+    }
+}
+
 public enum ColorOps {
     /// Identifies this stage's processing semantics for
     /// `PhotoCoreProcessingFingerprint.colorMixer` -- the field name is kept
@@ -293,6 +317,11 @@ public enum ColorOps {
         HSLLumParams(kPlus: 0.3728, pPlus: 0.6234, qPlus: 0.7955, kMinus: -0.6795, pMinus: 0.6115, qMinus: 1.2223),
         HSLLumParams(kPlus: 0.3150, pPlus: 0.5862, qPlus: 0.7122, kMinus: -0.5476, pMinus: 0.5373, qMinus: 1.1360),
         HSLLumParams(kPlus: 0.4859, pPlus: 0.6716, qPlus: 1.0188, kMinus: -0.8015, pMinus: 0.6525, qMinus: 1.3838),
+        // round2-bcd model.md §3.3 re-fit Blue (kPlus 1.19 / kMinus -1.29 / pMinus 0.84) on 4 real-photo
+        // amplitudes, but that fit amplifies the known `yMid` blow-up for near-fully-saturated blue
+        // (ProPhoto's blue luma coefficient is ~0), producing outputs ~1e4 for [0,0,1] and white
+        // blobs on saturated blue lights. Real-photo gain was only ±0.05-0.08 dE, so the ±60-chart
+        // fit is kept until the model gets a saturation guard (docs/ENGINE_ROADMAP.md).
         HSLLumParams(kPlus: 0.5194, pPlus: 0.4228, qPlus: 1.3609, kMinus: -0.3748, pMinus: 0.0, qMinus: 1.4781),
         HSLLumParams(kPlus: 0.4064, pPlus: 0.2450, qPlus: 1.3563, kMinus: -0.2764, pMinus: 0.0, qMinus: 1.3945),
         HSLLumParams(kPlus: 0.6047, pPlus: 0.5042, qPlus: 1.4334, kMinus: -0.4994, pMinus: 0.2566, qMinus: 1.5077)

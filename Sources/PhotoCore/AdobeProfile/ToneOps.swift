@@ -121,14 +121,48 @@ public enum ToneOps {
     /// `DEHAZE_SAT_K_AT_40`: pooled least-squares fit (P1013558/P1013207/
     /// P1012822: 1.51/1.42/1.53) of `chroma_out = k * chroma_in` (hue/luma
     /// preserving, same mechanism as `ColorOps`' saturation) at `Dehaze` =
-    /// `+40` on real photos. `amount < 0` has no photo data -- linear
-    /// extrapolation through the origin, unverified (`model.md` §3).
+    /// `+40` on real photos. Superseded as a runtime formula by
+    /// `dehazeKSatAmountXs`/`dehazeKSatMinus1Ys` below (round2-bcd `model.md`
+    /// §2.3), but kept as the documented `+40` anchor's provenance -- its
+    /// value (1.4693) is exactly `1 + dehazeKSatMinus1Ys[3]` (0.4693).
     private static let dehazeSatKAt40 = 1.4693
+
+    /// round2-bcd `model.md` §2.3: real-photo tone-curve/saturation
+    /// projections at `Dehaze` = {-40,+20,+40(existing round1 anchor),+80}
+    /// replace the old `amount/50` (tone) and `amount/40` (saturation)
+    /// single-point proportional scales, which round2 found non-linear on
+    /// real photos (positive side saturates: +20 measures 54% of the old
+    /// proportional prediction, +80 measures 77%; negative side is slightly
+    /// *stronger* than proportional: -40 measures 105%). Piecewise-linear
+    /// (`piecewiseLinear`, i.e. `np.interp` semantics: clamps flat outside
+    /// the anchor range on both ends) over these directly-measured anchors,
+    /// per `model.md` §2.4 this cuts the 9-case (3 amounts x 3 scenes)
+    /// average pixel ΔE00 from 3.56 to 2.83 with no case regressing. The
+    /// negative side still has only the one `-40` real-photo anchor (`model.
+    /// md` §6 unresolved item) -- `amount` beyond -40 clamps at -40's value
+    /// rather than continuing to extrapolate, unlike the old proportional
+    /// formula which had no such ceiling.
+    private static let dehazeToneScalePosXs: [Double] = [0, 20, 50, 80]
+    private static let dehazeToneScalePosYs: [Double] = [0.0, 0.216, 1.0, 1.237]
+    private static let dehazeToneScaleNegXs: [Double] = [0, 40, 50]  // |amount|; 50 = existing +-50 chart anchor (scale=1)
+    private static let dehazeToneScaleNegYs: [Double] = [0.0, 0.840, 1.0]
+    private static let dehazeKSatAmountXs: [Double] = [-40, 0, 20, 40, 80]
+    private static let dehazeKSatMinus1Ys: [Double] = [-0.3503, 0.0, 0.1027, 0.4693, 0.5805]
+
+    private static func dehazeToneScale(_ amount: Double) -> Double {
+        amount >= 0
+            ? piecewiseLinear(amount, xs: dehazeToneScalePosXs, ys: dehazeToneScalePosYs)
+            : piecewiseLinear(-amount, xs: dehazeToneScaleNegXs, ys: dehazeToneScaleNegYs)
+    }
+
+    private static func dehazeKSat(_ amount: Double) -> Double {
+        1.0 + piecewiseLinear(amount, xs: dehazeKSatAmountXs, ys: dehazeKSatMinus1Ys)
+    }
 
     private static func dehazeCurveGain(_ amount: Double) -> [Double] {
         guard amount != 0 else { return [Double](repeating: 0, count: dehazeGrid.count) }
         let table = amount > 0 ? dehazeGain50Pos : dehazeGain50Neg
-        let scale = amount > 0 ? amount / 50.0 : amount / -50.0
+        let scale = dehazeToneScale(amount)
         return table.map { $0 * scale }
     }
 
@@ -148,7 +182,7 @@ public enum ToneOps {
         let gain = piecewiseLinear(ln0, xs: dehazeGrid, ys: curve)
         let toned = value * exp2(gain)
 
-        let kSat = 1.0 + (dehazeSatKAt40 - 1.0) * (amount / 40.0)
+        let kSat = dehazeKSat(amount)
         let y1 = toned.x * dehazePPLuma.x + toned.y * dehazePPLuma.y + toned.z * dehazePPLuma.z
         let chroma = toned - SIMD3(repeating: y1)
         let out = SIMD3(repeating: y1) + chroma * kSat

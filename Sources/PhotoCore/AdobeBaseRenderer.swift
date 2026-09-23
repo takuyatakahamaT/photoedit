@@ -176,14 +176,15 @@ public enum AdobeBaseRenderer {
                 ),
                 variant: variant
             )
-            let order = SpatialOrder.current
+            let order = SpatialOrder.currentForRAW
             let needsSpatial = SpatialToneOps.needsSpatial(settings)
 
             var image: CIImage
             if needsSpatial && order == .preTone {
-                // **Experiment only** (`SpatialOrder`'s doc comment): stop
-                // right after Stage E, run [S] there, then finish Stage L/T
-                // by hand (mirroring `applyRemainingStages`'s own tail).
+                // `.preTone` (today's RAW default, `SpatialOrder`'s doc
+                // comment): stop right after Stage E, run [S] there, then
+                // finish Stage L/T by hand (mirroring `applyRemainingStages`'s
+                // own tail).
                 image = AdobeBaseRenderer.applyRemainingStages(
                     to: stageM, assets: effectiveAssets, cubes: effectiveCubes,
                     userEV: settings.exposure, variant: variant, through: .exposure
@@ -198,12 +199,12 @@ public enum AdobeBaseRenderer {
                 )
             }
 
-            // **Experiment only**: every branch below except the default
-            // (`.p1SP2`, today's actual production pipeline) exists purely
+            // `.preTone` (today's RAW production default, see `SpatialOrder`'s
+            // doc comment) already ran [S] above, so it only needs cube P
+            // unsplit here, same as `.sP1P2`/`.p1P2S`. The other cases
+            // (`.p1SP2` -- the old shared default, `.p1P2S`, `.postQ`) exist
             // to measure the C4-era full-recipe darkness regression under a
-            // different [S] position -- see `SpatialOrder`'s doc comment.
-            // `.preTone` already ran [S] above, so it only needs cube P
-            // unsplit here, same as `.sP1P2`/`.p1P2S`.
+            // different [S] position and remain reachable via the env var.
             if needsSpatial {
                 switch order {
                 case .preTone:
@@ -240,11 +241,20 @@ public enum AdobeBaseRenderer {
                     AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image
                 )
             }
-            if ColorOps.needsColorOps(settings) {
-                image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postColorCube(settings: settings), to: image)
-            }
-            if ColorOps.needsCalibration(settings.calibration) {
-                image = AdobeBaseRenderer.applyCalibration(ColorOps.calibrationMatrix(settings.calibration), to: image)
+            if CalibrationOrder.calibrationFirst {
+                if ColorOps.needsCalibration(settings.calibration) {
+                    image = AdobeBaseRenderer.applyCalibration(ColorOps.calibrationMatrix(settings.calibration), to: image)
+                }
+                if ColorOps.needsColorOps(settings) {
+                    image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postColorCube(settings: settings), to: image)
+                }
+            } else {
+                if ColorOps.needsColorOps(settings) {
+                    image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postColorCube(settings: settings), to: image)
+                }
+                if ColorOps.needsCalibration(settings.calibration) {
+                    image = AdobeBaseRenderer.applyCalibration(ColorOps.calibrationMatrix(settings.calibration), to: image)
+                }
             }
             if needsSpatial && order == .postQ {
                 image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image)
@@ -732,9 +742,15 @@ public enum AdobeBaseRenderer {
     static func applySpatialToneOps(settings: EditSettings, to image: CIImage) -> CIImage {
         let longEdge = max(image.extent.width, image.extent.height)
         let scalePx = SpatialToneOps.scalePx(forLongEdge: Double(longEdge))
+        // This is the one and only production call site that resolves
+        // `SpatialGainScale.current` (env var, falling back to
+        // `.productionDefault`) -- everything below it (`SpatialToneProcessor.
+        // apply` and beneath) takes the scale as an explicit parameter and
+        // never reads the environment itself, so every test calling those
+        // lower-level functions directly is unaffected by this default.
         guard let output = try? SpatialToneProcessor.apply(
             to: image, highlights: settings.highlights, shadows: settings.shadows, scalePx: scalePx,
-            texture: settings.texture, clarity: settings.clarity
+            texture: settings.texture, clarity: settings.clarity, gainScale: SpatialGainScale.current
         ) else {
             preconditionFailure("Photo BenchのHighlights/Shadows空間処理カーネルを画像へ適用できませんでした。")
         }
