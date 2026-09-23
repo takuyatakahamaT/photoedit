@@ -359,6 +359,20 @@ C が A と一致するのは、明るい編集（露出＋など）では preHS
 - 改善: 単体 32 ケース 2.23 → 1.59（−29%）、複合 −5%、4 プリセット × DSC02072 −16%（4 本すべて改善）。
 - 残課題: kS の上限 2.2 は実測範囲外（明るい素材では上限に張り付く）、P1581237 の sShift はグリッド端、n = 8。
 
+**最終状態（2026-09-23 夜、`46b4989`、Studio、環境変数なし）**
+
+| ケース群 | n | 値 |
+|---|---:|---:|
+| H/S 単体（3 scene、c3-gate） | 24 | 2.11 |
+| tone-all_bluesky2 / full_bluesky2 | 3 / 3 | 2.59 / 2.64 |
+| c4-gate（Texture／Clarity／Dehaze） | 15 | 2.16 |
+| 非RAW round0 / round3 | 4 / 48 | 1.57 / 1.93 |
+| round2 セット A（14 scene × 3） | 42 | 3.05 |
+| 4 プリセット × RAW P1524180 | 4 | bluesky2 **1.89** / colorful **2.26** / night 6.04 / pastel **1.16** |
+| 4 プリセット × JPEG DSC02072 | 4 | bluesky2 2.74 / colorful **1.99** / night 5.43 / pastel **1.83** |
+
+今朝の C2 時点（RAW 2.44 / 4.44 / 7.45 / 5.47、JPEG 2.71 / 1.89 / 5.29 / 1.63）と比べ、night を含む全組で改善または同等。残課題: night（Red/Orange の彩度・色相、Calibration の順序）、明るい JPEG での外挿（DSC02072 は法則の実測範囲外で kS 2.0 / kH 0.3）、非常に暗い scene、シャープ／NR・周辺光量。
+
 **4 プリセットの残差分解（2026-09-23、`.photobench/phase5/preset-residuals/model.md`）**: 4 プリセット × 11 操作グループの中立化 XMP（48 種）を RAW / JPEG で 104 枚描画し、LR 参照と比較。
 
 - 共通の 1 位は **C3 の Highlights／Shadows**（確定）: 8 組中 7 組で「外すと改善」し、改善幅は |Highlights2012| にほぼ比例（colorful −88 / night −87 で最大、pastel −44 で最小）。RAW では中間調（相対輝度 0.33〜0.56）で EV 誤差がピーク。→ 振幅の再フィット（spatial-v2.1）が対処。

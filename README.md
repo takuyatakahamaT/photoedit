@@ -4,7 +4,7 @@
 
 自分専用の macOS 向けローカル写真編集アプリです。Lightroom で作った XMP プリセットを登録し、RAW／JPEG に適用して Lightroom 相当のパネル（基本補正・トーンカーブ・HSL・カラーグレーディング・キャリブレーション）で微調整し、原寸 JPEG を書き出します。編集は写真ごとに自動保存され、Undo／Redo できます。
 
-現在の要件は、**Lightroom の XMP をプリセット共通の現像処理で再現すること**です。方針は「Lightroom を教師にして操作ごとの応答を計測し、プリセット非依存の共通モデルへ落とす」で、正は [ENGINE_ROADMAP.md](./docs/ENGINE_ROADMAP.md) です。2026-09-23 時点で、RAW の基準現像（LibRaw + Adobe Standard DCP + Adobe Color）、基本補正・カーブ・HSL・グレーディング・Calibration・Texture／Clarity／Dehaze・RW2 埋め込みレンズ歪曲補正まで計測モデルで実装済みです。**ただし Lightroom との一致はまだ完成していません**（単体操作は平均 ΔE00 1〜2.5 の水準。オーナーの 4 プリセットは RAW で 1.5〜2.3、night のみ 6、JPEG 入力で 2.6〜5.9）。
+現在の要件は、**Lightroom の XMP をプリセット共通の現像処理で再現すること**です。方針は「Lightroom を教師にして操作ごとの応答を計測し、プリセット非依存の共通モデルへ落とす」で、正は [ENGINE_ROADMAP.md](./docs/ENGINE_ROADMAP.md) です。2026-09-23 時点で、RAW の基準現像（LibRaw + Adobe Standard DCP + Adobe Color）、基本補正・カーブ・HSL・グレーディング・Calibration・Texture／Clarity／Dehaze・RW2 埋め込みレンズ歪曲補正まで計測モデルで実装済みです。**ただし Lightroom との一致はまだ完成していません**（単体操作は平均 ΔE00 1〜2.5 の水準。オーナーの 4 プリセットは RAW で 1.2〜2.3、JPEG 入力で 1.8〜2.7、night のみ 5.4〜6.0）。
 
 公開 Git リポジトリには source・tests・docs・契約 manifest だけを置き、個人写真、Lightroom 基準画像、生成 render、署名済み app は含めません。詳細は [Repository and local data policy](./DATA_POLICY.md) を参照してください。
 
@@ -106,7 +106,7 @@ process-freshは新しいworker processですが、timer前のmanifest検証がR
 
 ## 重要な制限
 
-- Lightroom との一致は完成していません。単体操作は平均 ΔE00 1〜2.5、4 プリセットは RAW で 1.5〜2.3（night は 6）、JPEG 入力は 2.6〜5.9 で 0.1〜0.2 EV 暗めです。ハイライト／シャドウは写真ごとの統計量で振幅を変える画像適応（16 scene の計測）を入れていますが、Lightroom の適応則の推定であって同一ではありません（`docs/ENGINE_ROADMAP.md`）。
+- Lightroom との一致は完成していません。単体操作は平均 ΔE00 1〜2.5、4 プリセットは RAW で 1.2〜2.3、JPEG 入力で 1.8〜2.7（night は 5.4〜6.0）です。ハイライト／シャドウは写真ごとの統計量で振幅と帯域位置を変える画像適応（RAW 14 scene、JPEG 8 scene の計測）を入れていますが、Lightroom の適応則の推定であって同一ではありません（`docs/ENGINE_ROADMAP.md`）。
 - Adobe の現像数式は非公開で、計測に基づく近似です。カメラプロファイル（DCP）と Adobe Color は Lightroom の導入先から実行時に読み、リポジトリには含めません。DC-S5 以外の機種は DCP があれば動きますが検証していません。
 - 周辺光量補正、色収差補正、既定シャープ／NR、粒子、非 RAW の増分 WB は未実装です。
 - クロップ、ブラシマスク、SQLite カタログ、評価・選別、アルバム、移動した写真の再リンクは未実装です。
