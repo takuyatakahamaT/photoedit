@@ -36,19 +36,36 @@ actor RenderCoordinator {
         return workingCopy
     }
 
+    /// `drag`: a slider-drag approximation (`PreviewDragSession`). Cancelling
+    /// the calling task stops the render at its next step or cube-bake chunk
+    /// (`PreviewCancellation`), so a superseded exact render does not hold
+    /// this actor for its full duration.
     func preparePreviewFromWorkingCopy(
         workingCopy: DecodedPhoto,
         settings: EditSettings,
         maxDimension: CGFloat = 2_560,
-        quality: SpatialToneQuality = .final
-    ) throws -> PreparedPreviewFrame {
+        quality: SpatialToneQuality = .final,
+        drag: PreviewDragSession? = nil
+    ) async throws -> PreparedPreviewFrame {
         try Task.checkCancellation()
-        let frame = try renderer.preparePreviewFromWorkingCopy(
-            workingCopy: workingCopy,
-            settings: settings,
-            maxDimension: maxDimension,
-            quality: quality
-        )
+        let cancellation = PreviewCancellation()
+        let frame = try await withTaskCancellationHandler {
+            // Core Image/Metal objects this render autoreleases (the spatial
+            // pass's textures among them) are freed per frame, not whenever
+            // the executor thread happens to drain.
+            try autoreleasepool {
+                try renderer.preparePreviewFromWorkingCopy(
+                    workingCopy: workingCopy,
+                    settings: settings,
+                    maxDimension: maxDimension,
+                    quality: quality,
+                    drag: drag,
+                    cancellation: cancellation
+                )
+            }
+        } onCancel: {
+            cancellation.cancel()
+        }
         try Task.checkCancellation()
         return frame
     }
@@ -57,7 +74,7 @@ actor RenderCoordinator {
         _ frame: PreparedPreviewFrame
     ) throws -> RenderedPreview {
         try Task.checkCancellation()
-        return try renderer.materializePreview(frame)
+        return try autoreleasepool { try renderer.materializePreview(frame) }
     }
 
     func renderPreview(

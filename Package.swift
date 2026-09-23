@@ -21,7 +21,8 @@ let package = Package(
             targets: ["PhotoBenchWhiteBalanceObservation"]
         ),
         .executable(name: "PhotoBenchBenchmark", targets: ["PhotoBenchBenchmark"]),
-        .executable(name: "photobench-render", targets: ["PhotoBenchRender"])
+        .executable(name: "photobench-render", targets: ["PhotoBenchRender"]),
+        .executable(name: "photobench-preview-bench", targets: ["PhotoBenchPreviewBench"])
     ],
     targets: [
         .systemLibrary(
@@ -74,6 +75,11 @@ let package = Package(
             name: "PhotoBenchRender",
             dependencies: ["PhotoCore"],
             path: "Sources/PhotoBenchRender"
+        ),
+        .executableTarget(
+            name: "PhotoBenchPreviewBench",
+            dependencies: ["PhotoCore"],
+            path: "Sources/PhotoBenchPreviewBench"
         ),
         .testTarget(
             name: "PhotoCoreTests",

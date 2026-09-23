@@ -344,56 +344,74 @@ public enum ToneOps {
 
     // MARK: - 5) Point curve (ToneCurvePV2012 / Red / Green / Blue)
 
-    /// `tone_model.apply_point_curve`: the composite RGB curve, hue-preserving
-    /// (`RGBTone.applyEncoded`) via the existing `DNGSpline`.
-    private static func applyCompositeCurve(_ value: SIMD3<Double>, points: [CurvePoint]) -> SIMD3<Double> {
-        guard points.count >= 2,
-              let spline = try? DNGSpline(points: points.map { ($0.x, $0.y) })
-        else { return value }
-        return encodedCurve(value) { min(max(spline.evaluate($0), 0.0), 1.0) }
+    /// The point curves with every spline built once. A cube bake evaluates
+    /// the same curves at every grid point (262,144 at 64^3), and rebuilding
+    /// the splines and re-sanitizing their points for each point was most of
+    /// cube P's bake time. `pointCurve(_:curves:)` goes through this too, so
+    /// there is one implementation and a bake's values are identical.
+    public struct PreparedPointCurve: Sendable {
+        let composite: DNGSpline?
+        let red: DNGSpline?
+        let green: DNGSpline?
+        let blue: DNGSpline?
+
+        /// Points are sanitized exactly like the legacy piecewise-linear
+        /// model (`ToneCurveModel.normalizedPoints`: 0...1 clamp, sorted,
+        /// duplicate-x last-authored-wins) so malformed/duplicate XMP curves
+        /// degrade the same way regardless of which renderer sees them. A
+        /// curve with fewer than 2 usable points (or one `DNGSpline` rejects)
+        /// is skipped.
+        public init(curves: [ToneCurve]) {
+            composite = Self.spline(curves.first { $0.channel == .rgb })
+            red = Self.spline(curves.first { $0.channel == .red })
+            green = Self.spline(curves.first { $0.channel == .green })
+            blue = Self.spline(curves.first { $0.channel == .blue })
+        }
+
+        private static func spline(_ curve: ToneCurve?) -> DNGSpline? {
+            let points = ToneCurveModel.normalizedPoints(curve)
+            guard points.count >= 2 else { return nil }
+            return try? DNGSpline(points: points.map { ($0.x, $0.y) })
+        }
+
+        /// Composite RGB curve first (`tone_model.apply_point_curve`,
+        /// hue-preserving via `RGBTone.applyEncoded`), then any single-channel
+        /// Red/Green/Blue curves independently -- both may be present in the
+        /// same XMP.
+        public func apply(_ value: SIMD3<Double>) -> SIMD3<Double> {
+            var result = value
+            if let composite {
+                result = ToneOps.encodedCurve(result) { min(max(composite.evaluate($0), 0.0), 1.0) }
+            }
+            if let red { result = Self.applyChannel(result, spline: red, channel: \.x) }
+            if let green { result = Self.applyChannel(result, spline: green, channel: \.y) }
+            if let blue { result = Self.applyChannel(result, spline: blue, channel: \.z) }
+            return result
+        }
+
+        /// `tone_model.apply_point_curve_channel`: a single channel's curve
+        /// applied directly to that channel in sRGB-encoded space, independent
+        /// of the other two channels (NOT hue-preserving mixing -- there is
+        /// only one channel to move). Per `model.md`'s Q3, the round1
+        /// measurement of this specific XMP shape (`ToneCurvePV2012Red`/
+        /// `Blue`) did not reach Lightroom at all (identical to neutral), so
+        /// this is an unvalidated, best-effort placeholder matching the Python
+        /// reference's own caveat.
+        private static func applyChannel(
+            _ value: SIMD3<Double>, spline: DNGSpline, channel: WritableKeyPath<SIMD3<Double>, Double>
+        ) -> SIMD3<Double> {
+            var result = value
+            let encoded = DNGColorSpace.srgbEncode(min(max(result[keyPath: channel], 0.0), 1.0))
+            let curved = min(max(spline.evaluate(encoded), 0.0), 1.0)
+            result[keyPath: channel] = DNGColorSpace.srgbDecode(curved)
+            return result
+        }
     }
 
-    /// `tone_model.apply_point_curve_channel`: a single channel's curve
-    /// applied directly to that channel in sRGB-encoded space, independent of
-    /// the other two channels (NOT hue-preserving mixing -- there is only one
-    /// channel to move). Per `model.md`'s Q3, the round1 measurement of this
-    /// specific XMP shape (`ToneCurvePV2012Red`/`Blue`) did not reach
-    /// Lightroom at all (identical to neutral), so this is an unvalidated,
-    /// best-effort placeholder matching the Python reference's own caveat.
-    private static func applyChannelCurve(
-        _ value: SIMD3<Double>, points: [CurvePoint], channel: WritableKeyPath<SIMD3<Double>, Double>
-    ) -> SIMD3<Double> {
-        guard points.count >= 2,
-              let spline = try? DNGSpline(points: points.map { ($0.x, $0.y) })
-        else { return value }
-        var result = value
-        let encoded = DNGColorSpace.srgbEncode(min(max(result[keyPath: channel], 0.0), 1.0))
-        let curved = min(max(spline.evaluate(encoded), 0.0), 1.0)
-        result[keyPath: channel] = DNGColorSpace.srgbDecode(curved)
-        return result
-    }
-
-    /// Composite RGB curve first, then any single-channel Red/Green/Blue
-    /// curves independently -- both may be present in the same XMP. Points
-    /// are sanitized exactly like the legacy piecewise-linear model
-    /// (`ToneCurveModel.normalizedPoints`: 0...1 clamp, sorted, duplicate-x
-    /// last-authored-wins) so malformed/duplicate XMP curves degrade the same
-    /// way regardless of which renderer sees them.
+    /// `PreparedPointCurve(curves:).apply(_:)`.
     public static func pointCurve(_ value: SIMD3<Double>, curves: [ToneCurve]) -> SIMD3<Double> {
         guard !curves.isEmpty else { return value }
-        var result = applyCompositeCurve(
-            value, points: ToneCurveModel.normalizedPoints(curves.first { $0.channel == .rgb })
-        )
-        result = applyChannelCurve(
-            result, points: ToneCurveModel.normalizedPoints(curves.first { $0.channel == .red }), channel: \.x
-        )
-        result = applyChannelCurve(
-            result, points: ToneCurveModel.normalizedPoints(curves.first { $0.channel == .green }), channel: \.y
-        )
-        result = applyChannelCurve(
-            result, points: ToneCurveModel.normalizedPoints(curves.first { $0.channel == .blue }), channel: \.z
-        )
-        return result
+        return PreparedPointCurve(curves: curves).apply(value)
     }
 
     // MARK: - 6) Stage P composition
@@ -433,18 +451,39 @@ public enum ToneOps {
     /// the C3 spatial-active pipeline (`docs/PHASE2_C2_C3.md`'s C3
     /// section); `applyContrastAndDehaze` is cube P1.
     public static func applyPostOpsAfterContrast(_ value: SIMD3<Double>, settings: EditSettings) -> SIMD3<Double> {
-        var result = value
-        result = whites(result, amount: settings.whites)
-        result = blacks(result, amount: settings.blacks)
-        result = parametric(
-            result,
-            shadows: settings.parametricShadows, darks: settings.parametricDarks,
-            lights: settings.parametricLights, highlights: settings.parametricHighlights,
-            shadowSplit: settings.parametricShadowSplit, midtoneSplit: settings.parametricMidtoneSplit,
-            highlightSplit: settings.parametricHighlightSplit
-        )
-        result = pointCurve(result, curves: settings.toneCurves)
-        return result
+        PreparedPostOps(settings: settings).applyAfterContrast(value)
+    }
+
+    /// `applyPostOps` / `applyPostOpsAfterContrast` for one `settings`, with
+    /// the point curves' splines built once (`PreparedPointCurve`) -- what a
+    /// cube bake evaluates at every grid point. Same operations in the same
+    /// order, so the values are identical.
+    public struct PreparedPostOps: Sendable {
+        let settings: EditSettings
+        let pointCurve: PreparedPointCurve
+
+        public init(settings: EditSettings) {
+            self.settings = settings
+            pointCurve = PreparedPointCurve(curves: settings.toneCurves)
+        }
+
+        public func apply(_ value: SIMD3<Double>) -> SIMD3<Double> {
+            applyAfterContrast(ToneOps.applyContrastAndDehaze(value, settings: settings))
+        }
+
+        public func applyAfterContrast(_ value: SIMD3<Double>) -> SIMD3<Double> {
+            var result = value
+            result = ToneOps.whites(result, amount: settings.whites)
+            result = ToneOps.blacks(result, amount: settings.blacks)
+            result = ToneOps.parametric(
+                result,
+                shadows: settings.parametricShadows, darks: settings.parametricDarks,
+                lights: settings.parametricLights, highlights: settings.parametricHighlights,
+                shadowSplit: settings.parametricShadowSplit, midtoneSplit: settings.parametricMidtoneSplit,
+                highlightSplit: settings.parametricHighlightSplit
+            )
+            return pointCurve.apply(result)
+        }
     }
 
     /// Whether `applyPostOps` would do anything other than return its input

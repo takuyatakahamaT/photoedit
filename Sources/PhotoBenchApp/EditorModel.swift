@@ -25,11 +25,27 @@ struct DirectPreviewRequest: Identifiable, @unchecked Sendable {
         case edit
     }
 
+    /// Monotonic per request (a settle render re-presents a revision that
+    /// is already on screen, so the revision alone is not unique).
     let id: UInt64
     let frame: PreparedPreviewFrame
     let inputHostTime: CFTimeInterval
     let kind: Kind
+    let revision: UInt64
+    /// `false` for the quiet exact frame after a drag: the shown latency
+    /// stays the drag frame's.
+    let updatesTiming: Bool
 }
+
+/// What one preview render needs besides its revision (`PreviewRenderPump`).
+private struct PreviewRenderRequest: Sendable {
+    let settings: EditSettings
+    /// Non-nil: a drag frame (`PreviewDragSession`).
+    let drag: PreviewDragSession?
+    let inputHostTime: CFTimeInterval
+}
+
+private typealias PreviewRenderJob = PreviewRenderPump<PreviewRenderRequest>.Job
 
 enum EditPersistenceStatus: Equatable {
     case idle
@@ -125,6 +141,13 @@ final class EditorModel: ObservableObject {
     private var saveDebounceTask: Task<Void, Never>?
     private var loadGeneration = 0
     private var renderRevision: UInt64 = 0
+    /// Live while a slider, color wheel or curve point is held: previews
+    /// rendered meanwhile are drag approximations (`PreviewDragSession`) and
+    /// the exact frame follows on release (`PreviewRenderPump`'s settle job).
+    private var previewDragSession: PreviewDragSession?
+    /// Which render runs, which drag tick waits, and what is on screen.
+    private var renderPump = PreviewRenderPump<PreviewRenderRequest>()
+    private var directPreviewSerial: UInt64 = 0
     private var editStates: [String: PhotoEditSnapshot] = [:]
     @Published private var unsavedEditStates: [String: PendingEditSave] = [:]
     @Published private var persistenceStatusByAssetID: [String: EditPersistenceStatus] = [:]
@@ -301,13 +324,21 @@ final class EditorModel: ObservableObject {
             activeSliderGesturePhotoID = assetID
             editHistory.beginGroup(for: assetID, startingAt: editSnapshot)
             refreshHistoryAvailability()
+            // Ticks until release render as drag frames: statistics frozen
+            // at these settings, the spatial pass reused while its inputs are
+            // unchanged, and small cubes for values not baked yet.
+            previewDragSession = PreviewDragSession(startSettings: renderSettings)
+            renderPump.beginDrag()
         } else {
             finishSliderGesture()
             flushPendingEditSave()
-            // No extra `.final` re-render here: the preview always uses
+            // No `.final` re-render here: the preview always uses
             // `.interactive` quality (its difference from `.final` is mean
-            // ΔE00 0.03〜0.08, below perception), and the owner reported the
-            // post-release re-render as a ~0.7s lag. Exports still use `.final`.
+            // ΔE00 0.03〜0.08, below perception), and the owner reported a
+            // post-release `.final` re-render as a ~0.7s lag. The exact
+            // `.interactive` frame replaces the last drag frame quietly
+            // (`finishSliderGesture` -> the pump's settle job), and any new
+            // input cancels it. Exports still use `.final`.
         }
     }
 
@@ -431,6 +462,7 @@ final class EditorModel: ObservableObject {
         scanTask?.cancel()
         loadTask?.cancel()
         renderTask?.cancel()
+        renderPump.reset()
         renderRevision &+= 1
         do {
             try folderAccess.activateSelection(url)
@@ -497,14 +529,38 @@ final class EditorModel: ObservableObject {
     }
 
     func scheduleRender() {
-        guard let decodedPhoto else { return }
-        let workingCopy = previewWorkingCopy
-        let inputHostTime = CACurrentMediaTime()
-        renderTask?.cancel()
+        guard decodedPhoto != nil else { return }
         renderRevision &+= 1
-        let revision = renderRevision
-        let capturedSettings = renderSettings
+        let drag = previewWorkingCopy == nil ? nil : previewDragSession
+        hasPreviewInFlight = true
+        os_signpost(
+            .event,
+            log: Self.presentationLog,
+            name: "PreviewInput",
+            "request=%{public}llu",
+            renderRevision
+        )
+        // A running drag frame is kept (the newest tick waits for it), so a
+        // continuous drag keeps updating; anything else supersedes and
+        // cancels the running render (`PreviewRenderPump`).
+        if let job = renderPump.submit(
+            revision: renderRevision,
+            isDragFrame: drag != nil,
+            payload: PreviewRenderRequest(settings: renderSettings, drag: drag, inputHostTime: CACurrentMediaTime())
+        ) {
+            startRender(job)
+        }
+    }
+
+    private func startRender(_ job: PreviewRenderJob) {
+        guard let decodedPhoto else { return }
+        // A settle job renders the current settings (its revision's) exactly.
+        let request = job.payload
+            ?? PreviewRenderRequest(settings: renderSettings, drag: nil, inputHostTime: CACurrentMediaTime())
+        let workingCopy = previewWorkingCopy
         let coordinator = renderCoordinator
+        let generation = loadGeneration
+        renderTask?.cancel()
         // The preview always renders at `.interactive` spatial quality
         // (Shadows discretization 5 instead of 10, 375px statistics): it is
         // visually indistinguishable from `.final` (mean ΔE00 0.03〜0.08) and
@@ -512,47 +568,38 @@ final class EditorModel: ObservableObject {
         // each drag was perceived as lag. Export paths (`exportFromPanel` →
         // `RenderEngine.exportJPEG`) keep `.final`.
         let quality: SpatialToneQuality = .interactive
-        hasPreviewInFlight = true
-        os_signpost(
-            .event,
-            log: Self.presentationLog,
-            name: "PreviewInput",
-            "request=%{public}llu",
-            revision
-        )
         renderTask = Task { [weak self] in
             do {
                 let frame: PreparedPreviewFrame
                 if let workingCopy {
                     frame = try await coordinator.preparePreviewFromWorkingCopy(
                         workingCopy: workingCopy,
-                        settings: capturedSettings,
-                        quality: quality
+                        settings: request.settings,
+                        quality: quality,
+                        drag: request.drag
                     )
                 } else {
                     frame = try await coordinator.prepareProductionPreview(
                         decoded: decodedPhoto,
-                        settings: capturedSettings,
+                        settings: request.settings,
                         quality: quality
                     )
                 }
                 try Task.checkCancellation()
-                guard let self, self.renderRevision == revision else { return }
-                try await self.presentPreparedFrame(
-                    frame,
-                    revision: revision,
-                    inputHostTime: inputHostTime,
-                    kind: .edit
-                )
+                if let self, self.loadGeneration == generation {
+                    try await self.presentPreparedFrame(frame, job: job, request: request)
+                }
             } catch is CancellationError {
-                return
+                // Superseded: a newer render is (or will be) shown instead.
             } catch {
-                guard !Task.isCancelled,
-                      let self,
-                      self.renderRevision == revision
-                else { return }
-                self.hasPreviewInFlight = false
-                self.statusMessage = error.localizedDescription
+                if let self, !Task.isCancelled, self.loadGeneration == generation,
+                   self.renderRevision == job.revision {
+                    self.hasPreviewInFlight = false
+                    self.statusMessage = error.localizedDescription
+                }
+            }
+            if let self, let next = self.renderPump.finish(job) {
+                self.startRender(next)
             }
         }
     }
@@ -563,8 +610,7 @@ final class EditorModel: ObservableObject {
     ) {
         guard previewRoute == .metalDirect,
               let request = directPreviewRequest,
-              request.id == requestID,
-              renderRevision == requestID
+              request.id == requestID
         else {
             return
         }
@@ -573,9 +619,18 @@ final class EditorModel: ObservableObject {
             return
         }
         let milliseconds = max(0, (presentedTime - request.inputHostTime) * 1_000)
-        renderMilliseconds = milliseconds
+        if request.updatesTiming {
+            renderMilliseconds = milliseconds
+        }
+        if PreviewDiagnostics.printsToStandardError {
+            FileHandle.standardError.write(Data(
+                "PreviewLatency: revision=\(request.revision) inputToPresent=\(String(format: "%.1f", milliseconds))ms\n".utf8
+            ))
+        }
         directPresentedCount += 1
-        hasPreviewInFlight = false
+        if request.revision == renderRevision {
+            hasPreviewInFlight = false
+        }
         os_signpost(
             .event,
             log: Self.presentationLog,
@@ -627,7 +682,7 @@ final class EditorModel: ObservableObject {
         guard previewRoute == .metalDirect,
               let request = directPreviewRequest,
               request.id == requestID,
-              renderRevision == requestID
+              renderRevision == request.revision
         else {
             return
         }
@@ -649,11 +704,12 @@ final class EditorModel: ObservableObject {
         )
         let coordinator = renderCoordinator
         renderTask?.cancel()
+        renderPump.reset()
         renderTask = Task { [weak self] in
             do {
                 let rendered = try await coordinator.materializePreview(request.frame)
                 guard let self,
-                      self.renderRevision == requestID,
+                      self.renderRevision == request.revision,
                       self.previewRoute == .legacyBitmap
                 else { return }
                 self.preview = rendered.image
@@ -667,7 +723,7 @@ final class EditorModel: ObservableObject {
                 self.isBusy = false
                 self.statusMessage = "Metal直接表示に失敗したため、この起動中は従来表示を使用します（\(errorDescription)）。"
             } catch {
-                guard let self, self.renderRevision == requestID else { return }
+                guard let self, self.renderRevision == request.revision else { return }
                 self.hasPreviewInFlight = false
                 self.isBusy = false
                 self.statusMessage = "プレビュー表示に失敗しました: \(error.localizedDescription)"
@@ -713,6 +769,8 @@ final class EditorModel: ObservableObject {
     private func loadSelection() {
         guard let asset = selectedAsset else {
             loadTask?.cancel()
+            renderTask?.cancel()
+            renderPump.reset()
             renderRevision &+= 1
             preview = nil
             directPreviewRequest = nil
@@ -723,6 +781,7 @@ final class EditorModel: ObservableObject {
             return
         }
         renderTask?.cancel()
+        renderPump.reset()
         loadTask?.cancel()
         loadGeneration += 1
         let generation = loadGeneration
@@ -805,9 +864,9 @@ final class EditorModel: ObservableObject {
                 self.decodeInfo = decoded.info
                 try await self.presentPreparedFrame(
                     frame,
-                    revision: revision,
-                    inputHostTime: inputHostTime,
-                    kind: .initialSelection
+                    job: nil,
+                    request: PreviewRenderRequest(settings: self.renderSettings, drag: nil, inputHostTime: inputHostTime),
+                    initialRevision: revision
                 )
             } catch is CancellationError {
                 return
@@ -826,33 +885,65 @@ final class EditorModel: ObservableObject {
         }
     }
 
+    /// `job`: a pump job (`kind` `.edit`), or `nil` for the photo's first
+    /// frame at `initialRevision` (`.initialSelection`).
     private func presentPreparedFrame(
         _ frame: PreparedPreviewFrame,
-        revision: UInt64,
-        inputHostTime: CFTimeInterval,
-        kind: DirectPreviewRequest.Kind
+        job: PreviewRenderJob?,
+        request: PreviewRenderRequest,
+        initialRevision: UInt64 = 0
     ) async throws {
-        guard renderRevision == revision else { throw CancellationError() }
+        let kind: DirectPreviewRequest.Kind = job == nil ? .initialSelection : .edit
+        let revision = job?.revision ?? initialRevision
+        // The quiet exact frame after a drag keeps the drag frame's timing.
+        let updatesTiming = job?.kind != .settle
+        func mayPresent() -> Bool {
+            job.map { renderPump.canPresent($0) } ?? (revision > renderPump.presentedRevision)
+        }
+        func notePresented() {
+            if let job {
+                renderPump.presented(job)
+            } else {
+                renderPump.presentedExactFrame(revision: revision)
+            }
+        }
+        guard mayPresent() else { throw CancellationError() }
         switch previewRoute {
         case .metalDirect:
             preview = nil
+            directPreviewSerial &+= 1
             directPreviewRequest = DirectPreviewRequest(
-                id: revision,
+                id: directPreviewSerial,
                 frame: frame,
-                inputHostTime: inputHostTime,
-                kind: kind
+                inputHostTime: request.inputHostTime,
+                kind: kind,
+                revision: revision,
+                updatesTiming: updatesTiming
             )
+            notePresented()
             if kind == .initialSelection {
                 statusMessage = "原寸デコード済み。Metalで画面表示しています…"
             }
         case .legacyBitmap:
             let materialized = try await renderCoordinator.materializePreview(frame)
             try Task.checkCancellation()
-            guard renderRevision == revision else { throw CancellationError() }
+            guard mayPresent() else { throw CancellationError() }
             directPreviewRequest = nil
             preview = materialized.image
-            renderMilliseconds = max(0, (CACurrentMediaTime() - inputHostTime) * 1_000)
-            hasPreviewInFlight = false
+            notePresented()
+            let latency = max(0, (CACurrentMediaTime() - request.inputHostTime) * 1_000)
+            if updatesTiming {
+                renderMilliseconds = latency
+            }
+            if PreviewDiagnostics.printsToStandardError {
+                let label = job.map { "\($0.kind)" } ?? "initial"
+                FileHandle.standardError.write(Data(
+                    "PreviewLatency: revision=\(revision) \(label) inputToBitmap=\(String(format: "%.1f", latency))ms\n".utf8
+                ))
+            }
+            if revision == renderRevision {
+                hasPreviewInFlight = false
+            }
             if kind == .initialSelection {
                 isBusy = false
                 statusMessage = loadedStatusMessage()
@@ -1006,6 +1097,12 @@ final class EditorModel: ObservableObject {
     }
 
     private func finishSliderGesture() {
+        if previewDragSession != nil {
+            previewDragSession = nil
+            if let settle = renderPump.endDrag() {
+                startRender(settle)
+            }
+        }
         guard let assetID = activeSliderGesturePhotoID else { return }
         let current = editStates[assetID] ?? editSnapshot
         editHistory.endGroup(for: assetID, at: current)

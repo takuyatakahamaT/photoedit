@@ -246,7 +246,9 @@ public enum SpatialToneProcessor {
             device: device, width: width, height: height, format: .rgba32Float,
             usage: [.shaderRead, .shaderWrite, .renderTarget]
         ))
-        try renderInput(image, into: inputTexture, bounds: extent, resources: resources)
+        try PreviewDiagnostics.measure("spatial.input") {
+            try renderInput(image, into: inputTexture, bounds: extent, resources: resources)
+        }
 
         guard let commandBuffer = resources.commandQueue.makeCommandBuffer() else {
             throw ProcessorError.commandBufferCreationFailed
@@ -321,9 +323,16 @@ public enum SpatialToneProcessor {
 
         encoder.endEncoding()
         let encodeEndTime = verboseDiagnosticsEnabled ? DispatchTime.now() : nil
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
+        PreviewDiagnostics.measure("spatial.wait") {
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+        }
         let waitEndTime = verboseDiagnosticsEnabled ? DispatchTime.now() : nil
+        if PreviewDiagnostics.isEnabled {
+            PreviewDiagnostics.record(
+                "spatial.gpu", milliseconds: (commandBuffer.gpuEndTime - commandBuffer.gpuStartTime) * 1000
+            )
+        }
         checkinTextures(allocator.allocated)
         if diagnosticsEnabled {
             FileHandle.standardError.write(Data(

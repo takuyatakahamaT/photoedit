@@ -372,6 +372,10 @@ struct PointCurveEditor: View {
                 }
             }
             .onEnded { value in
+                // `onChanged` always began an editing group (and the
+                // preview's drag session), so always end it -- even when no
+                // point ended up grabbed.
+                defer { model.sliderEditingChanged(false) }
                 guard let index = draggingIndex else { return }
                 // Lightroom-style removal: dragging a control point well
                 // outside the graph deletes it (endpoints stay). Done here,
@@ -381,7 +385,6 @@ struct PointCurveEditor: View {
                     deletePoint(at: index)
                 }
                 draggingIndex = nil
-                model.sliderEditingChanged(false)
             }
     }
 

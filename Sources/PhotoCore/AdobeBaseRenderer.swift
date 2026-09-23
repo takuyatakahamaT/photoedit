@@ -78,9 +78,78 @@ public enum AdobeBaseRenderer {
     /// `nil` when the DCP has no `ProfileHueSatMap` (Stage H becomes a no-op,
     /// matching `AdobeColorMath.evaluate`'s early return semantics).
     struct CubeSet: Sendable {
-        var hueSat: Data?
+        var hueSat: BakedCube?
         var look: Data
         var tone: Data
+    }
+
+    /// One baked `CIColorCube` table and the grid it was baked on.
+    struct BakedCube: Sendable {
+        var data: Data
+        var dimension: Int
+    }
+
+    /// Grid for a tone cube (P/P1/P2) baked for a slider-drag frame
+    /// (`PreviewDragSession`) when its exact `cubeDimension` bake is not
+    /// cached: 33^3 = 35,937 points instead of 262,144.
+    /// `PHOTO_BENCH_DRAG_CUBE_DIMENSION` (2...64) overrides it for
+    /// measurements; the app never sets it.
+    public static let dragCubeDimension: Int = {
+        guard let raw = ProcessInfo.processInfo.environment["PHOTO_BENCH_DRAG_CUBE_DIMENSION"],
+              let value = Int(raw), (2...cubeDimension).contains(value)
+        else { return 33 }
+        return value
+    }()
+
+    /// A lock-protected, least-recently-used-bounded cache for the cubes that
+    /// depend on slider values (P, P1, P2, Q, and H per white point). Every
+    /// new slider value bakes a new cube (4 MB at 64^3); with drag frames
+    /// rendering a few dozen values per second, an unbounded dictionary
+    /// would grow by tens of MB per second of dragging. Eviction only means
+    /// a later request for that value bakes it again: identical data.
+    final class CubeCache<Key: Hashable, Value>: @unchecked Sendable {
+        static var defaultCapacity: Int { 24 }
+
+        private let lock = NSLock()
+        private let capacity: Int
+        private var storage: [Key: (value: Value, lastUse: UInt64)] = [:]
+        private var clock: UInt64 = 0
+
+        init(capacity: Int = defaultCapacity) {
+            self.capacity = max(1, capacity)
+        }
+
+        func value(for key: Key) -> Value? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let entry = storage[key] else { return nil }
+            clock &+= 1
+            storage[key] = (entry.value, clock)
+            return entry.value
+        }
+
+        func insert(_ value: Value, for key: Key) {
+            lock.lock()
+            defer { lock.unlock() }
+            clock &+= 1
+            storage[key] = (value, clock)
+            while storage.count > capacity,
+                  let oldest = storage.min(by: { $0.value.lastUse < $1.value.lastUse })?.key {
+                storage.removeValue(forKey: oldest)
+            }
+        }
+
+        func removeAll() {
+            lock.lock()
+            storage.removeAll()
+            lock.unlock()
+        }
+
+        var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage.count
+        }
     }
 
     /// Stage M's image plus everything `image(userExposureEV:)` needs to run
@@ -164,7 +233,18 @@ public enum AdobeBaseRenderer {
         /// -- a renderer has no good way to surface a mid-slider XMP error,
         /// and as-shot is always a safe answer.
         public func image(settings: EditSettings, quality: SpatialToneQuality = .final) -> CIImage {
-            AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: imagePreMatrix(settings: settings, quality: quality))
+            // `.standard` carries no cancellation token, so nothing can throw.
+            try! image(settings: settings, quality: quality, options: .standard)
+        }
+
+        /// `image(settings:quality:)` with the interactive preview's options
+        /// (`PreviewRenderOptions`). Throws `CancellationError` only once
+        /// `options.cancellation` is cancelled.
+        func image(settings: EditSettings, quality: SpatialToneQuality, options: PreviewRenderOptions) throws -> CIImage {
+            AdobeBaseRenderer.applyMatrix(
+                DNGColorSpace.proPhotoToSRGBLinear,
+                to: try imagePreMatrix(settings: settings, quality: quality, options: options)
+            )
         }
 
         /// `image(settings:)` minus the final ProPhoto -> working-space
@@ -177,32 +257,61 @@ public enum AdobeBaseRenderer {
         /// body is unaffected -- this is a pure extraction, not a behavior
         /// change (`image(settings:)` above wraps it with the exact matrix
         /// call the extracted code used to end with).
-        private func imagePreMatrix(settings: EditSettings, quality: SpatialToneQuality = .final) -> CIImage {
+        ///
+        /// `options` (`.standard` everywhere but the interactive preview):
+        /// the cube grid for cubes not cached at the exact size, a drag
+        /// session's frozen statistics, the preview's spatial-pass cache and
+        /// cancellation. With `.standard` the graph is exactly the one this
+        /// function built before those options existed.
+        private func imagePreMatrix(
+            settings: EditSettings, quality: SpatialToneQuality, options: PreviewRenderOptions
+        ) throws -> CIImage {
+            try options.checkCancellation()
             var effectiveAssets = assets
             if settings.whiteBalance.mode == .custom,
                let temperature = settings.whiteBalance.temperature,
                let tint = settings.whiteBalance.tint {
                 let newWhiteXY = DNGTemperature.xy(fromTemperature: temperature, tint: tint)
-                if let rebalanced = try? assets.rebalanced(toWhiteXY: newWhiteXY) {
+                if let rebalanced = PreviewDiagnostics.measure("wb", { try? assets.rebalanced(toWhiteXY: newWhiteXY) }) {
                     effectiveAssets = rebalanced
                 }
             }
 
             let stageM = AdobeBaseRenderer.applyStageM(to: cameraImage, matrix: effectiveAssets.combinedMatrix)
-            let effectiveCubes = AdobeBaseRenderer.cachedCubes(
+            guard let effectiveCubes = AdobeBaseRenderer.cachedCubes(
                 for: effectiveAssets,
                 key: CacheKey(
                     dcpIdentity: cacheKey.dcpIdentity, lookIdentity: cacheKey.lookIdentity,
                     whiteXY: effectiveAssets.whiteXY, exposureEV: effectiveAssets.baselineEV, variant: variant
                 ),
-                variant: variant
-            )
+                variant: variant,
+                cancellation: options.cancellation
+            ) else {
+                throw CancellationError()
+            }
             let order = SpatialOrder.currentForRAW
             let needsSpatial = SpatialToneOps.needsSpatial(settings)
             // round2 set A (`.photobench/phase2/spatial-adaptive/model.md`):
             // computed (and cached, see `highlightRatioBase()`'s doc
             // comment) only when a spatial pass will actually run.
-            let stats = needsSpatial ? self.adaptiveStats(for: settings, quality: quality) : nil
+            let stats = needsSpatial ? try spatialStatistics(for: settings, quality: quality, options: options) : nil
+
+            // [S] at `.preTone` reads Stage E's output: this handle's camera
+            // pixels, the effective white (Stage M's matrix and cube H) and
+            // the exposure. Only that order uses the preview's spatial-pass
+            // cache; the experiment orders always recompute.
+            let spatialInputParameters = [effectiveAssets.whiteXY.x, effectiveAssets.whiteXY.y, settings.exposure]
+            func spatial(_ input: CIImage, cached: Bool = false) throws -> CIImage {
+                try options.checkCancellation()
+                return AdobeBaseRenderer.spatialPass(
+                    settings: settings, to: input, source: cameraImage,
+                    inputParameters: spatialInputParameters, adaptiveStats: stats, path: .raw,
+                    quality: quality, cache: cached ? options.spatialCache : nil
+                )
+            }
+            func postOps() throws -> BakedCube {
+                try AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings, options: options)
+            }
 
             var image: CIImage
             if needsSpatial && order == .preTone {
@@ -214,7 +323,7 @@ public enum AdobeBaseRenderer {
                     to: stageM, assets: effectiveAssets, cubes: effectiveCubes,
                     userEV: settings.exposure, variant: variant, through: .exposure
                 )
-                image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, adaptiveStats: stats, path: .raw, quality: quality)
+                image = try spatial(image, cached: true)
                 image = AdobeBaseRenderer.applyCube(effectiveCubes.look, to: image)
                 image = AdobeBaseRenderer.applyCube(effectiveCubes.tone, to: image)
             } else {
@@ -234,57 +343,79 @@ public enum AdobeBaseRenderer {
                 switch order {
                 case .preTone:
                     if ToneOps.needsPostOps(settings) {
-                        image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image)
+                        image = AdobeBaseRenderer.applyCube(try postOps(), to: image)
                     }
                 case .sP1P2:
-                    image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, adaptiveStats: stats, path: .raw, quality: quality)
+                    image = try spatial(image)
                     if ToneOps.needsPostOps(settings) {
-                        image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image)
+                        image = AdobeBaseRenderer.applyCube(try postOps(), to: image)
                     }
                 case .p1P2S, .postQ:
                     if ToneOps.needsPostOps(settings) {
-                        image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image)
+                        image = AdobeBaseRenderer.applyCube(try postOps(), to: image)
                     }
                     if order == .p1P2S {
-                        image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, adaptiveStats: stats, path: .raw, quality: quality)
+                        image = try spatial(image)
                     }
                     // `.postQ`: [S] deferred to after cube Q/Calibration below.
                 case .p1SP2:
                     if ToneOps.needsContrastOrDehaze(settings) {
                         image = AdobeBaseRenderer.applyCube(
-                            AdobeBaseRenderer.postOpsCubeP1(exposureNonRaw: 0, contrast: settings.contrast, dehaze: settings.dehaze),
+                            try AdobeBaseRenderer.postOpsCubeP1(
+                                exposureNonRaw: 0, contrast: settings.contrast, dehaze: settings.dehaze, options: options
+                            ),
                             to: image
                         )
                     }
-                    image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, adaptiveStats: stats, path: .raw, quality: quality)
+                    image = try spatial(image)
                     if ToneOps.needsPostOpsAfterContrast(settings) {
-                        image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCubeP2(settings: settings), to: image)
+                        image = AdobeBaseRenderer.applyCube(
+                            try AdobeBaseRenderer.postOpsCubeP2(settings: settings, options: options), to: image
+                        )
                     }
                 }
             } else if ToneOps.needsPostOps(settings) {
-                image = AdobeBaseRenderer.applyCube(
-                    AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image
-                )
+                image = AdobeBaseRenderer.applyCube(try postOps(), to: image)
             }
             if CalibrationOrder.calibrationFirst {
                 if ColorOps.needsCalibration(settings.calibration) {
                     image = AdobeBaseRenderer.applyCalibration(ColorOps.calibrationMatrix(settings.calibration), to: image)
                 }
                 if ColorOps.needsColorOps(settings) {
-                    image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postColorCube(settings: settings), to: image)
+                    image = AdobeBaseRenderer.applyCube(
+                        try AdobeBaseRenderer.postColorCube(settings: settings, options: options), to: image
+                    )
                 }
             } else {
                 if ColorOps.needsColorOps(settings) {
-                    image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postColorCube(settings: settings), to: image)
+                    image = AdobeBaseRenderer.applyCube(
+                        try AdobeBaseRenderer.postColorCube(settings: settings, options: options), to: image
+                    )
                 }
                 if ColorOps.needsCalibration(settings.calibration) {
                     image = AdobeBaseRenderer.applyCalibration(ColorOps.calibrationMatrix(settings.calibration), to: image)
                 }
             }
             if needsSpatial && order == .postQ {
-                image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, adaptiveStats: stats, path: .raw, quality: quality)
+                image = try spatial(image)
             }
             return image
+        }
+
+        /// The adaptive statistics a spatial pass at `settings` uses: those
+        /// of `settings` itself, or, inside a drag session, those frozen at
+        /// the session's starting settings (`PreviewDragSession`).
+        private func spatialStatistics(
+            for settings: EditSettings, quality: SpatialToneQuality, options: PreviewRenderOptions
+        ) throws -> SpatialAdaptiveStats.Stats {
+            guard let session = options.dragSession, PreviewDragSession.freezesStatistics,
+                  !session.movesOnlySpatialInputs(settings)
+            else {
+                return try adaptiveStats(for: settings, quality: quality, options: options)
+            }
+            return try session.statistics(source: cameraImage, quality: quality) {
+                try adaptiveStats(for: session.startSettings, quality: quality, options: options.forStatistics)
+            }
         }
 
         /// round2 set A refit (`.photobench/phase2/spatial-adaptive/model.md`
@@ -313,7 +444,8 @@ public enum AdobeBaseRenderer {
         /// the number to watch for whether recomputing on most non-H/S/
         /// Texture/Clarity slider moves is actually cheap enough.
         public func highlightRatioBase(for settings: EditSettings) -> Double {
-            adaptiveStats(for: settings).highlightRatioBase
+            // `.standard` carries no cancellation token, so nothing can throw.
+            try! adaptiveStats(for: settings, options: .standard).highlightRatioBase
         }
 
         /// `model.md` §10: `SpatialAdaptiveLaw.sShift`'s input -- see
@@ -322,7 +454,7 @@ public enum AdobeBaseRenderer {
         /// read off the same `SpatialAdaptiveStats.Stats` value), so calling
         /// both for the same `settings` costs one preHS render, not two.
         public func meanLn(for settings: EditSettings) -> Double {
-            adaptiveStats(for: settings).meanLn
+            try! adaptiveStats(for: settings, options: .standard).meanLn
         }
 
         /// A preview working copy of this handle (`PreviewWorkingCopyInfo`):
@@ -350,7 +482,12 @@ public enum AdobeBaseRenderer {
             )
         }
 
-        private func adaptiveStats(for settings: EditSettings, quality: SpatialToneQuality = .final) -> SpatialAdaptiveStats.Stats {
+        /// `options`: only its cancellation matters -- the "preHS" render
+        /// always uses exact cubes (`PreviewRenderOptions.forStatistics`), so
+        /// the cached statistic is the same whichever caller computed it.
+        private func adaptiveStats(
+            for settings: EditSettings, quality: SpatialToneQuality = .final, options: PreviewRenderOptions
+        ) throws -> SpatialAdaptiveStats.Stats {
             var zeroed = settings
             zeroed.highlights = 0
             zeroed.shadows = 0
@@ -370,11 +507,13 @@ public enum AdobeBaseRenderer {
 
             let diagnosticsEnabled = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] != nil
             let startTime = diagnosticsEnabled ? DispatchTime.now() : nil
-            let preHSImage = imagePreMatrix(settings: zeroed, quality: quality)
-            let longEdge = AdobeBaseRenderer.highlightRatioBaseLongEdge(for: quality)
-            let stats = SpatialAdaptiveStats.computeStats(
-                image: preHSImage, longEdge: longEdge, lumaWeights: SpatialToneOps.ppLuma
-            )
+            let stats = try PreviewDiagnostics.measure("stats") { () throws -> SpatialAdaptiveStats.Stats in
+                let preHSImage = try imagePreMatrix(settings: zeroed, quality: quality, options: options.forStatistics)
+                let longEdge = AdobeBaseRenderer.highlightRatioBaseLongEdge(for: quality)
+                return SpatialAdaptiveStats.computeStats(
+                    image: preHSImage, longEdge: longEdge, lumaWeights: SpatialToneOps.ppLuma
+                )
+            }
             if let startTime {
                 let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds &- startTime.uptimeNanoseconds) / 1_000_000
                 // kS/sShift are not printed here (only ratio/meanLn, the raw
@@ -444,16 +583,18 @@ public enum AdobeBaseRenderer {
     /// cost roughly to cube H's share of that.
     private struct HueSatCacheKey: Hashable { var dcpIdentity: String; var whiteXMicros: Int; var whiteYMicros: Int }
     private struct LookToneCacheKey: Hashable { var dcpIdentity: String; var lookIdentity: String; var variant: ToneCurveVariant }
-    /// Wraps `Data?` so a cache hit (key present) and a "computed, and the
-    /// answer is no cube needed" result (`data == nil`) are both a single
-    /// level of `Optional` at the call site -- a `[K: Data?]` dictionary's
-    /// own `V?` lookup result would otherwise be `Data??`, which is correct
-    /// but easy to misread.
-    private struct HueSatCube { var data: Data? }
+    /// Wraps `BakedCube?` so a cache hit (key present) and a "computed, and
+    /// the answer is no cube needed" result (`cube == nil`) are both a single
+    /// level of `Optional` at the call site -- a `[K: BakedCube?]`
+    /// dictionary's own `V?` lookup result would otherwise be `BakedCube??`,
+    /// which is correct but easy to misread.
+    private struct HueSatCube { var cube: BakedCube? }
     private struct LookToneCubes { var look: Data; var tone: Data }
 
     private static let cacheLock = NSLock()
-    nonisolated(unsafe) private static var hueSatCache: [HueSatCacheKey: HueSatCube] = [:]
+    /// Per white point, so bounded like the settings-dependent cubes (a
+    /// white balance drag bakes one per rendered value).
+    private static let hueSatCache = CubeCache<HueSatCacheKey, HueSatCube>()
     nonisolated(unsafe) private static var lookToneCache: [LookToneCacheKey: LookToneCubes] = [:]
 
     /// Phase2 C1 Stage P cube key: every `ToneOps.applyPostOps` input plus
@@ -462,6 +603,9 @@ public enum AdobeBaseRenderer {
     /// `docs/PHASE2_DEVELOP_PIPELINE.md` C1 item 4's "P に関わる設定値の
     /// ハッシュ". A RAW photo and a non-RAW photo with the same P-relevant
     /// settings and `exposureNonRaw == 0` legitimately share one cube.
+    /// `dimension` (every settings-dependent cube key has it): the grid the
+    /// cube was baked on, `cubeDimension` or, for a drag frame's tone cube,
+    /// `dragCubeDimension`.
     private struct PostOpsCacheKey: Hashable {
         var exposureNonRaw: Double
         var contrast: Double
@@ -476,10 +620,10 @@ public enum AdobeBaseRenderer {
         var parametricMidtoneSplit: Double
         var parametricHighlightSplit: Double
         var toneCurves: [ToneCurve]
+        var dimension: Int
     }
 
-    private static let postOpsCacheLock = NSLock()
-    nonisolated(unsafe) private static var postOpsCache: [PostOpsCacheKey: Data] = [:]
+    private static let postOpsCache = CubeCache<PostOpsCacheKey, Data>()
 
     /// Phase2 C3/C4: cube P1's key when the spatial pass
     /// (`SpatialToneOps`/`SpatialToneProcessor`: Highlights/Shadows/Texture/
@@ -491,10 +635,10 @@ public enum AdobeBaseRenderer {
         var exposureNonRaw: Double
         var contrast: Double
         var dehaze: Double
+        var dimension: Int
     }
 
-    private static let postOpsP1CacheLock = NSLock()
-    nonisolated(unsafe) private static var postOpsP1Cache: [PostOpsP1CacheKey: Data] = [:]
+    private static let postOpsP1Cache = CubeCache<PostOpsP1CacheKey, Data>()
 
     /// Cube P2's key: `PostOpsCacheKey` minus `exposureNonRaw`/`contrast`/
     /// `dehaze` (cube P1's own key) -- Whites/Blacks/Parametric/Point curve,
@@ -510,10 +654,10 @@ public enum AdobeBaseRenderer {
         var parametricMidtoneSplit: Double
         var parametricHighlightSplit: Double
         var toneCurves: [ToneCurve]
+        var dimension: Int
     }
 
-    private static let postOpsP2CacheLock = NSLock()
-    nonisolated(unsafe) private static var postOpsP2Cache: [PostOpsP2CacheKey: Data] = [:]
+    private static let postOpsP2Cache = CubeCache<PostOpsP2CacheKey, Data>()
 
     /// Phase2 C2 Stage Q cube key: every `ColorOps.applyColorOps` input.
     /// Camera Calibration is deliberately **not** part of this key (or this
@@ -525,10 +669,10 @@ public enum AdobeBaseRenderer {
         var saturation: Double
         var hsl: [HSLBand: HSLAdjustment]
         var colorGrading: ColorGradingSettings
+        var dimension: Int
     }
 
-    private static let colorOpsCacheLock = NSLock()
-    nonisolated(unsafe) private static var colorOpsCache: [ColorOpsCacheKey: Data] = [:]
+    private static let colorOpsCache = CubeCache<ColorOpsCacheKey, Data>()
 
     /// Builds a `Handle` for one decoded photo: applies Stage M to
     /// `cameraImage` immediately, and looks up (or bakes and caches) the
@@ -540,7 +684,8 @@ public enum AdobeBaseRenderer {
         variant: ToneCurveVariant = .production
     ) -> Handle {
         let stageMImage = applyStageM(to: cameraImage, matrix: assets.combinedMatrix)
-        let cubes = cachedCubes(for: assets, key: cacheKey, variant: variant)
+        // No cancellation token: the lookup always completes.
+        let cubes = cachedCubes(for: assets, key: cacheKey, variant: variant)!
         return Handle(
             stageMImage: stageMImage, cameraImage: cameraImage, assets: assets, cubes: cubes,
             variant: variant, cacheKey: cacheKey, previewWorkingCopyLongEdge: nil
@@ -551,22 +696,14 @@ public enum AdobeBaseRenderer {
     /// never needs to call this (cube data is small and bounded by the
     /// number of distinct camera profiles opened in the process).
     static func clearCache() {
-        cacheLock.lock()
         hueSatCache.removeAll()
+        cacheLock.lock()
         lookToneCache.removeAll()
         cacheLock.unlock()
-        postOpsCacheLock.lock()
         postOpsCache.removeAll()
-        postOpsCacheLock.unlock()
-        postOpsP1CacheLock.lock()
         postOpsP1Cache.removeAll()
-        postOpsP1CacheLock.unlock()
-        postOpsP2CacheLock.lock()
         postOpsP2Cache.removeAll()
-        postOpsP2CacheLock.unlock()
-        colorOpsCacheLock.lock()
         colorOpsCache.removeAll()
-        colorOpsCacheLock.unlock()
     }
 
     /// Bakes (or reuses) cube P: `ToneOps.applyPostOps(settings:)`, optionally
@@ -577,29 +714,41 @@ public enum AdobeBaseRenderer {
     /// both cheaper (one `concurrentPerform` bake, one `CIColorCube` pass)
     /// and more accurate (one quantization round trip instead of two).
     static func postOpsCube(exposureNonRaw: Double, settings: EditSettings) -> Data {
-        let key = PostOpsCacheKey(
-            exposureNonRaw: exposureNonRaw,
-            contrast: settings.contrast, dehaze: settings.dehaze, whites: settings.whites, blacks: settings.blacks,
-            parametricShadows: settings.parametricShadows, parametricDarks: settings.parametricDarks,
-            parametricLights: settings.parametricLights, parametricHighlights: settings.parametricHighlights,
-            parametricShadowSplit: settings.parametricShadowSplit,
-            parametricMidtoneSplit: settings.parametricMidtoneSplit,
-            parametricHighlightSplit: settings.parametricHighlightSplit,
-            toneCurves: settings.toneCurves
-        )
-        postOpsCacheLock.lock()
-        let cached = postOpsCache[key]
-        postOpsCacheLock.unlock()
-        if let cached { return cached }
+        // `.standard`: exact grid, no cancellation token, so this cannot throw.
+        try! postOpsCube(exposureNonRaw: exposureNonRaw, settings: settings, options: .standard).data
+    }
 
-        let data = buildCubeData { value in
-            let afterExposure = exposureNonRaw == 0 ? value : ToneOps.exposureNonRaw(value, ev: exposureNonRaw)
-            return ToneOps.applyPostOps(afterExposure, settings: settings)
-        }
-        postOpsCacheLock.lock()
-        postOpsCache[key] = data
-        postOpsCacheLock.unlock()
-        return data
+    /// `postOpsCube(exposureNonRaw:settings:)` under the preview's
+    /// `options` (see `settingsCube`).
+    static func postOpsCube(
+        exposureNonRaw: Double, settings: EditSettings, options: PreviewRenderOptions
+    ) throws -> BakedCube {
+        let dimension = options.toneCubeDimension
+        let bakeSettings = dimension == cubeDimension ? settings : settings.withoutIdentityToneCurves()
+        return try settingsCube(
+            "P", cache: postOpsCache, dimension: dimension, options: options,
+            key: { dimension in
+                PostOpsCacheKey(
+                    exposureNonRaw: exposureNonRaw,
+                    contrast: settings.contrast, dehaze: settings.dehaze, whites: settings.whites, blacks: settings.blacks,
+                    parametricShadows: settings.parametricShadows, parametricDarks: settings.parametricDarks,
+                    parametricLights: settings.parametricLights, parametricHighlights: settings.parametricHighlights,
+                    parametricShadowSplit: settings.parametricShadowSplit,
+                    parametricMidtoneSplit: settings.parametricMidtoneSplit,
+                    parametricHighlightSplit: settings.parametricHighlightSplit,
+                    toneCurves: settings.toneCurves,
+                    dimension: dimension
+                )
+            },
+            makeTransform: {
+                // Per chunk: its own settings storage and point-curve splines.
+                let prepared = ToneOps.PreparedPostOps(settings: bakeSettings.uniquelyStoredCopy())
+                return { value in
+                    let afterExposure = exposureNonRaw == 0 ? value : ToneOps.exposureNonRaw(value, ev: exposureNonRaw)
+                    return prepared.apply(afterExposure)
+                }
+            }
+        )
     }
 
     /// Phase2 C3/C4: cube P1 (exposureNonRaw -> Contrast -> Dehaze), used
@@ -612,45 +761,55 @@ public enum AdobeBaseRenderer {
     /// (single-cube) path's numeric result -- `ToneOpsTests`/
     /// `AdobeBaseRendererTests` cover this equivalence.
     static func postOpsCubeP1(exposureNonRaw: Double, contrast: Double, dehaze: Double) -> Data {
-        let key = PostOpsP1CacheKey(exposureNonRaw: exposureNonRaw, contrast: contrast, dehaze: dehaze)
-        postOpsP1CacheLock.lock()
-        let cached = postOpsP1Cache[key]
-        postOpsP1CacheLock.unlock()
-        if let cached { return cached }
+        // `.standard`: exact grid, no cancellation token, so this cannot throw.
+        try! postOpsCubeP1(exposureNonRaw: exposureNonRaw, contrast: contrast, dehaze: dehaze, options: .standard).data
+    }
 
-        let data = buildCubeData { value in
-            let afterExposure = exposureNonRaw == 0 ? value : ToneOps.exposureNonRaw(value, ev: exposureNonRaw)
-            return ToneOps.dehaze(ToneOps.contrast(afterExposure, amount: contrast), amount: dehaze)
-        }
-        postOpsP1CacheLock.lock()
-        postOpsP1Cache[key] = data
-        postOpsP1CacheLock.unlock()
-        return data
+    static func postOpsCubeP1(
+        exposureNonRaw: Double, contrast: Double, dehaze: Double, options: PreviewRenderOptions
+    ) throws -> BakedCube {
+        try settingsCube(
+            "P1", cache: postOpsP1Cache, dimension: options.toneCubeDimension, options: options,
+            key: { PostOpsP1CacheKey(exposureNonRaw: exposureNonRaw, contrast: contrast, dehaze: dehaze, dimension: $0) },
+            makeTransform: {
+                { value in
+                    let afterExposure = exposureNonRaw == 0 ? value : ToneOps.exposureNonRaw(value, ev: exposureNonRaw)
+                    return ToneOps.dehaze(ToneOps.contrast(afterExposure, amount: contrast), amount: dehaze)
+                }
+            }
+        )
     }
 
     /// Phase2 C3: cube P2 (Whites -> Blacks -> Parametric -> Point curve),
     /// the other half of the H/S-spatial-active split -- see
     /// `postOpsCubeP1`'s doc comment.
     static func postOpsCubeP2(settings: EditSettings) -> Data {
-        let key = PostOpsP2CacheKey(
-            whites: settings.whites, blacks: settings.blacks,
-            parametricShadows: settings.parametricShadows, parametricDarks: settings.parametricDarks,
-            parametricLights: settings.parametricLights, parametricHighlights: settings.parametricHighlights,
-            parametricShadowSplit: settings.parametricShadowSplit,
-            parametricMidtoneSplit: settings.parametricMidtoneSplit,
-            parametricHighlightSplit: settings.parametricHighlightSplit,
-            toneCurves: settings.toneCurves
-        )
-        postOpsP2CacheLock.lock()
-        let cached = postOpsP2Cache[key]
-        postOpsP2CacheLock.unlock()
-        if let cached { return cached }
+        // `.standard`: exact grid, no cancellation token, so this cannot throw.
+        try! postOpsCubeP2(settings: settings, options: .standard).data
+    }
 
-        let data = buildCubeData { value in ToneOps.applyPostOpsAfterContrast(value, settings: settings) }
-        postOpsP2CacheLock.lock()
-        postOpsP2Cache[key] = data
-        postOpsP2CacheLock.unlock()
-        return data
+    static func postOpsCubeP2(settings: EditSettings, options: PreviewRenderOptions) throws -> BakedCube {
+        let dimension = options.toneCubeDimension
+        let bakeSettings = dimension == cubeDimension ? settings : settings.withoutIdentityToneCurves()
+        return try settingsCube(
+            "P2", cache: postOpsP2Cache, dimension: dimension, options: options,
+            key: { dimension in
+                PostOpsP2CacheKey(
+                    whites: settings.whites, blacks: settings.blacks,
+                    parametricShadows: settings.parametricShadows, parametricDarks: settings.parametricDarks,
+                    parametricLights: settings.parametricLights, parametricHighlights: settings.parametricHighlights,
+                    parametricShadowSplit: settings.parametricShadowSplit,
+                    parametricMidtoneSplit: settings.parametricMidtoneSplit,
+                    parametricHighlightSplit: settings.parametricHighlightSplit,
+                    toneCurves: settings.toneCurves,
+                    dimension: dimension
+                )
+            },
+            makeTransform: {
+                let prepared = ToneOps.PreparedPostOps(settings: bakeSettings.uniquelyStoredCopy())
+                return { value in prepared.applyAfterContrast(value) }
+            }
+        )
     }
 
     /// Bakes (or reuses) cube Q: `ColorOps.applyColorOps` (Vibrance ->
@@ -658,25 +817,64 @@ public enum AdobeBaseRenderer {
     /// purpose -- see `ColorOpsCacheKey`'s and `applyCalibration`'s doc
     /// comments.
     static func postColorCube(settings: EditSettings) -> Data {
-        let key = ColorOpsCacheKey(
-            vibrance: settings.vibrance, saturation: settings.saturation,
-            hsl: settings.hsl, colorGrading: settings.colorGrading
-        )
-        colorOpsCacheLock.lock()
-        let cached = colorOpsCache[key]
-        colorOpsCacheLock.unlock()
-        if let cached { return cached }
-
-        let data = buildCubeData { value in ColorOps.applyColorOps(value, settings: settings) }
-        colorOpsCacheLock.lock()
-        colorOpsCache[key] = data
-        colorOpsCacheLock.unlock()
-        return data
+        // `.standard`: exact grid, no cancellation token, so this cannot throw.
+        try! postColorCube(settings: settings, options: .standard).data
     }
 
+    /// Always the exact grid, drag frames included: with the per-chunk
+    /// settings copy the bake takes 15-20 ms on the Mac mini.
+    static func postColorCube(settings: EditSettings, options: PreviewRenderOptions) throws -> BakedCube {
+        try settingsCube(
+            "Q", cache: colorOpsCache, dimension: cubeDimension, options: options,
+            key: { dimension in
+                ColorOpsCacheKey(
+                    vibrance: settings.vibrance, saturation: settings.saturation,
+                    hsl: settings.hsl, colorGrading: settings.colorGrading, dimension: dimension
+                )
+            },
+            makeTransform: {
+                let settings = settings.uniquelyStoredCopy()
+                return { value in ColorOps.applyColorOps(value, settings: settings) }
+            }
+        )
+    }
+
+    /// One settings-dependent cube (P, P1, P2 or Q). At the exact grid
+    /// (`dimension == cubeDimension`, every caller but a drag frame's tone
+    /// cube) this is the long-standing look-up-or-bake. A smaller `dimension`
+    /// still takes the exact cube whenever it is already cached, and
+    /// otherwise looks up or bakes that grid. Throws `CancellationError`
+    /// (caching nothing) when `options.cancellation` stops the bake.
+    private static func settingsCube<Key: Hashable>(
+        _ label: String,
+        cache: CubeCache<Key, Data>,
+        dimension: Int,
+        options: PreviewRenderOptions,
+        key: (Int) -> Key,
+        makeTransform: @Sendable () -> (SIMD3<Double>) -> SIMD3<Double>
+    ) throws -> BakedCube {
+        if dimension != cubeDimension, let exact = cache.value(for: key(cubeDimension)) {
+            return BakedCube(data: exact, dimension: cubeDimension)
+        }
+        let cacheKey = key(dimension)
+        if let cached = cache.value(for: cacheKey) {
+            return BakedCube(data: cached, dimension: dimension)
+        }
+        try options.checkCancellation()
+        guard let data = PreviewDiagnostics.measure("cube.\(label)(\(dimension))", {
+            bakeCube(dimension: dimension, cancellation: options.cancellation, makeTransform: makeTransform)
+        }) else {
+            throw CancellationError()
+        }
+        cache.insert(data, for: cacheKey)
+        return BakedCube(data: data, dimension: dimension)
+    }
+
+    /// `nil` only when `cancellation` stopped a bake.
     private static func cachedCubes(
-        for assets: AdobeBaseAssets, key: CacheKey, variant: ToneCurveVariant
-    ) -> CubeSet {
+        for assets: AdobeBaseAssets, key: CacheKey, variant: ToneCurveVariant,
+        cancellation: PreviewCancellation? = nil
+    ) -> CubeSet? {
         let hueSatKey = HueSatCacheKey(
             dcpIdentity: key.dcpIdentity, whiteXMicros: key.whiteXMicros, whiteYMicros: key.whiteYMicros
         )
@@ -684,33 +882,52 @@ public enum AdobeBaseRenderer {
             dcpIdentity: key.dcpIdentity, lookIdentity: key.lookIdentity, variant: variant
         )
 
+        let cachedHueSat = hueSatCache.value(for: hueSatKey)
         cacheLock.lock()
-        let cachedHueSat = hueSatCache[hueSatKey]
         let cachedLookTone = lookToneCache[lookToneKey]
         cacheLock.unlock()
 
-        let hueSat = cachedHueSat ?? HueSatCube(data: buildHueSatCube(assets: assets))
-        let lookTone = cachedLookTone ?? buildLookToneCubes(assets: assets, variant: variant)
-
-        if cachedHueSat == nil || cachedLookTone == nil {
+        let hueSat: HueSatCube
+        if let cachedHueSat {
+            hueSat = cachedHueSat
+        } else {
+            guard let baked = PreviewDiagnostics.measure("cube.H(\(cubeDimension))", {
+                buildHueSatCube(assets: assets, cancellation: cancellation)
+            }) else {
+                return nil
+            }
+            hueSat = baked
+            hueSatCache.insert(baked, for: hueSatKey)
+        }
+        let lookTone = cachedLookTone ?? PreviewDiagnostics.measure("cube.LT(\(cubeDimension))") {
+            buildLookToneCubes(assets: assets, variant: variant)
+        }
+        if cachedLookTone == nil {
             cacheLock.lock()
-            if cachedHueSat == nil { hueSatCache[hueSatKey] = hueSat }
-            if cachedLookTone == nil { lookToneCache[lookToneKey] = lookTone }
+            lookToneCache[lookToneKey] = lookTone
             cacheLock.unlock()
         }
 
-        return CubeSet(hueSat: hueSat.data, look: lookTone.look, tone: lookTone.tone)
+        return CubeSet(hueSat: hueSat.cube, look: lookTone.look, tone: lookTone.tone)
     }
 
     // MARK: - CPU cube-table construction
 
     /// Bakes cube H from `assets.huesatTable` via the same public
     /// `AdobeProfile` function (`HueSatMap.apply`) the CPU reference
-    /// (`AdobeColorMath.evaluate`) calls at Stage H. `nil` when the DCP has
-    /// no `ProfileHueSatMap` (Stage H becomes a no-op).
-    private static func buildHueSatCube(assets: AdobeBaseAssets) -> Data? {
-        guard let table = assets.huesatTable else { return nil }
-        return buildCubeData { HueSatMap.apply($0, table: table) }
+    /// (`AdobeColorMath.evaluate`) calls at Stage H. `cube == nil` when the
+    /// DCP has no `ProfileHueSatMap` (Stage H becomes a no-op); `nil` only
+    /// when `cancellation` stopped the bake.
+    private static func buildHueSatCube(
+        assets: AdobeBaseAssets, cancellation: PreviewCancellation? = nil
+    ) -> HueSatCube? {
+        guard let table = assets.huesatTable else { return HueSatCube(cube: nil) }
+        guard let data = bakeCube(dimension: cubeDimension, cancellation: cancellation, makeTransform: {
+            { HueSatMap.apply($0, table: table) }
+        }) else {
+            return nil
+        }
+        return HueSatCube(cube: BakedCube(data: data, dimension: cubeDimension))
     }
 
     /// Bakes cubes L and TC from `assets`' look/tone tables, via the same
@@ -738,7 +955,7 @@ public enum AdobeBaseRenderer {
     static func buildCubes(assets: AdobeBaseAssets, variant: ToneCurveVariant) -> CubeSet {
         let lookTone = buildLookToneCubes(assets: assets, variant: variant)
         return CubeSet(
-            hueSat: buildHueSatCube(assets: assets), look: lookTone.look, tone: lookTone.tone
+            hueSat: buildHueSatCube(assets: assets)?.cube, look: lookTone.look, tone: lookTone.tone
         )
     }
 
@@ -756,46 +973,81 @@ public enum AdobeBaseRenderer {
         variant.apply(value, spline: spline)
     }
 
-    /// Bakes one `cubeDimension`^3 `CIColorCube` `inputCubeData` blob: for
-    /// each grid point, decodes the gamma-encoded grid coordinate back to
-    /// linear, runs `transform`, clips the result to [0,1] (see this type's
-    /// doc comment for why), and re-encodes for storage. Red varies fastest,
-    /// then green, then blue, matching `CIColorCube`'s documented
-    /// `inputCubeData` ordering.
+    /// Bakes one `dimension`^3 `CIColorCube` `inputCubeData` blob: for each
+    /// grid point, decodes the gamma-encoded grid coordinate back to linear,
+    /// runs `transform`, clips the result to [0,1] (see this type's doc
+    /// comment for why), and re-encodes for storage. Red varies fastest, then
+    /// green, then blue, matching `CIColorCube`'s documented `inputCubeData`
+    /// ordering.
     static func buildCubeData(
         dimension: Int = AdobeBaseRenderer.cubeDimension,
         transform: @Sendable (SIMD3<Double>) -> SIMD3<Double>
     ) -> Data {
-        let n = dimension
+        withoutActuallyEscaping(transform) { transform in
+            // No cancellation token: the bake always completes.
+            bakeCube(dimension: dimension, cancellation: nil, makeTransform: { transform })!
+        }
+    }
+
+    /// `buildCubeData`'s implementation. The grid's (b, g) rows are split into
+    /// chunks that run concurrently; each chunk calls `makeTransform` once and
+    /// evaluates only the closure it got. A transform over `EditSettings`
+    /// should capture a `uniquelyStoredCopy()` made inside `makeTransform`:
+    /// the chunks then never retain and release the same collection storage
+    /// (on the Mac mini that contention was about 70% of a cube Q bake).
+    /// Every grid point is computed exactly as before (same linear sample,
+    /// same transform, same encode), so the data is byte-identical to the
+    /// single-closure bake. `nil` (nothing returned) when `cancellation` is
+    /// cancelled before every chunk ran.
+    static func bakeCube(
+        dimension n: Int,
+        cancellation: PreviewCancellation?,
+        makeTransform: @Sendable () -> (SIMD3<Double>) -> SIMD3<Double>
+    ) -> Data? {
         let denominator = Double(n - 1)
+        let linear = (0..<n).map { pow(Double($0) / denominator, cubeGammaPower) }
+        let rowCount = n * n
+        let rowsPerChunk = max(1, n / 8)
+        let chunkCount = (rowCount + rowsPerChunk - 1) / rowsPerChunk
+        let skippedChunks = PreviewCancellation()
         var floats = [Float](repeating: 0, count: n * n * n * 4)
         floats.withUnsafeMutableBufferPointer { buffer in
-            // Neither `UnsafeMutableBufferPointer` nor the raw pointer it
-            // wraps is `Sendable`; `UnsafeSendableBox` documents (rather than
-            // silently papers over) that this is safe here specifically
-            // because each outer iteration (`bIndex`) writes only its own
-            // disjoint slice (`rowBase..<rowBase+n*4` for every `gIndex`), so
-            // concurrent writes through the shared pointer never race.
-            guard let base = buffer.baseAddress else { return }
-            let box = UnsafeSendableBox(pointer: base)
-            DispatchQueue.concurrentPerform(iterations: n) { bIndex in
-                let base = box.pointer
-                let bLinear = pow(Double(bIndex) / denominator, cubeGammaPower)
-                for gIndex in 0..<n {
-                    let gLinear = pow(Double(gIndex) / denominator, cubeGammaPower)
-                    let rowBase = (bIndex * n + gIndex) * n
-                    for rIndex in 0..<n {
-                        let rLinear = pow(Double(rIndex) / denominator, cubeGammaPower)
-                        let output = transform(SIMD3(rLinear, gLinear, bLinear))
-                        let entryBase = (rowBase + rIndex) * 4
-                        base[entryBase] = Float(encodedComponent(output.x))
-                        base[entryBase + 1] = Float(encodedComponent(output.y))
-                        base[entryBase + 2] = Float(encodedComponent(output.z))
-                        base[entryBase + 3] = 1
+            linear.withUnsafeBufferPointer { linearBuffer in
+                // Neither `UnsafeMutableBufferPointer` nor the raw pointer it
+                // wraps is `Sendable`; `UnsafeSendableBox` documents (rather
+                // than silently papers over) that this is safe here
+                // specifically because each chunk writes only its own rows'
+                // disjoint slice (`row*n*4..<(row+1)*n*4`) and only reads the
+                // shared linear table, so concurrent access never races.
+                guard let base = buffer.baseAddress, let linearBase = linearBuffer.baseAddress else { return }
+                let box = UnsafeSendableBox(pointer: base)
+                let linearBox = UnsafeSendableBox(pointer: UnsafeMutablePointer(mutating: linearBase))
+                DispatchQueue.concurrentPerform(iterations: chunkCount) { chunk in
+                    if cancellation?.isCancelled == true {
+                        skippedChunks.cancel()
+                        return
+                    }
+                    let transform = makeTransform()
+                    let base = box.pointer
+                    let linear = linearBox.pointer
+                    let firstRow = chunk * rowsPerChunk
+                    for row in firstRow..<min(firstRow + rowsPerChunk, rowCount) {
+                        let bLinear = linear[row / n]
+                        let gLinear = linear[row % n]
+                        let rowBase = row * n
+                        for rIndex in 0..<n {
+                            let output = transform(SIMD3(linear[rIndex], gLinear, bLinear))
+                            let entryBase = (rowBase + rIndex) * 4
+                            base[entryBase] = Float(encodedComponent(output.x))
+                            base[entryBase + 1] = Float(encodedComponent(output.y))
+                            base[entryBase + 2] = Float(encodedComponent(output.z))
+                            base[entryBase + 3] = 1
+                        }
                     }
                 }
             }
         }
+        guard !skippedChunks.isCancelled else { return nil }
         return floats.withUnsafeBufferPointer { Data(buffer: $0) }
     }
 
@@ -850,6 +1102,10 @@ public enum AdobeBaseRenderer {
     /// encode/decode across stages; the redundant pair between two adjacent
     /// cubes is a no-op past float rounding, and cube generation/evaluation
     /// is cheap enough that the simpler, literal structure wins.
+    static func applyCube(_ cube: BakedCube, to image: CIImage) -> CIImage {
+        applyCube(cube.data, to: image, dimension: cube.dimension)
+    }
+
     static func applyCube(
         _ data: Data, to image: CIImage, dimension: Int = AdobeBaseRenderer.cubeDimension
     ) -> CIImage {
@@ -915,6 +1171,37 @@ public enum AdobeBaseRenderer {
     /// `RenderEngine.applyNonRAWStageP`/`Q` (non-RAW) each resolve their own
     /// cached value and pass it in; this is the one and only place that
     /// consumes it, matching `SpatialGainScale.current`'s own doc comment.
+    /// `applySpatialToneOps`, reusing `cache`'s previous result when this
+    /// call would read exactly the same input and parameters
+    /// (`SpatialPassCache.Key`). `source` is the pixels `image` was derived
+    /// from (the working copy's camera image or input image) and
+    /// `inputParameters` every value that turned them into `image`. `nil`
+    /// cache (export, experiment orders): always recomputes.
+    static func spatialPass(
+        settings: EditSettings, to image: CIImage, source: CIImage, inputParameters: [Double],
+        adaptiveStats: SpatialAdaptiveStats.Stats?, path: SpatialAdaptivePath,
+        quality: SpatialToneQuality, cache: SpatialPassCache?
+    ) -> CIImage {
+        guard let cache else {
+            return applySpatialToneOps(settings: settings, to: image, adaptiveStats: adaptiveStats, path: path, quality: quality)
+        }
+        let key = SpatialPassCache.Key(
+            source: ObjectIdentifier(source), extent: image.extent, path: path, inputParameters: inputParameters,
+            highlights: settings.highlights, shadows: settings.shadows,
+            texture: settings.texture, clarity: settings.clarity,
+            quality: quality, stats: adaptiveStats
+        )
+        if let reused = cache.output(for: key) {
+            if PreviewDiagnostics.isEnabled {
+                PreviewDiagnostics.record("spatial.reused", milliseconds: 0)
+            }
+            return reused
+        }
+        let output = applySpatialToneOps(settings: settings, to: image, adaptiveStats: adaptiveStats, path: path, quality: quality)
+        cache.store(output, for: key, source: source)
+        return output
+    }
+
     static func applySpatialToneOps(
         settings: EditSettings, to image: CIImage,
         adaptiveStats: SpatialAdaptiveStats.Stats? = nil, path: SpatialAdaptivePath = .raw,
@@ -951,11 +1238,13 @@ public enum AdobeBaseRenderer {
             message += " kH=\(gainScale.highlightsPos) kS=\(gainScale.shadowsPos) shift.highlights=\(shift.highlights) shift.shadows=\(shift.shadows)\n"
             FileHandle.standardError.write(Data(message.utf8))
         }
-        guard let output = try? SpatialToneProcessor.apply(
-            to: image, highlights: settings.highlights, shadows: settings.shadows, scalePx: scalePx,
-            texture: settings.texture, clarity: settings.clarity,
-            gainScale: gainScale, shift: shift, quality: quality
-        ) else {
+        guard let output = PreviewDiagnostics.measure("spatial", {
+            try? SpatialToneProcessor.apply(
+                to: image, highlights: settings.highlights, shadows: settings.shadows, scalePx: scalePx,
+                texture: settings.texture, clarity: settings.clarity,
+                gainScale: gainScale, shift: shift, quality: quality
+            )
+        }) else {
             preconditionFailure("Photo BenchのHighlights/Shadows空間処理カーネルを画像へ適用できませんでした。")
         }
         return output

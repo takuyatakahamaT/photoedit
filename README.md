@@ -44,6 +44,7 @@ Finderから`open-photo.command`をダブルクリックします。ターミナ
 - XMP の属性形式と要素形式を解析し、未対応項目（シャープ／NR、粒子、周辺光量、増分 WB、Refine Saturation ≠ 100）は互換性一覧で表示
 - 写真ごとの編集・適用プリセットをバージョン付き JSON に自動保存し、再起動後に復元。破損・未知形式の記録は上書きせず読み込みエラーを表示
 - ドラッグを 1 操作として取り消し・やり直し。写真ごとのセッション履歴を最大 100 操作保持
+- スライダーのドラッグ中は近似で描いて速く追従し（Mac mini で 1 更新 0.1 秒以内）、離すと正確な画に静かに差し替える。`PHOTO_BENCH_PREVIEW_DIAG=1` で段ごとの時間を stderr に出し、`photobench-preview-bench` でドラッグを再現して計測できる
 - 4 XMP を初期登録し、追加読込・重複抑止・登録削除に対応。適用済みの写真はプリセット登録を削除しても維持
 - RAW とカラー編集途中は extended-linear sRGB を保持し、preview / 指定サイズ時は edge-clamped Lanczos で縮小した後に terminal sRGB transform を適用
 - 原寸 sRGB JPEG を書き出し。原本・既存ファイルは上書きしない

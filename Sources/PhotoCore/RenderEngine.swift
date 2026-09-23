@@ -466,6 +466,9 @@ public final class RenderEngine: @unchecked Sendable {
     private let exportContext: CIContext
     /// Preview-side only (`makePreviewWorkingCopy`): never shared with export.
     private let workingCopyRaster: PreviewWorkingRaster
+    /// Preview-side only (`preparePreviewFromWorkingCopy`): the last spatial
+    /// pass over the working copy. Export never reads or writes it.
+    let previewSpatialPassCache = SpatialPassCache()
     private let outputColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
 
     public init() {
@@ -567,9 +570,11 @@ public final class RenderEngine: @unchecked Sendable {
         settings: EditSettings,
         resizeMaxDimension: CGFloat?,
         frameMaxDimension: CGFloat,
-        quality: SpatialToneQuality
+        quality: SpatialToneQuality,
+        options: PreviewRenderOptions = .standard
     ) throws -> PreparedPreviewFrame {
         os_signpost(.begin, log: Self.performanceLog, name: "PreviewGraph")
+        PreviewDiagnostics.beginFrame()
         let graphStarted = ContinuousClock.now
         let output = try makeOutputGraph(
             decoded: decoded,
@@ -577,12 +582,14 @@ public final class RenderEngine: @unchecked Sendable {
             maxDimension: resizeMaxDimension,
             downsamplingFilter: .lanczos,
             outputTransformPlacement: .afterDownsampling,
-            quality: quality
+            quality: quality,
+            options: options
         )
         let image = output.image
         let extent = output.extent
         let graphMilliseconds = Self.milliseconds(graphStarted.duration(to: .now))
         os_signpost(.end, log: Self.performanceLog, name: "PreviewGraph")
+        PreviewDiagnostics.endFrame("prepare", milliseconds: graphMilliseconds)
 
         guard extent.width.isFinite, extent.height.isFinite,
               extent.width > 0, extent.height > 0
@@ -642,6 +649,8 @@ public final class RenderEngine: @unchecked Sendable {
         from decoded: DecodedPhoto,
         maxDimension: CGFloat = 2_560
     ) throws -> DecodedPhoto {
+        // A new photo: drop the previous copy's spatial pass (~70 MB).
+        previewSpatialPassCache.removeAll()
         guard maxDimension.isFinite, maxDimension >= 1,
               maxDimension == maxDimension.rounded(.down)
         else {
@@ -729,11 +738,21 @@ public final class RenderEngine: @unchecked Sendable {
     /// the copy already is that resize's pixel grid. Only working copies of
     /// full-resolution decodes are accepted, and a reduced copy cannot serve
     /// a preview larger than it was reduced to.
+    ///
+    /// The spatial pass's result is kept (`SpatialPassCache`, this engine's
+    /// working copy only) and reused whenever a later frame would compute it
+    /// from exactly the same input, so a frame is identical with or without
+    /// the reuse. `drag`: the frame is a slider-drag approximation instead
+    /// (`PreviewDragSession`); render the same settings again without it to
+    /// get the exact frame. `cancellation`: once cancelled, the render stops
+    /// at its next step or cube-bake chunk and throws `CancellationError`.
     public func preparePreviewFromWorkingCopy(
         workingCopy: DecodedPhoto,
         settings: EditSettings,
         maxDimension: CGFloat = 2_560,
-        quality: SpatialToneQuality = .final
+        quality: SpatialToneQuality = .final,
+        drag: PreviewDragSession? = nil,
+        cancellation: PreviewCancellation? = nil
     ) throws -> PreparedPreviewFrame {
         guard let provenance = workingCopy.info.previewWorkingCopy,
               workingCopy.info.intent == .fullResolution,
@@ -755,12 +774,19 @@ public final class RenderEngine: @unchecked Sendable {
         }
         let resizeMaxDimension: CGFloat? =
             provenance.isReduced && maxDimension == workingCopyMaxDimension ? nil : maxDimension
+        let options = PreviewRenderOptions(
+            toneCubeDimension: drag == nil ? AdobeBaseRenderer.cubeDimension : AdobeBaseRenderer.dragCubeDimension,
+            dragSession: drag,
+            spatialCache: previewSpatialPassCache,
+            cancellation: cancellation
+        )
         return try preparePreviewFrame(
             decoded: workingCopy,
             settings: settings,
             resizeMaxDimension: resizeMaxDimension,
             frameMaxDimension: maxDimension,
-            quality: quality
+            quality: quality,
+            options: options
         )
     }
 
@@ -1219,6 +1245,25 @@ public final class RenderEngine: @unchecked Sendable {
         quality: SpatialToneQuality = .final,
         previewWorkingCopyLongEdge: Int? = nil
     ) -> CIImage {
+        // `.standard`: no cancellation token, so this cannot throw.
+        try! apply(
+            settings: settings, to: source, sourceURL: sourceURL, quality: quality,
+            previewWorkingCopyLongEdge: previewWorkingCopyLongEdge, options: .standard
+        )
+    }
+
+    /// `apply(settings:to:...)` under the preview's `options`
+    /// (`PreviewRenderOptions`; the statistics here are per photo, not per
+    /// setting, so a drag session has nothing to freeze).
+    func apply(
+        settings: EditSettings,
+        to source: CIImage,
+        sourceURL: URL?,
+        quality: SpatialToneQuality,
+        previewWorkingCopyLongEdge: Int?,
+        options: PreviewRenderOptions
+    ) throws -> CIImage {
+        try options.checkCancellation()
         var image = RelativeColorAdjustment.apply(
             to: source,
             relativeTemperature: settings.relativeTemperature,
@@ -1229,8 +1274,10 @@ public final class RenderEngine: @unchecked Sendable {
                 source: source, sourceURL: sourceURL, quality: quality,
                 previewWorkingCopyLongEdge: previewWorkingCopyLongEdge
             ) : nil
-        image = applyNonRAWStageP(settings: settings, to: image, adaptiveStats: stats, quality: quality)
-        image = applyNonRAWStageQ(settings: settings, to: image, adaptiveStats: stats, quality: quality)
+        image = try applyNonRAWStageP(
+            settings: settings, to: image, source: source, adaptiveStats: stats, quality: quality, options: options
+        )
+        image = try applyNonRAWStageQ(settings: settings, to: image, adaptiveStats: stats, quality: quality, options: options)
         return image
     }
 
@@ -1285,9 +1332,11 @@ public final class RenderEngine: @unchecked Sendable {
         let startTime = diagnosticsEnabled ? DispatchTime.now() : nil
 
         let longEdge = AdobeBaseRenderer.highlightRatioBaseLongEdge(for: quality)
-        let stats = SpatialAdaptiveStats.computeStats(
-            image: source, longEdge: longEdge, lumaWeights: Self.nonRAWLumaWeights
-        )
+        let stats = PreviewDiagnostics.measure("stats") {
+            SpatialAdaptiveStats.computeStats(
+                image: source, longEdge: longEdge, lumaWeights: Self.nonRAWLumaWeights
+            )
+        }
         if let startTime {
             let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds &- startTime.uptimeNanoseconds) / 1_000_000
             // kH/kS/sShift themselves omitted here, same reasoning as
@@ -1325,16 +1374,32 @@ public final class RenderEngine: @unchecked Sendable {
     /// nor any P-op nor H/S is active, so `.neutral` settings keep the exact
     /// bypass `RelativeColorAdjustmentTests.zeroIsAnExactBypassAndKeepsThe
     /// ExistingPipelineFingerprint` (and this function's own callers) rely on.
+    ///
+    /// `source`: the input `image` was derived from (before
+    /// `RelativeColorAdjustment`), which with the relative temperature and
+    /// tint identifies what [S] reads at `.sP1P2` for `options.spatialCache`.
     private func applyNonRAWStageP(
-        settings: EditSettings, to image: CIImage, adaptiveStats: SpatialAdaptiveStats.Stats?,
-        quality: SpatialToneQuality = .final
-    ) -> CIImage {
+        settings: EditSettings, to image: CIImage, source: CIImage, adaptiveStats: SpatialAdaptiveStats.Stats?,
+        quality: SpatialToneQuality, options: PreviewRenderOptions
+    ) throws -> CIImage {
         let order = SpatialOrder.currentForNonRAW
         let needsSpatial = SpatialToneOps.needsSpatial(settings)
         guard settings.exposure != 0 || ToneOps.needsPostOps(settings) || needsSpatial else {
             return image
         }
         var stage = AdobeBaseRenderer.applyMatrix(DNGColorSpace.srgbLinearToProPhoto, to: image)
+        func spatial(_ input: CIImage, cached: Bool = false) throws -> CIImage {
+            try options.checkCancellation()
+            return AdobeBaseRenderer.spatialPass(
+                settings: settings, to: input, source: source,
+                inputParameters: [settings.relativeTemperature, settings.relativeTint],
+                adaptiveStats: adaptiveStats, path: .nonRAW, quality: quality,
+                cache: cached ? options.spatialCache : nil
+            )
+        }
+        func postOps(exposureNonRaw: Double) throws -> AdobeBaseRenderer.BakedCube {
+            try AdobeBaseRenderer.postOpsCube(exposureNonRaw: exposureNonRaw, settings: settings, options: options)
+        }
 
         // `.sP1P2` is today's non-RAW production default (`SpatialOrder`'s
         // doc comment); the other branches (`.p1SP2` -- the old shared
@@ -1349,45 +1414,42 @@ public final class RenderEngine: @unchecked Sendable {
                     let exposureOnly = AdobeBaseRenderer.buildCubeData { ToneOps.exposureNonRaw($0, ev: settings.exposure) }
                     stage = AdobeBaseRenderer.applyCube(exposureOnly, to: stage)
                 }
-                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW, quality: quality)
+                stage = try spatial(stage)
                 if ToneOps.needsPostOps(settings) {
-                    stage = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: stage)
+                    stage = AdobeBaseRenderer.applyCube(try postOps(exposureNonRaw: 0), to: stage)
                 }
             case .sP1P2:
-                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW, quality: quality)
+                stage = try spatial(stage, cached: true)
                 if settings.exposure != 0 || ToneOps.needsPostOps(settings) {
-                    stage = AdobeBaseRenderer.applyCube(
-                        AdobeBaseRenderer.postOpsCube(exposureNonRaw: settings.exposure, settings: settings), to: stage
-                    )
+                    stage = AdobeBaseRenderer.applyCube(try postOps(exposureNonRaw: settings.exposure), to: stage)
                 }
             case .p1P2S, .postQ:
                 if settings.exposure != 0 || ToneOps.needsPostOps(settings) {
-                    stage = AdobeBaseRenderer.applyCube(
-                        AdobeBaseRenderer.postOpsCube(exposureNonRaw: settings.exposure, settings: settings), to: stage
-                    )
+                    stage = AdobeBaseRenderer.applyCube(try postOps(exposureNonRaw: settings.exposure), to: stage)
                 }
                 if order == .p1P2S {
-                    stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW, quality: quality)
+                    stage = try spatial(stage)
                 }
             // `.postQ`: [S] deferred to `applyNonRAWStageQ`'s tail.
             case .p1SP2:
                 if settings.exposure != 0 || ToneOps.needsContrastOrDehaze(settings) {
                     stage = AdobeBaseRenderer.applyCube(
-                        AdobeBaseRenderer.postOpsCubeP1(
-                            exposureNonRaw: settings.exposure, contrast: settings.contrast, dehaze: settings.dehaze
+                        try AdobeBaseRenderer.postOpsCubeP1(
+                            exposureNonRaw: settings.exposure, contrast: settings.contrast, dehaze: settings.dehaze,
+                            options: options
                         ),
                         to: stage
                     )
                 }
-                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW, quality: quality)
+                stage = try spatial(stage)
                 if ToneOps.needsPostOpsAfterContrast(settings) {
-                    stage = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCubeP2(settings: settings), to: stage)
+                    stage = AdobeBaseRenderer.applyCube(
+                        try AdobeBaseRenderer.postOpsCubeP2(settings: settings, options: options), to: stage
+                    )
                 }
             }
         } else {
-            stage = AdobeBaseRenderer.applyCube(
-                AdobeBaseRenderer.postOpsCube(exposureNonRaw: settings.exposure, settings: settings), to: stage
-            )
+            stage = AdobeBaseRenderer.applyCube(try postOps(exposureNonRaw: settings.exposure), to: stage)
         }
         return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: stage)
     }
@@ -1400,8 +1462,8 @@ public final class RenderEngine: @unchecked Sendable {
     /// Mirrors `applyNonRAWStageP`'s exact-bypass-at-neutral-settings shape.
     private func applyNonRAWStageQ(
         settings: EditSettings, to image: CIImage, adaptiveStats: SpatialAdaptiveStats.Stats?,
-        quality: SpatialToneQuality = .final
-    ) -> CIImage {
+        quality: SpatialToneQuality, options: PreviewRenderOptions
+    ) throws -> CIImage {
         // **Experiment only** (`SpatialOrder`'s doc comment): `.postQ`
         // defers [S] here, after cube Q/Calibration, instead of
         // `applyNonRAWStageP` running it.
@@ -1417,11 +1479,15 @@ public final class RenderEngine: @unchecked Sendable {
                 )
             }
             if ColorOps.needsColorOps(settings) {
-                proPhoto = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postColorCube(settings: settings), to: proPhoto)
+                proPhoto = AdobeBaseRenderer.applyCube(
+                    try AdobeBaseRenderer.postColorCube(settings: settings, options: options), to: proPhoto
+                )
             }
         } else {
             if ColorOps.needsColorOps(settings) {
-                proPhoto = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postColorCube(settings: settings), to: proPhoto)
+                proPhoto = AdobeBaseRenderer.applyCube(
+                    try AdobeBaseRenderer.postColorCube(settings: settings, options: options), to: proPhoto
+                )
             }
             if ColorOps.needsCalibration(settings.calibration) {
                 proPhoto = AdobeBaseRenderer.applyCalibration(
@@ -1430,6 +1496,7 @@ public final class RenderEngine: @unchecked Sendable {
             }
         }
         if deferredSpatial {
+            try options.checkCancellation()
             proPhoto = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: proPhoto, adaptiveStats: adaptiveStats, path: .nonRAW, quality: quality)
         }
         return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: proPhoto)
@@ -1443,15 +1510,19 @@ public final class RenderEngine: @unchecked Sendable {
     /// including phase2 C3's H/S spatial pass) image, instead of
     /// `decoded.image` (which is always the neutral-settings baseline --
     /// see `LibRawDecoder`).
-    private func baseImage(decoded: DecodedPhoto, settings: EditSettings, quality: SpatialToneQuality = .final) -> CIImage {
+    private func baseImage(
+        decoded: DecodedPhoto, settings: EditSettings, quality: SpatialToneQuality = .final,
+        options: PreviewRenderOptions = .standard
+    ) throws -> CIImage {
         guard let handle = decoded.adobeBase else {
-            return apply(
+            return try apply(
                 settings: settings, to: decoded.image, sourceURL: decoded.sourceURL, quality: quality,
                 previewWorkingCopyLongEdge: decoded.info.previewWorkingCopy == nil
-                    ? nil : max(decoded.info.width, decoded.info.height)
+                    ? nil : max(decoded.info.width, decoded.info.height),
+                options: options
             )
         }
-        let rendered = handle.image(settings: settings, quality: quality)
+        let rendered = try handle.image(settings: settings, quality: quality, options: options)
         return RelativeColorAdjustment.apply(
             to: rendered,
             relativeTemperature: settings.relativeTemperature,
@@ -1462,7 +1533,8 @@ public final class RenderEngine: @unchecked Sendable {
     /// Kept module-internal so tests can exercise the real RAW/raster branch
     /// together with the final shoulder and gamut transform.
     func applyForOutput(decoded: DecodedPhoto, settings: EditSettings) -> CIImage {
-        let working = baseImage(decoded: decoded, settings: settings)
+        // `.standard`: no cancellation token, so this cannot throw.
+        let working = try! baseImage(decoded: decoded, settings: settings)
         return applyOutputTransformIfRequired(
             to: working,
             info: decoded.info,
@@ -1479,7 +1551,8 @@ public final class RenderEngine: @unchecked Sendable {
         maxDimension: CGFloat?,
         downsamplingFilter: TIFFDownsamplingFilter,
         outputTransformPlacement: OutputTransformPlacement,
-        quality: SpatialToneQuality = .final
+        quality: SpatialToneQuality = .final,
+        options: PreviewRenderOptions = .standard
     ) throws -> PreparedOutputGraph {
         if let maxDimension {
             guard maxDimension.isFinite, maxDimension > 0 else {
@@ -1487,7 +1560,7 @@ public final class RenderEngine: @unchecked Sendable {
             }
         }
 
-        var image = baseImage(decoded: decoded, settings: settings, quality: quality)
+        var image = try baseImage(decoded: decoded, settings: settings, quality: quality, options: options)
         if outputTransformPlacement == .legacyBeforeDownsampling {
             image = applyOutputTransformIfRequired(
                 to: image,
@@ -1578,5 +1651,329 @@ public final class RenderEngine: @unchecked Sendable {
         info.isRAW
             || !info.isBoundedSRGBRaster
             || settings.hasActiveColorEdits()
+    }
+}
+
+// MARK: - Interactive preview: drag sessions, spatial-pass reuse, cancellation
+
+/// Lets the app abandon a preview render that a newer request superseded.
+/// `RenderEngine.preparePreviewFromWorkingCopy` checks it between its steps
+/// and inside every cube bake, and then throws `CancellationError`; nothing a
+/// cancelled render half-computed is cached. Export never takes one.
+public final class PreviewCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    public init() {}
+
+    public func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    public var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+}
+
+/// One slider drag in the preview (`EditorModel` starts it when a slider,
+/// wheel or curve point is grabbed and drops it on release). While a session
+/// is passed to `RenderEngine.preparePreviewFromWorkingCopy`, that frame is
+/// an approximation of the exact preview, cheap enough for every drag tick:
+///
+/// - The spatial pass's image statistics (RAW Highlights/Shadows adaptive
+///   law, `.photobench/phase2/spatial-adaptive/model.md` §6/§7) are frozen at
+///   the values of the drag's starting settings instead of being re-measured
+///   for every tick. Their definition is unchanged; only when they are read
+///   differs. With them frozen, a slider downstream of the spatial pass
+///   leaves every input of the pass unchanged, so its GPU result from the
+///   previous frame is reused (`SpatialPassCache`). A drag that only moves
+///   the pass's own inputs (exposure, white balance, Highlights/Shadows/
+///   Texture/Clarity) reruns the pass anyway, so it keeps measuring them
+///   (`movesOnlySpatialInputs`): their exact cubes are all cached.
+/// - A tone cube (P/P1/P2) whose exact 64^3 bake is not cached yet is baked
+///   on a `AdobeBaseRenderer.dragCubeDimension`^3 grid instead (its exact
+///   bake is several hundred milliseconds on the Mac mini). Cubes Q and H
+///   stay exact: their bakes take a few to twenty milliseconds.
+///
+/// After the drag, the app renders the same settings once more without a
+/// session, which gives exactly the preview it rendered before drag sessions
+/// existed.
+public final class PreviewDragSession: @unchecked Sendable {
+    /// `PHOTO_BENCH_DRAG_FREEZE_STATS=0` re-measures the statistics for every
+    /// drag frame instead (measurements only; the app never sets it).
+    static let freezesStatistics = ProcessInfo.processInfo.environment["PHOTO_BENCH_DRAG_FREEZE_STATS"] != "0"
+
+    public let startSettings: EditSettings
+    private let lock = NSLock()
+    /// Per working-copy source image (identity) and quality.
+    private var frozenStatistics: [(source: CIImage, quality: SpatialToneQuality, stats: SpatialAdaptiveStats.Stats)] = []
+
+    public init(startSettings: EditSettings) {
+        self.startSettings = startSettings
+    }
+
+    /// Whether `settings` differs from `startSettings` only in what the RAW
+    /// spatial pass itself reads (exposure, absolute white balance,
+    /// Highlights/Shadows/Texture/Clarity). The pass reruns for such a frame
+    /// anyway and the statistics' cubes are those of `startSettings`, so the
+    /// exact statistics cost only their small render.
+    func movesOnlySpatialInputs(_ settings: EditSettings) -> Bool {
+        var moved = settings
+        moved.exposure = startSettings.exposure
+        moved.whiteBalance = startSettings.whiteBalance
+        moved.highlights = startSettings.highlights
+        moved.shadows = startSettings.shadows
+        moved.texture = startSettings.texture
+        moved.clarity = startSettings.clarity
+        return moved == startSettings
+    }
+
+    /// The statistics frozen for `source` at `quality`, computing them once
+    /// with `compute` (the exact statistics of `startSettings`).
+    func statistics(
+        source: CIImage, quality: SpatialToneQuality,
+        compute: () throws -> SpatialAdaptiveStats.Stats
+    ) rethrows -> SpatialAdaptiveStats.Stats {
+        lock.lock()
+        if let frozen = frozenStatistics.first(where: { $0.source === source && $0.quality == quality }) {
+            lock.unlock()
+            return frozen.stats
+        }
+        lock.unlock()
+        let stats = try compute()
+        lock.lock()
+        frozenStatistics.append((source, quality, stats))
+        lock.unlock()
+        return stats
+    }
+}
+
+/// Preview-only knobs threaded through the render graph builders. Export and
+/// every other caller use `.standard`, which reproduces the graph exactly as
+/// it was built before these options existed.
+struct PreviewRenderOptions {
+    /// Grid for tone cubes (P, P1, P2) that are not cached at the exact size
+    /// yet (`AdobeBaseRenderer.dragCubeDimension` during a drag).
+    var toneCubeDimension: Int = AdobeBaseRenderer.cubeDimension
+    var dragSession: PreviewDragSession?
+    var spatialCache: SpatialPassCache?
+    var cancellation: PreviewCancellation?
+
+    static let standard = PreviewRenderOptions()
+
+    /// The options for the statistics' own "preHS" render: exact cubes, no
+    /// spatial pass (it is zeroed there anyway), same cancellation.
+    var forStatistics: PreviewRenderOptions {
+        PreviewRenderOptions(cancellation: cancellation)
+    }
+
+    func checkCancellation() throws {
+        if cancellation?.isCancelled == true {
+            throw CancellationError()
+        }
+    }
+}
+
+/// The spatial pass's (`AdobeBaseRenderer.applySpatialToneOps`) most recent
+/// GPU result for the preview working copy, reused when a later frame's pass
+/// would read exactly the same input and parameters. `Key` holds everything
+/// the pass reads -- the source pixels' identity, the white balance /
+/// exposure / relative-color values and Stage H cube that turn them into the
+/// pass's input, Highlights/Shadows/Texture/Clarity, quality and the adaptive
+/// statistics -- and compares them exactly, so a hit returns the very image
+/// a recomputation would produce. One entry (one 2560 px RGBA float texture,
+/// about 70 MB); the entry keeps its source image alive so an identity
+/// cannot be recycled while it is cached.
+final class SpatialPassCache: @unchecked Sendable {
+    struct Key: Equatable {
+        var source: ObjectIdentifier
+        var extent: CGRect
+        var path: SpatialAdaptivePath
+        /// RAW: effective white x/y, Stage E exposure, Stage H cube size.
+        /// Non-RAW: relative temperature and tint.
+        var inputParameters: [Double]
+        var highlights: Double
+        var shadows: Double
+        var texture: Double
+        var clarity: Double
+        var quality: SpatialToneQuality
+        var stats: SpatialAdaptiveStats.Stats?
+    }
+
+    private let lock = NSLock()
+    private var entry: (key: Key, source: CIImage, output: CIImage)?
+    /// How many lookups were served from the entry (tests).
+    private(set) var hitCount = 0
+
+    func output(for key: Key) -> CIImage? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry, entry.key == key else { return nil }
+        hitCount += 1
+        return entry.output
+    }
+
+    func store(_ output: CIImage, for key: Key, source: CIImage) {
+        lock.lock()
+        entry = (key, source, output)
+        lock.unlock()
+    }
+
+    func removeAll() {
+        lock.lock()
+        entry = nil
+        lock.unlock()
+    }
+
+    var isEmpty: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return entry == nil
+    }
+}
+
+extension EditSettings {
+    /// For a drag-grid tone cube only: without the curves that are the
+    /// identity (Lightroom presets carry flat Red/Green/Blue curves), whose
+    /// spline `ToneOps.pointCurve` would otherwise rebuild for every grid
+    /// point just to return the value it was given (up to float rounding and
+    /// the [0, 1] clamp the cube applies anyway).
+    func withoutIdentityToneCurves() -> EditSettings {
+        var copy = self
+        copy.toneCurves = toneCurves.filter { !$0.isIdentity }
+        return copy
+    }
+
+    /// The same values with freshly allocated `hsl`/`toneCurves` storage.
+    /// Cube bakes give every concurrent chunk its own copy, so the Swift
+    /// runtime's reference counting of these collections never bounces one
+    /// shared cache line between cores (measured on the Mac mini as about
+    /// 70% of a cube Q bake). Values, and therefore results, are identical.
+    func uniquelyStoredCopy() -> EditSettings {
+        var copy = self
+        var hsl = [HSLBand: HSLAdjustment](minimumCapacity: self.hsl.count)
+        for (band, adjustment) in self.hsl {
+            hsl[band] = adjustment
+        }
+        copy.hsl = hsl
+        copy.toneCurves = toneCurves.map { curve in
+            ToneCurve(channel: curve.channel, points: curve.points.map { $0 })
+        }
+        return copy
+    }
+}
+
+// MARK: - Interactive preview: timing diagnostics
+
+/// Wall-clock breakdown of one preview update, for profiling slider drags.
+///
+/// `PHOTO_BENCH_PREVIEW_DIAG=1` prints one line per prepared preview frame to
+/// stderr (`RenderEngine.preparePreviewFromWorkingCopy` and friends): the
+/// total and every step that did real work inside it -- adaptive statistics,
+/// each cube bake (with its grid size), the spatial pass (input render,
+/// compute wait, GPU time) or its reuse. The app adds one line per shown
+/// frame with its input-to-screen latency (`EditorModel`).
+/// `photobench-preview-bench` turns collection on programmatically
+/// (`setCollecting(true)`) and drains the records after every simulated
+/// tick instead.
+///
+/// Only timing is recorded; nothing here changes what is rendered. With both
+/// switches off every hook is a single flag check.
+public enum PreviewDiagnostics {
+    public static let environmentVariable = "PHOTO_BENCH_PREVIEW_DIAG"
+
+    public struct Record: Sendable, Equatable {
+        public let label: String
+        public let milliseconds: Double
+
+        public init(label: String, milliseconds: Double) {
+            self.label = label
+            self.milliseconds = milliseconds
+        }
+    }
+
+    public static let printsToStandardError =
+        ProcessInfo.processInfo.environment[environmentVariable] == "1"
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var collecting = false
+    nonisolated(unsafe) private static var records: [Record] = []
+    nonisolated(unsafe) private static var frameStartIndex = 0
+
+    /// `photobench-preview-bench`: keep every record until `drain()`.
+    public static func setCollecting(_ enabled: Bool) {
+        lock.lock()
+        collecting = enabled
+        if !enabled {
+            records.removeAll()
+            frameStartIndex = 0
+        }
+        lock.unlock()
+    }
+
+    /// Returns and clears everything recorded since the previous drain.
+    public static func drain() -> [Record] {
+        lock.lock()
+        defer { lock.unlock() }
+        let drained = records
+        records.removeAll()
+        frameStartIndex = 0
+        return drained
+    }
+
+    static var isEnabled: Bool {
+        if printsToStandardError { return true }
+        lock.lock()
+        defer { lock.unlock() }
+        return collecting
+    }
+
+    static func record(_ label: String, milliseconds: Double) {
+        lock.lock()
+        records.append(Record(label: label, milliseconds: milliseconds))
+        lock.unlock()
+    }
+
+    static func milliseconds(since start: DispatchTime) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds &- start.uptimeNanoseconds) / 1_000_000
+    }
+
+    /// Runs `body`, recording its wall time under `label` when enabled.
+    static func measure<T>(_ label: @autoclosure () -> String, _ body: () throws -> T) rethrows -> T {
+        guard isEnabled else { return try body() }
+        let start = DispatchTime.now()
+        let result = try body()
+        record(label(), milliseconds: milliseconds(since: start))
+        return result
+    }
+
+    /// Marks the start of one prepared frame (for the stderr line).
+    static func beginFrame() {
+        guard isEnabled else { return }
+        lock.lock()
+        frameStartIndex = records.count
+        lock.unlock()
+    }
+
+    /// Records the frame total and, with `PHOTO_BENCH_PREVIEW_DIAG=1`, prints
+    /// the frame's records on one line. Outside collection mode the records
+    /// are dropped afterwards so a long app session does not accumulate them.
+    static func endFrame(_ label: String, milliseconds total: Double) {
+        guard isEnabled else { return }
+        lock.lock()
+        records.append(Record(label: label, milliseconds: total))
+        let frame = Array(records[min(frameStartIndex, records.count)...])
+        if !collecting {
+            records.removeAll()
+        }
+        frameStartIndex = records.count
+        lock.unlock()
+        guard printsToStandardError else { return }
+        let parts = frame.map { "\($0.label)=\(String(format: "%.1f", $0.milliseconds))" }
+        FileHandle.standardError.write(Data(("PreviewDiagnostics: " + parts.joined(separator: " ") + "\n").utf8))
     }
 }
