@@ -5,7 +5,7 @@
   "adoptionStatus": "exploratory-observation-only",
   "baseCalibrationManifest": {
     "path": "calibration/manifest-v4.json",
-    "sha256": "1ce9fec683aa89d1d00e7876bad6349dd1e71e8241b9e26accb35327c87fc637",
+    "sha256": "1e7742ff99d6d6e8375629d5a7700159803f55816d96bffa54ce84fc786fd905",
     "suiteID": "dc-s5-lightroom-9.3-canonical-settle-2026-07-24-v4",
     "schemaVersion": 4
   },

@@ -142,12 +142,12 @@ public enum AdobeBaseRenderer {
         /// -> Stage M/H (re-interpolated at the new white point, Custom
         /// only) -> Stage E (`baselineEV + settings.exposure`) -> Stage L ->
         /// Stage T+C -> **cube P** (`ToneOps.applyPostOps`, Contrast/Whites/
-        /// Blacks/Parametric/Point curve) -> **cube Q** (`ColorOps.
-        /// applyColorOps`, Vibrance/Saturation/HSL/Color Grading) ->
-        /// **Camera Calibration** (`ColorOps.calibrationMatrix`, an exact
-        /// `CIColorMatrix` kept separate from cube Q -- see `applyCalibration`
-        /// and `postColorCube`'s doc comments) -> ProPhoto -> the app's
-        /// working space. `docs/PHASE2_DEVELOP_PIPELINE.md` C1 item 4,
+        /// Blacks/Parametric/Point curve) -> **Camera Calibration**
+        /// (`ColorOps.calibrationMatrix`, an exact `CIColorMatrix` kept
+        /// separate from cube Q -- see `applyCalibration` and
+        /// `postColorCube`'s doc comments; order per `CalibrationOrder`) ->
+        /// **cube Q** (`ColorOps.applyColorOps`, Vibrance/Saturation/HSL/
+        /// Color Grading) -> ProPhoto -> the app's working space. `docs/PHASE2_DEVELOP_PIPELINE.md` C1 item 4,
         /// `docs/PHASE2_C2_C3.md` C2 item 3.
         ///
         /// When `settings.whiteBalance` is not a valid `.custom` (missing

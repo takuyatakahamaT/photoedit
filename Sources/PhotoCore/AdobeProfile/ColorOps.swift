@@ -16,27 +16,22 @@ import Foundation
 /// adds an exact bypass so a neutral `EditSettings.hsl` never perturbs a
 /// pixel even by float-rounding noise, matching `ToneOps`'s own stated
 /// convention).
-/// **Experiment only** (not a production setting): whether Camera
-/// Calibration (`ColorOps.calibrationMatrix`, applied via
+/// Where Camera Calibration (`ColorOps.calibrationMatrix`, applied via
 /// `AdobeBaseRenderer.applyCalibration`'s exact `CIColorMatrix`) runs
-/// *before* cube Q (Vibrance -> Saturation -> HSL -> Color Grading,
-/// `ColorOps.postColorCube`... i.e. `AdobeBaseRenderer.postColorCube`)
-/// instead of after it (today's production order). Requested alongside
-/// `PHOTO_BENCH_SPATIAL_GAIN_SCALE` to check whether some of the "night"
-/// preset's residual (`.photobench/phase2/detail/model.md`) is Calibration
-/// fighting an already-graded image rather than grading a calibrated one.
-/// Only the Calibration/cube-Q relative order changes -- the
-/// output-referred position relative to the final ProPhoto -> working-space
-/// matrix (`DNGColorSpace.proPhotoToSRGBLinear`/equivalent) is unaffected,
-/// since both still run strictly before that matrix in either order.
-/// Controlled by `PHOTO_BENCH_CALIBRATION_FIRST=1`; unset (or any value
-/// other than exactly `"1"`) leaves today's order (`false`, cube Q then
-/// Calibration) unchanged. Production code never sets this env var. Used by
-/// both `AdobeBaseRenderer.Handle.image(settings:)` (RAW) and
+/// relative to cube Q (Vibrance -> Saturation -> HSL -> Color Grading).
+/// Since 2026-09-24 (round4) the default is **before** cube Q: the HALD
+/// pair measurement (`color/model.md` §6, `hsl/model.md` §5) puts
+/// Calibration ahead of HSL, and on real photos with the white-preserving
+/// matrix it wins on every combined case (night colour-only 2.26 -> 2.13,
+/// Calibration + HSL 1.99 -> 1.93, 5 scenes) while single-operation cases
+/// are unchanged. Both orders stay output-referred (after the tone curve and
+/// cube P). `PHOTO_BENCH_CALIBRATION_FIRST=0` restores the old order (cube Q
+/// then Calibration) for comparison; production code never sets it. Used
+/// by both `AdobeBaseRenderer.Handle.image(settings:)` (RAW) and
 /// `RenderEngine.applyNonRAWStageQ` (non-RAW).
 public enum CalibrationOrder {
     public static var calibrationFirst: Bool {
-        ProcessInfo.processInfo.environment["PHOTO_BENCH_CALIBRATION_FIRST"] == "1"
+        ProcessInfo.processInfo.environment["PHOTO_BENCH_CALIBRATION_FIRST"] != "0"
     }
 }
 
@@ -46,7 +41,7 @@ public enum ColorOps {
     /// (rather than renamed to "colorOps") so the fingerprint's `Codable`
     /// contract and every existing consumer of that JSON key stay stable;
     /// only the deleted `PerceptualColorMixer`'s identity is replaced.
-    public static let identifier = "measured-color-ops-cube-q-v1"
+    public static let identifier = "measured-color-ops-cube-q-v2"
 
     // MARK: - Shared helpers
 
@@ -179,6 +174,14 @@ public enum ColorOps {
         for (value, d) in contributions where value != 0 {
             m = m + (value / 50.0) * d
         }
+        // `color_model.calibration_matrix` v2: divide each row by its own sum
+        // so white stays white. The chart-measured +50 matrices' row sums are
+        // 0.95-1.03 (up to a 5% cast on neutrals); real RAW photos fitted
+        // LR-to-LR are white-preserving, and normalizing cuts the mean
+        // Calibration error from 1.67 to 0.72 dE00 (ideal 3x3 fit: 0.56).
+        m.row0 /= m.row0.sum()
+        m.row1 /= m.row1.sum()
+        m.row2 /= m.row2.sum()
         return m
     }
 
@@ -422,7 +425,23 @@ public enum ColorOps {
 
         let hOut = pymod(hIn + hueShift, 360.0)
         let sOut = min(max(sIn + satDelta, 0.0), 1.0)
-        var rgbOut = hslHSVToRGB(h: hOut, s: sOut, v: vIn)
+        var rgbOut: SIMD3<Double>
+        if satDelta < 0 {
+            // `hsl_model.apply_hsl` v2: lowering saturation pivots on HSL
+            // lightness (max+min)/2, not HSV value -- real photos (round4,
+            // 5 scenes) solve to p/L = 0.984 when lowering and p/V = 1.004
+            // when raising. Rotate the hue first, then shrink toward L by
+            // the `k` that lands HSV saturation exactly on `sOut`.
+            let rgbHue = hslHSVToRGB(h: hOut, s: sIn, v: vIn)
+            let mx = rgbHue.max()
+            let mn = rgbHue.min()
+            let lMid = 0.5 * (mx + mn)
+            let denom = (mx - mn) - sOut * (mx - lMid)
+            let k = denom > 1e-9 ? sOut * lMid / denom : 1.0
+            rgbOut = SIMD3(repeating: lMid) + k * (rgbHue - SIMD3(repeating: lMid))
+        } else {
+            rgbOut = hslHSVToRGB(h: hOut, s: sOut, v: vIn)
+        }
 
         if lumDelta != 0 {
             let yMid = ppLuminance(rgbOut)
@@ -437,18 +456,30 @@ public enum ColorOps {
 
     private struct GradeBetaShape { let a: Double, p: Double, q: Double }
 
-    /// `color_model._GRADE_DIR_U` / `_GRADE_DIR_V`: fitted 2D hue-rotation
-    /// basis (a **fixed direction per slider hue**, not a per-pixel hue
-    /// rotation -- Color Grading tints every pixel in its luma range toward
-    /// one direction, unlike Calibration/HSL).
-    private static let gradeDirU = SIMD3<Double>(0.57291042, -0.61914395, -0.42501083)
-    private static let gradeDirV = SIMD3<Double>(-0.32971649, 0.31621100, -0.90555332)
-
+    /// `color_model._grade_direction` (v2, 2026-09-24): the luminance-
+    /// preserving direction of hue `hueDeg` -- the classic HSV primary/
+    /// secondary blend `hsv(h, 1, 1)` in linear ProPhoto minus its own
+    /// ProPhoto luminance, normalized. A **fixed direction per slider hue**
+    /// (Color Grading tints every pixel in its luma range toward one
+    /// direction, unlike Calibration/HSL). Real-photo split toning
+    /// (round4 night, round0 bluesky2) keeps linear ProPhoto luminance and
+    /// follows this direction within a few degrees; v1's chart-fitted U/V
+    /// basis tilted hue 186 by 24 degrees and brightened it.
     private static func gradeDirection(hueDeg: Double) -> SIMD3<Double> {
-        let h = hueDeg * Double.pi / 180.0
-        let d = cos(h) * gradeDirU + sin(h) * gradeDirV
-        let norm = (d * d).sum().squareRoot()
-        return d / norm
+        let h = pymod(hueDeg, 360.0) / 60.0
+        let i = Int(h.rounded(.down)) % 6
+        let f = h - h.rounded(.down)
+        let c: SIMD3<Double>
+        switch i {
+        case 0: c = SIMD3(1.0, f, 0.0)
+        case 1: c = SIMD3(1.0 - f, 1.0, 0.0)
+        case 2: c = SIMD3(0.0, 1.0, f)
+        case 3: c = SIMD3(0.0, 1.0 - f, 1.0)
+        case 4: c = SIMD3(f, 0.0, 1.0)
+        default: c = SIMD3(1.0, 0.0, 1.0 - f)
+        }
+        let d = c - SIMD3(repeating: ppLuminance(c))
+        return d / (d * d).sum().squareRoot()
     }
 
     /// `color_model._BAND_BETA` (hue/saturation bands).
@@ -467,21 +498,50 @@ public enum ColorOps {
         return band.a * pow(yy, band.p) * pow(1.0 - yy, band.q)
     }
 
-    /// `color_model.GRADE_PROTECT_EXPONENT`.
+    /// `color_model.GRADE_PROTECT_EXPONENT`: midtone/global (and shadow/
+    /// highlight at Blending 100).
     private static let gradeProtectExponent = 1.0
+
+    /// `color_model._protect_exponents` (v2): existing-saturation protection
+    /// exponents for (shadow, highlight). Blending 50 real photos (round4
+    /// night) show ~0.5 / none; Blending 100 (round0) keeps v1's 1.0 / 1.0;
+    /// linear in between, Blending 50's values below 50.
+    private static func gradeProtectExponents(blend: Double) -> (shadow: Double, highlight: Double) {
+        let t = min(max((blend - 50.0) / 50.0, 0.0), 1.0)
+        return (0.5 + 0.5 * t, t)
+    }
 
     /// `color_model._balance_scale`.
     private static func gradeBalanceScale(_ balance: Double) -> (shadow: Double, highlight: Double) {
         (max(1.0 - balance / 100.0 * 0.55, 0.0), max(1.0 + balance / 100.0 * 0.05, 0.0))
     }
 
-    /// `color_model._blend_shape`: only shadow/highlight (the two bands that
-    /// existed as Split Toning before Color Grading) narrow with `blending`.
-    private static func gradeBlendShape(_ blend: Double, _ band: GradeBetaShape) -> GradeBetaShape {
-        guard blend < 100 else { return band }
-        let t = min(max(blend, 0.0), 100.0) / 100.0
-        let sharpQ = band.q * 8.0
-        return GradeBetaShape(a: band.a, p: band.p, q: sharpQ + (band.q - sharpQ) * t)
+    /// `color_model._BLEND50_MASK_Y` / `_BLEND50_MASK` (v2): Blending 50's
+    /// luminance mask on the Blending-100 band shapes, measured on round4
+    /// night (5 scenes, S < 0.1 pixels). v1's `_blend_shape` sharpened `q`
+    /// for both bands, which moved the highlight band's peak toward the
+    /// shadows (Y ~0.25) -- the opposite of the measured Y ~0.65.
+    private static let gradeBlend50MaskY: [Double] = [0.0, 0.015, 0.045, 0.08, 0.125, 0.185, 0.26, 0.35, 0.45, 0.56, 0.685, 0.825, 1.0]
+    private static let gradeBlend50MaskShadow: [Double] = [0.9, 0.86, 0.74, 0.54, 0.39, 0.29, 0.26, 0.26, 0.24, 0.27, 0.30, 0.25, 0.25]
+    private static let gradeBlend50MaskHighlight: [Double] = [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.28, 0.35, 0.45, 0.53, 0.60, 0.64, 0.70]
+
+    /// `np.interp` (clamped to the end values outside the knot range).
+    private static func interpolate(_ x: Double, knots: [Double], values: [Double]) -> Double {
+        if x <= knots[0] { return values[0] }
+        for k in 1..<knots.count where x <= knots[k] {
+            let f = (x - knots[k - 1]) / (knots[k] - knots[k - 1])
+            return values[k - 1] + (values[k] - values[k - 1]) * f
+        }
+        return values[values.count - 1]
+    }
+
+    /// `color_model._blend_mask` (v2): 1 at Blending 100, the measured mask
+    /// at 50, linear in `(100 - blend) / 50` and clipped to [0, 1] below.
+    private static func gradeBlendMask(_ blend: Double, shadow: Bool, y: Double) -> Double {
+        guard blend < 100 else { return 1.0 }
+        let t = (100.0 - min(max(blend, 0.0), 100.0)) / 50.0
+        let m50 = interpolate(y, knots: gradeBlend50MaskY, values: shadow ? gradeBlend50MaskShadow : gradeBlend50MaskHighlight)
+        return min(max(1.0 - t * (1.0 - m50), 0.0), 1.0)
     }
 
     /// `color_model.apply_color_grading`. `settings.midtone.luminance` and
@@ -491,18 +551,22 @@ public enum ColorOps {
         guard needsColorGrading(settings) else { return value }
         let yLuma = min(max(ppLuminance(value), 0.0), 1.0)
         let (shadowScale, highlightScale) = gradeBalanceScale(settings.balance)
-        let protect = pow(min(max(1.0 - hslRelativeSaturation(value), 0.0), 1.0), gradeProtectExponent)
+        let unprotected = min(max(1.0 - hslRelativeSaturation(value), 0.0), 1.0)
+        let exponents = gradeProtectExponents(blend: settings.blending)
 
         var delta = SIMD3<Double>.zero
-        let hueSatBands: [(GradeBetaShape, Double, Double, Double, Bool)] = [
-            (gradeBandShadow, settings.shadow.hue, settings.shadow.saturation, shadowScale, true),
-            (gradeBandHighlight, settings.highlight.hue, settings.highlight.saturation, highlightScale, true),
-            (gradeBandMidtone, settings.midtone.hue, settings.midtone.saturation, 1.0, false),
-            (gradeBandGlobal, settings.global.hue, settings.global.saturation, 1.0, false)
+        // (shape, hue, saturation, balance scale, protection exponent, blend mask: nil / shadow / highlight)
+        let hueSatBands: [(GradeBetaShape, Double, Double, Double, Double, Bool?)] = [
+            (gradeBandShadow, settings.shadow.hue, settings.shadow.saturation, shadowScale, exponents.shadow, true),
+            (gradeBandHighlight, settings.highlight.hue, settings.highlight.saturation, highlightScale, exponents.highlight, false),
+            (gradeBandMidtone, settings.midtone.hue, settings.midtone.saturation, 1.0, gradeProtectExponent, nil),
+            (gradeBandGlobal, settings.global.hue, settings.global.saturation, 1.0, gradeProtectExponent, nil)
         ]
-        for (baseBand, hue, sat, extraScale, blendEligible) in hueSatBands where sat != 0 {
-            let band = blendEligible ? gradeBlendShape(settings.blending, baseBand) : baseBand
-            let w = gradeBetaWeight(yLuma, band) * (sat / 30.0) * extraScale * protect
+        for (band, hue, sat, extraScale, exponent, maskShadow) in hueSatBands where sat != 0 {
+            var w = gradeBetaWeight(yLuma, band) * (sat / 30.0) * extraScale * pow(unprotected, exponent)
+            if let maskShadow {
+                w *= gradeBlendMask(settings.blending, shadow: maskShadow, y: yLuma)
+            }
             delta += w * gradeDirection(hueDeg: hue)
         }
 
@@ -533,12 +597,12 @@ public enum ColorOps {
 
     /// `docs/PHASE2_C2_C3.md`'s Stage Q order: Vibrance -> Saturation -> HSL
     /// -> Color Grading. Camera Calibration is **not** included here -- it
-    /// is applied as its own `CIColorMatrix` after cube Q, both for caching
-    /// (a calibration-only change never invalidates this cube) and because
-    /// `.photobench/phase2/raw-validated.md`'s real-photo gate found
-    /// Calibration belongs at the very end (output-referenced), not
-    /// immediately after Stage H/M like the color-family analysis alone
-    /// would suggest -- see `AdobeBaseRenderer.Handle.image(settings:)`.
+    /// is applied as its own `CIColorMatrix` right before cube Q
+    /// (`CalibrationOrder`), both for caching (a calibration-only change
+    /// never invalidates this cube) and because real photos put it
+    /// output-referenced (`.photobench/phase2/raw-validated.md`, round4), not
+    /// immediately after Stage H/M -- see
+    /// `AdobeBaseRenderer.Handle.image(settings:)`.
     public static func applyColorOps(_ value: SIMD3<Double>, settings: EditSettings) -> SIMD3<Double> {
         var result = value
         result = vibrance(result, amount: settings.vibrance)
