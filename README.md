@@ -53,7 +53,7 @@ Finderから`open-photo.command`をダブルクリックします。ターミナ
 
 以下「画質校正」「RAW ホワイトバランス」「性能基準」「Metal 直接表示」の 4 節は、2026-07-24 時点の旧エンジン（Core Image RAW 土台）に対する formal 校正の記録です。現行エンジン（LibRaw + DCP、計測モデル）の到達値は `docs/ENGINE_ROADMAP.md` を参照してください。
 
-2026-09-24 に、この校正 suite の manifest を現行の編集処理（`SpatialToneOps` / `ColorOps`）と校正機 Mac Studio へ再固定し、正式 run を再実行しました。RAW 経路は旧土台の Core Image RAW 8 のままです。Lightroom 書き出し前 TIFF を入力にする経路では、非決定的な描画欠損が見つかっています（未修正）。最新の結果と制約は [CALIBRATION.md](./CALIBRATION.md) を正とし、以下の数値は 2026-07-24 の履歴です。
+2026-09-24 に、この校正 suite の manifest を現行の編集処理（`SpatialToneOps` / `ColorOps`）と校正機 Mac Studio へ再固定し、正式 run を再実行しました。RAW 経路は旧土台の Core Image RAW 8 のままです。Lightroom 書き出し前 TIFF を入力にする経路で見つかった非決定的な描画欠損は、同日に修正しました。最新の結果と制約は [CALIBRATION.md](./CALIBRATION.md) を正とし、以下の数値は 2026-07-24 の履歴です。
 
 DC-S5の2組の「Lightroom適用前 / `colorful`適用後」16bit TIFFを基準に、RAW直結とLightroom適用前TIFF入力の2経路を測定します。`basic`はXMP HSL／カーブを除く既定経路、`full`は実験的なencoded-sRGB 1DカーブとOKLCh 8バンド・ミキサーまで有効にした経路です。
 
@@ -135,7 +135,7 @@ python3 scripts/lr_measure/run_gate.py --render-binary .build/release/photobench
 python3 scripts/lr_measure/compare_renders.py --reference <LR 参照ディレクトリ> --renders <描画ディレクトリ> --no-align
 ```
 
-2026-09-23 時点で `PhotoCoreTests` は **128 件全成功**（Mac mini と Mac Studio の両方）。空間処理は Python 参照実装との fixture 照合（相対誤差 0.0）と GPU／CPU の一致（最大 OKLab 距離 0.004）、レンズ補正は Python オラクルとの照合（< 1e-3 px）を含みます。全体の `swift test` は 2026-09-24 に Mac Studio で 202 件全成功しました。校正 manifest は校正機の Mac Studio に固定しているため、Mac mini では manifest を読み込むテストが実行環境不一致で失敗します（設計どおり）。
+2026-09-23 時点で `PhotoCoreTests` は **128 件全成功**（Mac mini と Mac Studio の両方）。空間処理は Python 参照実装との fixture 照合（相対誤差 0.0）と GPU／CPU の一致（最大 OKLab 距離 0.004）、レンズ補正は Python オラクルとの照合（< 1e-3 px）を含みます。全体の `swift test` は 2026-09-24 に Mac Studio で 204 件全成功しました。校正 manifest は校正機の Mac Studio に固定しているため、Mac mini では manifest を読み込むテストが実行環境不一致で失敗します（設計どおり）。
 
 実写ゲート（Lightroom 書き出し比、30×20 領域平均 ΔE00、Mac Studio で実行）の到達値は `docs/ENGINE_ROADMAP.md` の各フェーズの結果節を正とします。2026-07-24 の formal 校正・性能結果（`CALIBRATION.md`、`BENCHMARK.md`）は履歴として維持し、今回のエンジンの合格証拠には流用しません。
 

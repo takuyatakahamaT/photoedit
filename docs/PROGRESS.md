@@ -101,4 +101,4 @@
 
 過去の2026-07-24 formal校正・性能結果と、その既知不合格は履歴として維持する。今回のエンジン候補の合格証拠として流用しない。
 
-2026-09-24 に校正 suite を現行の編集処理で再実行した（`CALIBRATION.md`）。RAW 経路は旧土台の Core Image RAW 8 のままなので、Lightroom 一致度の証拠にはしない。LR 入力経路で非決定的な描画欠損（下側の 256px タイル行が透明な黒）を検出した。未修正。
+2026-09-24 に校正 suite を現行の編集処理で再実行した（`CALIBRATION.md`）。RAW 経路は旧土台の Core Image RAW 8 のままなので、Lightroom 一致度の証拠にはしない。LR 入力経路で非決定的な描画欠損（下側の 256px タイル行が透明な黒）を検出し、同日に修正した（commit `5aab700`、回帰テスト `RasterInputTileIntegrityTests`）。
