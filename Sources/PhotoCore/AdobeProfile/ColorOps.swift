@@ -41,7 +41,7 @@ public enum ColorOps {
     /// (rather than renamed to "colorOps") so the fingerprint's `Codable`
     /// contract and every existing consumer of that JSON key stay stable;
     /// only the deleted `PerceptualColorMixer`'s identity is replaced.
-    public static let identifier = "measured-color-ops-cube-q-v2"
+    public static let identifier = "measured-color-ops-cube-q-v3"
 
     // MARK: - Shared helpers
 
@@ -103,6 +103,14 @@ public enum ColorOps {
 
     // MARK: - 2) Vibrance
 
+    /// v3 (`color_model.VIBRANCE_P_POSITIVE` / `VIBRANCE_SCALE_POSITIVE`):
+    /// the chart-fitted `p = 1` was about twice as strong as LR on real photos
+    /// (round0 RAW Vibrance +21 alone, round5 colorful tone -> full on RAW,
+    /// LR-exported JPEG and camera JPEG), so raising vibrance protects any
+    /// already-colored pixel harder and is scaled by 0.75.
+    private static let vibrancePPositive = 4.0
+    private static let vibranceScalePositive = 0.75
+
     /// `color_model.apply_vibrance`: same pivot/hue-preserving mechanism as
     /// `saturation`, but `k` depends on the pixel's current relative
     /// saturation (protection, asymmetric by sign) and hue (skin-tone
@@ -113,9 +121,10 @@ public enum ColorOps {
         let s = hslRelativeSaturation(value)
         let hue = hueDegreesAtan2(value)
         let hueWeight = 1.0 + 0.08 * cos((hue - 170.0) * Double.pi / 180.0)
-        let p = amount > 0 ? 1.0 : 0.32
+        let p = amount > 0 ? vibrancePPositive : 0.32
+        let scale = amount > 0 ? vibranceScalePositive : 1.0
         let g = pow(min(max(1.0 - s, 0.0), 1.0), p)
-        let k = max(1.0 + (amount / 100.0) * g * hueWeight, 0.0)
+        let k = max(1.0 + (amount / 100.0) * scale * g * hueWeight, 0.0)
         let lVec = SIMD3(repeating: l)
         return clamp01(lVec + k * (value - lVec))
     }

@@ -19,15 +19,15 @@ import Foundation
 /// module): each operation's "gray curve" `f_enc: encoded -> encoded` is
 /// evaluated on the sRGB-*encoded* (not decoded) max/min channel and mixed
 /// hue-preservingly, matching `model.md`'s Q2 conclusion that this beats
-/// every alternative (yratio, maxratio, linear RGBTone) tried. v2's one
+/// every alternative (yratio, maxratio, linear RGBTone) tried. v2/v3's one
 /// exception: Whites (lowered/raised) and Blacks (raised) mix that result
-/// with a luminance-ratio result (`rgbToneMixedWithLuminanceRatio`), fitted
+/// with a luminance-move result (`rgbToneMixedWithLuminanceRatio`), fitted
 /// on strong real-photo settings where pure RGBTone loses saturation.
 public enum ToneOps {
     /// Covered by `PhotoCoreProcessingFingerprint.basicTone` together with
     /// `SpatialToneOps.identifier` (Contrast/Whites/Blacks are basic-tone
     /// sliders too).
-    public static let identifier = "measured-tone-ops-cube-p-v2"
+    public static let identifier = "measured-tone-ops-cube-p-v3"
 
     // MARK: - Shared helpers
 
@@ -217,8 +217,12 @@ public enum ToneOps {
     /// round1 +-60 and round5 Whites -83 / Blacks +89): when Whites goes down
     /// or Blacks goes up, LR moves brightness while keeping saturation. The
     /// RGBTone result is mixed with a chromaticity-preserving luminance-ratio
-    /// result by `beta` (1 = v1's pure RGBTone).
-    private static let whitesBetaNegative = 0.0
+    /// result by `beta` (1 = v1's pure RGBTone). v3 (`WHITES_KAPPA_NEGATIVE`,
+    /// adding round5's camera JPEGs and LR-exported JPEGs): lowering Whites
+    /// keeps even more absolute chroma in the highlights, so its luminance
+    /// move scales the color difference by `gain^kappa` instead of `gain`.
+    private static let whitesBetaNegative = 0.4
+    private static let whitesKappaNegative = 0.25
     private static let whitesBetaPositive = 0.4
     private static let blacksBetaPositive = 0.4
     private static let blacksBetaNegative = 1.0
@@ -227,9 +231,11 @@ public enum ToneOps {
     /// `tone_model._rgbtone_mixed_with_luminance_ratio`: the gray curve moves
     /// linear ProPhoto Y only and RGB is scaled by the Y ratio; a lifting
     /// ratio stops where the largest channel reaches 1 (keeps high-chroma,
-    /// low-Y colors such as deep blue from blowing out).
+    /// low-Y colors such as deep blue from blowing out). With `kappa < 1` the
+    /// color difference `rgb - Y` is scaled by `gain^kappa` (0 keeps absolute
+    /// chroma) and channels pushed below 0 are clipped.
     private static func rgbToneMixedWithLuminanceRatio(
-        _ value: SIMD3<Double>, beta: Double, _ curve: (Double) -> Double
+        _ value: SIMD3<Double>, beta: Double, kappa: Double = 1.0, _ curve: (Double) -> Double
     ) -> SIMD3<Double> {
         let tone = encodedCurve(value, curve)
         guard beta < 1.0 else { return tone }
@@ -240,7 +246,13 @@ public enum ToneOps {
             let largest = max(max(clipped.x, clipped.y), max(clipped.z, 1e-6))
             gain = min(gain, max(1.0, 1.0 / largest))
         }
-        let ratio = clipped * gain
+        let ratio: SIMD3<Double>
+        if kappa == 1.0 {
+            ratio = clipped * gain
+        } else {
+            let moved = SIMD3(repeating: y * gain) + (clipped - SIMD3(repeating: y)) * pow(gain, kappa)
+            ratio = SIMD3(max(moved.x, 0.0), max(moved.y, 0.0), max(moved.z, 0.0))
+        }
         return ratio + beta * (tone - ratio)
     }
 
@@ -251,8 +263,12 @@ public enum ToneOps {
         let m = piecewiseLinear(amount, xs: whitesAmount, ys: whitesM)
         let a = piecewiseLinear(amount, xs: whitesAmount, ys: whitesA)
         let c = piecewiseLinear(amount, xs: whitesAmount, ys: whitesC)
-        let beta = amount < 0 ? whitesBetaNegative : whitesBetaPositive
-        return rgbToneMixedWithLuminanceRatio(value, beta: beta) { anchoredRatio($0, anchor: 0.0, m: m, a: a, c: c) }
+        if amount < 0 {
+            return rgbToneMixedWithLuminanceRatio(value, beta: whitesBetaNegative, kappa: whitesKappaNegative) {
+                anchoredRatio($0, anchor: 0.0, m: m, a: a, c: c)
+            }
+        }
+        return rgbToneMixedWithLuminanceRatio(value, beta: whitesBetaPositive) { anchoredRatio($0, anchor: 0.0, m: m, a: a, c: c) }
     }
 
     /// `tone_model.apply_blacks`. anchor=1 (white fixed; `m>1` undershoots

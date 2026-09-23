@@ -12,9 +12,9 @@
   },
   "processing": {
     "fingerprint": {
-      "basicTone": "spatial-v2-local-laplacian-highlights-shadows-v1+measured-tone-ops-cube-p-v2",
+      "basicTone": "spatial-v2-local-laplacian-highlights-shadows-v1+measured-tone-ops-cube-p-v3",
       "toneCurve": "encoded-srgb-endpoint-extrapolation-v1",
-      "colorMixer": "measured-color-ops-cube-q-v2",
+      "colorMixer": "measured-color-ops-cube-q-v3",
       "outputTransform": "extended-linear-to-srgb-soft-output-v2",
       "rawDecode": "core-image-raw8-intent-v2",
       "renderPipeline": "extended-linear-srgb-edits-resize-before-final-srgb-v1"

@@ -404,7 +404,7 @@ round4（5 scene × 14 variant）を、描画を通さない「LR 書き出し�
 
 colorful・pastel の +0.04〜+0.19 は、旧 HSL の「彩度を下げると明るくなる」誤りが基準現像の暗さ（P1524180 の中立で EV −0.06、DSC02072 の非RAW で −0.03〜−0.14）を打ち消していた分が消えたため。残差は基準現像側（露出）で扱う。
 
-### round5: 強い Whites / Blacks で彩度が落ちる問題の修正（2026-09-24、ToneOps v2）
+### round5: 強い Whites / Blacks の彩度と Vibrance の強さの修正（2026-09-24、ToneOps v2 / v3、ColorOps v3）
 
 round5（オーナーの LR 書き出し 198 枚: RAW 5 scene × 21 variant、LR 由来 JPEG 5 scene × 9 variant、カメラ JPEG 3 枚 × 16 variant）を、
 round4 と同じ「LR 書き出し同士（基準 → variant）」の比較で分解した。
@@ -416,21 +416,27 @@ round4 と同じ「LR 書き出し同士（基準 → variant）」の比較で�
   LR 書き出し同士の比較: W−60 0.875 → 0.771、W−83 1.088 → 0.911、B+60 1.270 → 1.156、B+89 2.171 → 1.899、W−83→B+89 2.371 → 1.896。
 - `ToneOps.identifier`（`measured-tone-ops-cube-p-v2`）を追加し、処理 fingerprint の `basicTone` に連結した（校正 suite の colorful は Whites −53 / Blacks +95 で描画が変わるため）。
 
-| ゲート（描画を通した実写比較、平均 ΔE00） | 変更前 | ToneOps v2 |
-|---|---:|---:|
-| round5 RAW（21 variant × 5 scene） | 2.70 | **2.57** |
-| 　night_tone / colorful_tone / W−83 と B+89 | 3.51 / 3.26 / 2.68 | **2.88 / 2.65 / 2.31**（彩度比 0.76〜0.80 → 0.89〜0.92） |
-| 　full_colorful / full_night / full_pastel | 2.95 / 4.03 / 2.66 | 2.76 / 3.71 / 2.88 |
-| round5 LR 由来 JPEG（9 variant × 5 scene） | 3.05 | **2.62** |
-| 　Blacks +89 / W−83 と B+89 / night_tone | 1.06 / 1.96 / 3.34 | **0.43 / 1.01 / 2.57** |
-| round5 カメラ JPEG（16 variant × 3 枚） | 1.51 | **1.43** |
-| 　Blacks +89 / colorful_tone / Whites −50 / full_colorful | 0.85 / 2.06 / 0.64 / 2.12 | **0.33 / 1.81** / 0.79 / 2.21 |
-| round3（JPEG 入力 8 scene × 6 variant） | 1.93 | **1.84**（トーン合成 3.05 → 2.52） |
+- **v3: Whites を下げるとき、LR は明部の絶対的な彩度を輝度比よりさらに残す。** 輝度を Y→Y2 に動かすときの色差を gain^0.25 倍にし、RGBTone と 0.4 で混ぜる。
+  LR 書き出し同士でカメラ JPEG・LR 由来 JPEG・RAW の 5 群すべてが良くなる（併合 0.949 → 0.776。カメラ W−50 0.869 → 0.596、RAW W−83 0.911 → 0.822）。
+- **v3: Vibrance（増彩側）が実写で LR の 2 倍近く強かった。** 係数はチャートで決めていた。round0 RAW の Vibrance +21 単体（LR 書き出し同士）で 0.741 → 0.538、
+  colorful の tone → full（Vibrance +15 ＋ HSL）でも全 kind が良くなる。彩度が少しでもある画素をより強く保護し（(1−S)^4）、効きを 0.75 倍にした。
+- 空間処理（Highlights / Shadows）の彩度結合は v2 の上で測り直しても効果が小さく（RAW −0.01〜−0.02、LR 由来 JPEG +0.02〜+0.05）、入れない。
 
-悪化したのは full_pastel（RAW +0.21、JPEG +0.14）、カメラ JPEG の Whites −50（+0.15）と full_colorful（+0.10）。いずれも彩度比が 1 を超えた
-（RAW の full_pastel 0.98 → 1.05、カメラ JPEG の full_colorful 1.07 → 1.23）。従来は Whites / Blacks の彩度低下が、別の操作の彩度の出すぎ
-（カメラ JPEG の Shadows +100 は彩度比 1.18）を打ち消していた。round4 で「LR の Shadows は持ち上げた画素の彩度を 7% 下げる」と測っており、
-その結合（空間処理のゲインに彩度を結び付ける）を v2 の上で測り直す。
+| ゲート（描画を通した実写比較、平均 ΔE00） | 変更前 | ToneOps v2 | v3（Whites 下げ・Vibrance） |
+|---|---:|---:|---:|
+| round5 RAW（21 variant × 5 scene） | 2.70 | 2.57 | **2.55** |
+| 　night_tone / colorful_tone / W−83 と B+89 | 3.51 / 3.26 / 2.68 | 2.88 / 2.65 / 2.31 | **2.77 / 2.53 / 2.29** |
+| 　full_colorful / full_night / full_pastel | 2.95 / 4.03 / 2.66 | 2.76 / 3.71 / 2.88 | **2.74 / 3.68 / 2.73** |
+| round5 LR 由来 JPEG（9 variant × 5 scene） | 3.05 | 2.62 | **2.53** |
+| 　Whites −83 / W−83 と B+89 / full_bluesky2 | 0.96 / 1.96 / 2.67 | 0.81 / 1.01 / 2.66 | **0.56 / 0.84 / 2.44** |
+| round5 カメラ JPEG（16 variant × 3 枚） | 1.51 | 1.43 | **1.37** |
+| 　Whites −50 / Whites −83 / full_bluesky2 / full_colorful | 0.64 / 1.41 / 1.24 / 2.12 | 0.79 / 1.43 / 1.17 / 2.21 | **0.47 / 1.07 / 1.07 / 2.16** |
+| round3（JPEG 入力 8 scene × 6 variant） | 1.93 | 1.84 | **1.82**（トーン合成 3.05 → 2.52 → 2.37） |
+
+v2 だけでは full_pastel（RAW +0.21）とカメラ JPEG の Whites −50・full_colorful が悪化した（彩度比が 1 を超えた）。v3 で Whites −50 と full_pastel は戻り、
+変更前より悪いのは full_pastel（RAW +0.06、LR 由来 JPEG +0.08、カメラ JPEG +0.04）とカメラ JPEG の full_colorful（+0.04）だけになった。
+残る大きな差は、カメラ JPEG の Shadows +100 の彩度の出すぎ（彩度比 1.18）と Highlights −100 の彩度不足（0.85）、LR 由来 JPEG の night（EV −0.36）、
+RAW の P1581215（基準現像の誤差が大きい）。
 
 RAW の full_bluesky2（8.0）は比較に使えない。round5 のサイドカー生成で `WhiteBalance=Custom` を `Temperature` なしで書いたため、基準サイドカーに色温度が無い scene で LR 側の WB が崩れている（カメラ JPEG と LR 由来 JPEG の bluesky2 は有効）。
 
