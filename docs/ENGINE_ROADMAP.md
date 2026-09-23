@@ -339,7 +339,17 @@ HSL Blue の輝度再 fit は、純度の高い青で `yMid` 除算が発散し�
 
 プリセット内訳（A）: RAW P1524180 bluesky2 1.97 / colorful 2.27 / night 6.04 / pastel 1.45、JPEG DSC02072 2.92 / 2.92 / 5.86 / 2.57。B が良いのは P1524180 の pastel（1.11）だけ。セット A の絶対値が 6 scene 時点（2.28）より高いのは、追加 scene のうち非常に暗い 2 枚（P1581356 / P1581368）で基準現像自体の精度が落ちるため（既知の課題）。
 
-**シャドウ帯域の位置の適応（2026-09-23、`spatial-adaptive/model.md` §10、14 scene）**: 暗い scene ほど LR のシャドウは深い側に効く（P1581237 では 2 段）。ゲイン曲線の参照 Ln をずらす `PHOTO_BENCH_SPATIAL_SHIFT`（`c2ac2d1`）で 14 scene × {S+50, S+100} × sShift 7 × kS 5 を格子探索し、`sShift = clamp(1.5609 + 0.5757·mean_full, −3, 0)`（mean_full = log2 輝度の平均。r = 0.78〜0.88）、再 fit `kS = clamp(0.619 + 0.944·highlightRatioBase, 0.6, 1.5)`。単体 LOO は 固定 4.87 / 適応 kS 3.41 / shift＋旧 kS 3.02 / shift＋再 fit 3.13。複合（中立統計量で評価）では shift＋旧 kS が 10/10 で悪化、shift＋再 fit は 6/10 で改善と割れる。本番の preHS 統計量と組み合わせた A/B/C で採否を決める。
+**シャドウ帯域の位置の適応（2026-09-23、`spatial-adaptive/model.md` §10、14 scene）**: 暗い scene ほど LR のシャドウは深い側に効く（P1581237 では 2 段）。ゲイン曲線の参照 Ln をずらす `PHOTO_BENCH_SPATIAL_SHIFT`（`c2ac2d1`）で 14 scene × {S+50, S+100} × sShift 7 × kS 5 を格子探索し、`sShift = clamp(1.5609 + 0.5757·mean_full, −3, 0)`（mean_full = log2 輝度の平均。r = 0.78〜0.88）、再 fit `kS = clamp(0.619 + 0.944·highlightRatioBase, 0.6, 1.5)`。単体 LOO は 固定 4.87 / 適応 kS 3.41 / shift＋旧 kS 3.02 / shift＋再 fit 3.13。複合（中立統計量で評価）では shift＋旧 kS が 10/10 で悪化、shift＋再 fit は 6/10 で改善と割れる。本番の preHS 統計量と組み合わせた A/B/C（Studio）: A = 現行 v2、B = shift ＋ 再 fit kS、C = shift ＋ 現行 kS。
+
+| ケース群 | n | A | B | C |
+|---|---:|---:|---:|---:|
+| H/S 単体（3 scene） | 18 | **1.82** | 1.95 | 1.82 |
+| tone-all_bluesky2 | 3 | 2.66 | **2.59** | 2.66 |
+| full_bluesky2 | 3 | **2.58** | 2.64 | 2.58 |
+| 4 プリセット × RAW P1524180 | 4 | 2.93 | **2.84**（pastel 1.45 → 1.16） | 2.93 |
+| round2 セット A（14 scene × 3） | 42 | 3.15 | **3.05** | 3.23 |
+
+C が A と一致するのは、明るい編集（露出＋など）では preHS の平均輝度が clamp 上限に達して shift = 0 になるため。**RAW は B を採用**（単体 3 scene は僅差で劣るが、14 scene と実プリセットで上回る）。非RAW は round3 の専用法則（下記）へ。
 - 縦位置 2 枚（P1581356 / P1581368）は LR 書き出しがどの向き・鏡映とも一致せず、幾何の参照から除外（model.md §9 訂正）。
 
 **round3: JPEG 入力の H/S（2026-09-23、`.photobench/phase2/nonraw-hs/model.md`、8 scene × 7 variant、`make_round3.py`）**: round2 の LR 中立 JPEG に設定だけの XMP を埋め込み、LR に JPEG 入力として現像させた教師データ。
