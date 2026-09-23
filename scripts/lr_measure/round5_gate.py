@@ -67,7 +67,7 @@ def compare(ref_dir: Path, render_dir: Path, out_json: Path, align: bool) -> dic
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out-dir", required=True)
-    parser.add_argument("--kinds", nargs="*", default=["raw", "jpeg"])
+    parser.add_argument("--kinds", nargs="*", default=["raw", "jpeg", "camera"])
     parser.add_argument("--variants", nargs="*", default=None)
     parser.add_argument("--env", action="append", default=[], help="KEY=VALUE（複数可）")
     parser.add_argument("--workers", type=int, default=3)
@@ -80,18 +80,19 @@ def main() -> None:
 
     jobs = []
     for e in manifest:
-        kind = "raw" if e["kind"] == "raw" else "jpeg"
+        kind = {"raw": "raw", "jpeg-embedded": "jpeg", "camera-jpeg": "camera"}[e["kind"]]
         if kind not in args.kinds or (args.variants and e["variant"] not in args.variants):
             continue
         render_dir = out / "renders" / kind / e["variant"]
         if kind == "raw":
             jobs.append((e, kind, R5.RAW_SCENES[e["scene"]], R5.OUT / e["file"].replace(".RW2", ".xmp"), render_dir, None))
         else:
-            attributes, elements = R5.RAW_VARIANTS[e["variant"]]()
+            attributes, elements = R5.variant_settings(e["variant"])
             xmp = xmp_dir / f"{e['variant']}.xmp"
             if not xmp.exists():
                 xmp.write_text(minimal_packet(attributes, elements), encoding="utf-8")
-            jobs.append((e, kind, R5.JPEG_SOURCE / e["source"], xmp, render_dir, "coreimage"))
+            src = R5.JPEG_SOURCE / e["source"] if kind == "jpeg" else R5.CAMERA_JPEGS[e["scene"]]
+            jobs.append((e, kind, src, xmp, render_dir, "coreimage"))
     log(f"rendering {len(jobs)} cases, env={env_overrides}")
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for err in pool.map(lambda j: render(j[2], j[3], j[4], j[5], env_overrides), jobs):
@@ -115,13 +116,13 @@ def main() -> None:
             if kind == "jpeg" and render_dir.exists():
                 for f in render_dir.glob("p2_*_neutral.jpg"):
                     f.rename(render_dir / f"{f.name.split('_')[1]}.jpg")
-            results = compare(ref_dir, render_dir, out / "compare" / kind / f"{variant}.json", align=(kind == "jpeg"))
+            results = compare(ref_dir, render_dir, out / "compare" / kind / f"{variant}.json", align=(kind != "raw"))
             for name, r in results.items():
                 rows.append({"kind": kind, "variant": variant, "scene": name.split("_")[0].split("-")[0],
                              "meanDeltaE00": r["meanDeltaE00"], "meanEV": r["meanEV"], "chromaRatio": r["chromaRatio"]})
     (out / "summary.json").write_text(json.dumps({"env": env_overrides, "rows": rows}, indent=2))
-    scenes = list(R5.RAW_SCENES)
     for kind in args.kinds:
+        scenes = list(R5.CAMERA_JPEGS) if kind == "camera" else list(R5.RAW_SCENES)
         print(f"\n[{kind}] variant" + " " * 22 + "".join(f"{s:>10}" for s in scenes) + f"{'mean':>8}{'EV':>8}{'chroma':>8}")
         for variant in sorted({r["variant"] for r in rows if r["kind"] == kind}):
             sub = [r for r in rows if r["kind"] == kind and r["variant"] == variant]

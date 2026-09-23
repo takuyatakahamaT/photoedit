@@ -88,6 +88,25 @@ RAW_VARIANTS = {
 }
 JPEG_VARIANTS = ["night_tone", "Whites2012_-83", "Blacks2012_+89", "W-83_B+89", "colorful_tone",
                  "full_night", "full_bluesky2", "full_pastel", "full_colorful"]
+# カメラ JPEG（Sony α7 II、非RAW 経路の実物）。DSC02072 はプリセットの JPEG ゲートで Highlights / Whites が効きすぎ、
+# 非RAW の適応則の実測範囲外（kH が下限 0.3 に張り付く）なので、単体スライダーから測る。
+CAMERA_JPEGS = {"DSC02072": ROOT / "DSC02072.JPG", "DSC02078": ROOT / "DSC02078.JPG", "DSC02150": ROOT / "DSC02150.jpg"}
+SINGLE_VARIANTS = {
+    "neutral": lambda: only(),
+    "Highlights2012_-50": lambda: only(Highlights2012="-50"),
+    "Highlights2012_-100": lambda: only(Highlights2012="-100"),
+    "Shadows2012_+50": lambda: only(Shadows2012="+50"),
+    "Shadows2012_+100": lambda: only(Shadows2012="+100"),
+    "Whites2012_-50": lambda: only(Whites2012="-50"),
+    "Blacks2012_+60": lambda: only(Blacks2012="+60"),
+}
+CAMERA_VARIANTS = ["neutral", "Highlights2012_-50", "Highlights2012_-100", "Shadows2012_+50", "Shadows2012_+100",
+                   "Whites2012_-50", "Whites2012_-83", "Blacks2012_+60", "Blacks2012_+89", "Contrast2012_-43",
+                   "night_tone", "colorful_tone", "full_night", "full_bluesky2", "full_pastel", "full_colorful"]
+
+
+def variant_settings(name: str) -> tuple[dict[str, str], dict[str, str]]:
+    return (SINGLE_VARIANTS.get(name) or RAW_VARIANTS[name])()
 
 
 def clone(src: Path, dst: Path) -> None:
@@ -124,17 +143,29 @@ def main() -> None:
             embed(minimal_packet(attributes, elements), dst)
             manifest.append({"file": dst.name, "scene": scene, "variant": variant, "kind": "jpeg-embedded",
                              "settings": attributes, "curves": sorted(elements), "source": src.name})
+    for scene, src in CAMERA_JPEGS.items():
+        if not src.exists():
+            raise SystemExit(f"カメラ JPEG が無い: {src}")
+        for variant in CAMERA_VARIANTS:
+            attributes, elements = variant_settings(variant)
+            dst = OUT / f"p5c_{scene}_{variant}.jpg"
+            shutil.copy2(src, dst)
+            embed(minimal_packet(attributes, elements), dst)
+            manifest.append({"file": dst.name, "scene": scene, "variant": variant, "kind": "camera-jpeg",
+                             "settings": attributes, "curves": sorted(elements), "source": src.name})
     (ROUND / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     n_raw = sum(1 for e in manifest if e["kind"] == "raw")
+    n_cam = sum(1 for e in manifest if e["kind"] == "camera-jpeg")
     (ROUND / "README.md").write_text(
-        "# LR計測 round5（極端なトーン・4 プリセット全体・Split Toning の Blending・Calibration）— 書き出し 1 回、10〜15 分\n\n"
+        "# LR計測 round5（極端なトーン・4 プリセット全体・Split Toning の Blending・Calibration）— 書き出し 1 回、15〜20 分\n\n"
         f"1. Lightroom「ローカル」で次のフォルダを開く（Finder ⇧⌘G に貼る）:\n   `{OUT}`\n"
         "2. 全選択（⌘A）→ 書き出し（⇧⌘E）: **JPG・画質 100%・フルサイズ・sRGB・出力シャープ OFF・ファイル名そのまま**\n"
         f"   保存先: `{EXPORT}`\n"
         "3. 写真の現像設定には触らない。終わったら「round5 終わった」と伝える。\n\n"
         f"内容: RAW {n_raw} 枚（{len(RAW_SCENES)} scene × {len(RAW_VARIANTS)} variant、APFS クローンなので実容量は増えない）＋ "
-        f"JPEG {len(manifest) - n_raw} 枚（{len(RAW_SCENES)} scene × {len(JPEG_VARIANTS)} variant、round2 の LR 中立 JPEG に設定を埋め込んだもの）。\n"
-        "目的: night・colorful で残っている差（強い Whites / Blacks / Contrast で自前の彩度が LR より落ちる）を、"
+        f"JPEG {len(manifest) - n_raw - n_cam} 枚（{len(RAW_SCENES)} scene × {len(JPEG_VARIANTS)} variant、round2 の LR 中立 JPEG に設定を埋め込んだもの）＋ "
+        f"カメラ JPEG {n_cam} 枚（Sony α7 II の {len(CAMERA_JPEGS)} 枚 × {len(CAMERA_VARIANTS)} variant）。\n"
+        "目的: night・colorful で残っている差（強い Whites / Blacks / Contrast で自前の彩度が LR より落ちる、カメラ JPEG で Highlights / Whites が効きすぎる）を、"
         "極端な値の実写で直接測る。あわせて 4 プリセット全体を 5 枚の写真で確かめ、Split Toning の Blending と、"
         "まだ実写で確かめていない Calibration のスライダーを測る。\n",
         encoding="utf-8",
