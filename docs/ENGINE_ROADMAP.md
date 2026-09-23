@@ -304,6 +304,21 @@ Texture / Clarity2012（Laplacian 段別線形ゲイン、Clarity は +3 段）�
 - Calibration を cube Q の前に置く案は night 6.74 → 6.24 / bluesky2 2.58 → 2.78 で平均横ばい → 現状維持（フックは残す）。
 - Python 側（出力参照）の再 fit（0.65 / 0.61 / 0.76 / 0.85）とは位置が違うため数値は一致しないが、「表は全体に強すぎる」方向は同じ。
 
+**新既定の再計測（2026-09-23、`334fa20`、Studio、環境変数なし）**: RAW=pre-tone / 非RAW=s-p1-p2、kH 0.5 / kS 0.8、Dehaze 区分線形。
+
+| ケース群 | 旧既定 | 新既定 |
+|---|---:|---:|
+| H/S 単体 18 ケース | 2.22 | 2.73（退行。scene 依存の画像適応） |
+| tone-all_bluesky2 3 scene | 5.42 | **2.70** |
+| full_bluesky2 3 scene | 5.40 | **2.82** |
+| c4-gate 15 ケース | 2.18 | 2.16（Dehaze+40 4.23 → 3.85） |
+| 非RAW round0 4 ケース | 2.61 | 1.99（tone-all 6.19 → 3.34、only-shadows 1.57 → 2.15） |
+| 4 プリセット × 2 scene 平均 | 6.62 | **3.53** |
+
+4 プリセットの内訳（RAW P1524180 / JPEG DSC02072、平均 ΔE と EV）: bluesky2 **1.96**（−0.08）/ 3.21（−0.13）、pastel **1.11**（0.00）/ 3.35（−0.21）、colorful **2.27**（−0.02）/ 3.62（−0.21）、night 6.09（−0.05）/ 6.57（−0.26）。RAW 3 本は「見比べて気づかない」目安（≤ 2）前後に到達。night は残差分解で示した Calibration の順序と Red/Orange の彩度・色相ドリフト（HSL・Grading の同定精度）が残る。JPEG 入力は RAW より 1〜2 悪く、EV −0.13〜−0.26 で暗い（非RAW の露出式・H/S の位置の再確認が必要）。
+
+HSL Blue の輝度再 fit は、純度の高い青で `yMid` 除算が発散し白飛びする副作用のため見送った（ColorOps のコメント）。飽和ガードを入れてから再検討する。
+
 **4 プリセットの残差分解（2026-09-23、`.photobench/phase5/preset-residuals/model.md`）**: 4 プリセット × 11 操作グループの中立化 XMP（48 種）を RAW / JPEG で 104 枚描画し、LR 参照と比較。
 
 - 共通の 1 位は **C3 の Highlights／Shadows**（確定）: 8 組中 7 組で「外すと改善」し、改善幅は |Highlights2012| にほぼ比例（colorful −88 / night −87 で最大、pastel −44 で最小）。RAW では中間調（相対輝度 0.33〜0.56）で EV 誤差がピーク。→ 振幅の再フィット（spatial-v2.1）が対処。
