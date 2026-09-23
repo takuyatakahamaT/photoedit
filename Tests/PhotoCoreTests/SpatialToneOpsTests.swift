@@ -739,6 +739,134 @@ struct SpatialToneOpsTests {
         #expect(bottomRowFirstPixel < 0.5, "the last row should still be the dark bottom half")
     }
 
+    // MARK: - round2 set A: image-adaptive Shadows2012 amplitude
+    // (`.photobench/phase2/spatial-adaptive/model.md`)
+
+    /// Uniform planes are unaffected by any blur (a constant convolved with
+    /// a normalized kernel is itself), so these two are exact, not
+    /// approximate: a photo that is entirely brighter/darker than -1 stop
+    /// must have `highlightRatioBase` exactly 1/0.
+    @Test func highlightRatioBaseIsExactOneOrZeroForAUniformImage() throws {
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
+        func uniformImage(value: Float, width: Int = 64, height: Int = 48) -> CIImage {
+            var pixels = [Float](repeating: 0, count: width * height * 4)
+            for i in 0..<(width * height) {
+                pixels[i * 4] = value
+                pixels[i * 4 + 3] = 1
+            }
+            return CIImage(
+                bitmapData: pixels.withUnsafeBytes { Data($0) }, bytesPerRow: width * 4 * MemoryLayout<Float>.size,
+                size: CGSize(width: width, height: height), format: .RGBAf, colorSpace: colorSpace
+            )
+        }
+        let redOnly = SIMD3<Double>(1, 0, 0)
+        let bright = SpatialAdaptiveStats.highlightRatioBase(image: uniformImage(value: 1.0), longEdge: 64, lumaWeights: redOnly)
+        let dark = SpatialAdaptiveStats.highlightRatioBase(image: uniformImage(value: 0.1), longEdge: 64, lumaWeights: redOnly)
+        #expect(bright == 1.0)
+        #expect(dark == 0.0)
+    }
+
+    /// A sharp horizontal split (bright top half / dark bottom half, R
+    /// channel only) with a small blur sigma relative to the image height
+    /// should land close to a 50/50 highlight ratio -- the Gaussian blur
+    /// only smears the boundary over roughly +-3 sigma, not the whole
+    /// image, so the crossing point of the -1 stop threshold stays near the
+    /// geometric midpoint (see this test's derivation in the PR/commit
+    /// discussion: it is not exactly 0.5 because blurring happens in log2
+    /// space, where the bright/dark endpoints are not equidistant from the
+    /// threshold, so a wide tolerance is used deliberately, not because the
+    /// implementation is expected to be imprecise).
+    @Test func highlightRatioBaseIsApproximatelyHalfForASharpHalfBrightSplit() throws {
+        let width = 200
+        let height = 100
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
+        var pixels = [Float](repeating: 0, count: width * height * 4)
+        for y in 0..<height {
+            let value: Float = y < height / 2 ? 1.0 : 0.1
+            for x in 0..<width {
+                pixels[(y * width + x) * 4] = value
+                pixels[(y * width + x) * 4 + 3] = 1
+            }
+        }
+        let image = CIImage(
+            bitmapData: pixels.withUnsafeBytes { Data($0) }, bytesPerRow: width * 4 * MemoryLayout<Float>.size,
+            size: CGSize(width: width, height: height), format: .RGBAf, colorSpace: colorSpace
+        )
+        let ratio = SpatialAdaptiveStats.highlightRatioBase(image: image, longEdge: 200, lumaWeights: SIMD3(1, 0, 0))
+        #expect(abs(ratio - 0.5) < 0.1, "expected close to 0.5, got \(ratio)")
+    }
+
+    /// A photo already larger than `longEdge` is downscaled; one already
+    /// smaller is left at its own size (never upscaled) -- both end up at
+    /// the *same* `highlightRatioBase` for the same underlying scene, which
+    /// is exactly `model.md` §6 item 2's "preview and export must agree"
+    /// requirement. Verified here with two different-resolution renders of
+    /// the same half-bright-split pattern (400x200 and 100x50), both well
+    /// away from `longEdge`'s own 200 so the "already smaller, don't
+    /// upscale" branch is also exercised.
+    @Test func highlightRatioBaseAgreesAcrossDifferentInputResolutions() throws {
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
+        func splitImage(width: Int, height: Int) -> CIImage {
+            var pixels = [Float](repeating: 0, count: width * height * 4)
+            for y in 0..<height {
+                let value: Float = y < height / 2 ? 1.0 : 0.1
+                for x in 0..<width {
+                    pixels[(y * width + x) * 4] = value
+                    pixels[(y * width + x) * 4 + 3] = 1
+                }
+            }
+            return CIImage(
+                bitmapData: pixels.withUnsafeBytes { Data($0) }, bytesPerRow: width * 4 * MemoryLayout<Float>.size,
+                size: CGSize(width: width, height: height), format: .RGBAf, colorSpace: colorSpace
+            )
+        }
+        let large = SpatialAdaptiveStats.highlightRatioBase(image: splitImage(width: 400, height: 200), longEdge: 200, lumaWeights: SIMD3(1, 0, 0))
+        let small = SpatialAdaptiveStats.highlightRatioBase(image: splitImage(width: 100, height: 50), longEdge: 200, lumaWeights: SIMD3(1, 0, 0))
+        #expect(abs(large - small) < 0.02, "large=\(large) small=\(small)")
+    }
+
+    /// `SpatialAdaptiveLaw.kS`'s clamp: below/above the [0.4, 1.8] training
+    /// range, and an in-range sanity check against a real measured
+    /// `highlightRatioBase` from `model.md` §3.1 (P1013558's "base" table:
+    /// highlight(>-1) = 0.212) -- not one of the exact fit inputs, but close
+    /// enough to confirm the formula's coefficients are wired up correctly.
+    @Test func spatialAdaptiveLawClampsAtBothEnds() {
+        #expect(SpatialAdaptiveLaw.kS(highlightRatioBase: -10) == SpatialAdaptiveLaw.clampMin)
+        #expect(SpatialAdaptiveLaw.kS(highlightRatioBase: 10) == SpatialAdaptiveLaw.clampMax)
+        #expect(SpatialAdaptiveLaw.kS(highlightRatioBase: 0) == SpatialAdaptiveLaw.intercept)
+
+        let ratio = 0.212
+        let expected = SpatialAdaptiveLaw.intercept + SpatialAdaptiveLaw.slope * ratio
+        #expect(abs(SpatialAdaptiveLaw.kS(highlightRatioBase: ratio) - expected) < 1e-9)
+        #expect(expected > SpatialAdaptiveLaw.clampMin && expected < SpatialAdaptiveLaw.clampMax, "sanity: this ratio should not need clamping")
+    }
+
+    /// `SpatialGainScale.adaptive`: kH stays fixed at 0.5 regardless of the
+    /// ratio (`model.md` §4.1/§5), kSneg/kSpos both get the same
+    /// `SpatialAdaptiveLaw.kS` value (kSneg was never measured separately --
+    /// see `SpatialGainScale.adaptive`'s doc comment).
+    @Test func spatialGainScaleAdaptiveFixesKHAndSharesKSAcrossBothShadowSigns() {
+        let scale = SpatialGainScale.adaptive(highlightRatioBase: 0.3)
+        #expect(scale.highlightsNeg == 0.5)
+        #expect(scale.highlightsPos == 0.5)
+        #expect(scale.shadowsNeg == scale.shadowsPos)
+        #expect(scale.shadowsNeg == SpatialAdaptiveLaw.kS(highlightRatioBase: 0.3))
+    }
+
+    /// `SpatialGainScale.current(highlightRatioBase:)`: an explicit
+    /// `PHOTO_BENCH_SPATIAL_GAIN_SCALE` always wins over the adaptive law,
+    /// matching `model.md` §6 item 4 -- this test only exercises the `nil`
+    /// (no per-photo statistic) and adaptive branches directly since setting
+    /// process-wide environment variables from `Testing` is not done
+    /// elsewhere in this file; the env var's precedence itself is already
+    /// covered by `SpatialGainScale.current`'s existing behavior (unchanged
+    /// by this refactor -- only its parameter list changed).
+    @Test func spatialGainScaleCurrentFallsBackToProductionDefaultWithoutAStatistic() {
+        #expect(SpatialGainScale.current(highlightRatioBase: nil) == SpatialGainScale.productionDefault)
+        let adaptive = SpatialGainScale.current(highlightRatioBase: 0.3)
+        #expect(adaptive == SpatialGainScale.adaptive(highlightRatioBase: 0.3))
+    }
+
     // MARK: - Helpers
 
     private func maxAbsoluteDifference(_ lhs: [Double], _ rhs: [Double]) -> Double {

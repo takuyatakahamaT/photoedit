@@ -1,3 +1,4 @@
+import CoreImage
 import Foundation
 
 /// Phase2 C3: a faithful Swift port of `.photobench/phase2/spatial-v2/
@@ -92,7 +93,7 @@ public enum SpatialOrder: String {
 /// directly (and passes `.identity`, or omits the parameter) byte-identical
 /// to the fixtures generated before this type existed, regardless of what
 /// the production default is.
-public struct SpatialGainScale: Sendable {
+public struct SpatialGainScale: Sendable, Equatable {
     public let highlightsNeg: Double
     public let highlightsPos: Double
     public let shadowsNeg: Double
@@ -120,21 +121,186 @@ public struct SpatialGainScale: Sendable {
     /// bests. See the grid-search report for the full 16-combo table.
     public static let productionDefault = SpatialGainScale(highlightsNeg: 0.5, highlightsPos: 0.5, shadowsNeg: 0.8, shadowsPos: 0.8)
 
+    /// round2 set A (`.photobench/phase2/spatial-adaptive/model.md` §5):
+    /// `SpatialAdaptiveLaw.kS(highlightRatioBase:)` applied to both shadow
+    /// signs. kSneg (Shadows2012 negative) was never measured in that round
+    /// (its gate XMPs were `Shadows2012_{+50,+100}` only) -- this reuses the
+    /// positive-fit value for both, a provisional stand-in flagged in
+    /// `model.md` §5/§8 pending a future round's negative-side measurement.
+    /// kH stays at the fixed production value: `model.md` §4.1 found no
+    /// usable image-adaptive predictor for it.
+    public static func adaptive(highlightRatioBase: Double) -> SpatialGainScale {
+        let kS = SpatialAdaptiveLaw.kS(highlightRatioBase: highlightRatioBase)
+        return SpatialGainScale(
+            highlightsNeg: SpatialAdaptiveLaw.kHFixed, highlightsPos: SpatialAdaptiveLaw.kHFixed,
+            shadowsNeg: kS, shadowsPos: kS
+        )
+    }
+
     /// Env-var override/experiment hook, resolved **only** by the pipeline
     /// entry point (see the type's doc comment) -- unset *or* unparseable
-    /// (wrong count, non-numeric) both fall back to `.productionDefault`,
-    /// not `.identity`, since an explicitly-set-but-malformed value should
-    /// fail toward today's real production behavior, not silently revert to
-    /// the pre-fit-amplitude behavior.
-    public static var current: SpatialGainScale {
+    /// (wrong count, non-numeric) both fall back to the image-adaptive law
+    /// (`.adaptive(highlightRatioBase:)`) when a per-photo statistic is
+    /// available, else `.productionDefault`, since an explicitly-set-but-
+    /// malformed value should fail toward today's real production behavior,
+    /// not silently revert to the pre-fit-amplitude behavior. `PHOTO_BENCH_
+    /// SPATIAL_GAIN_SCALE`'s explicit value always wins over the adaptive
+    /// law when both are present, matching `model.md` §6 item 4 (keeps the
+    /// env var usable for A/B comparison against the adaptive default).
+    public static func current(highlightRatioBase: Double?) -> SpatialGainScale {
+        let fallback = highlightRatioBase.map { SpatialGainScale.adaptive(highlightRatioBase: $0) } ?? .productionDefault
         guard let raw = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_GAIN_SCALE"] else {
-            return .productionDefault
+            return fallback
         }
         let parts = raw.split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
-        guard parts.count == 4 else { return .productionDefault }
+        guard parts.count == 4 else { return fallback }
         let values = parts.compactMap { Double($0) }
-        guard values.count == 4 else { return .productionDefault }
+        guard values.count == 4 else { return fallback }
         return SpatialGainScale(highlightsNeg: values[0], highlightsPos: values[1], shadowsNeg: values[2], shadowsPos: values[3])
+    }
+}
+
+/// round2 set A (`.photobench/phase2/spatial-adaptive/model.md` §5): the
+/// single home for the image-adaptive Shadows2012-amplitude law's
+/// constants, so a future re-fit (more scenes, `model.md` §7/§8) only
+/// touches this one place.
+public enum SpatialAdaptiveLaw {
+    /// `kS = clamp(intercept + slope * highlightRatioBase, clampMin, clampMax)`,
+    /// a 1-variable linear regression (n=6 scenes, Pearson r=+0.996 against
+    /// each scene's real-engine-measured optimal kS) -- `model.md` §4.2.
+    public static let intercept = 0.4184
+    public static let slope = 1.6664
+    /// The regression's training data only spans kS in [0.4, 1.8]
+    /// (`model.md` §5) -- clamped rather than extrapolated beyond that.
+    public static let clampMin = 0.4
+    public static let clampMax = 1.8
+    /// kH: no significant image-adaptive predictor was found (`model.md`
+    /// §4.1) -- stays at the existing fixed production value.
+    public static let kHFixed = 0.5
+
+    public static func kS(highlightRatioBase: Double) -> Double {
+        min(max(intercept + slope * highlightRatioBase, clampMin), clampMax)
+    }
+}
+
+/// round2 set A (`.photobench/phase2/spatial-adaptive/model.md` §3.1/§6):
+/// computes `highlightRatioBase`, the per-photo statistic `SpatialAdaptiveLaw`
+/// consumes -- the fraction of a photo's *neutral* (no preset/slider edits)
+/// rendering, downscaled and Gaussian-blurred, that is brighter than -1 stop.
+/// This is a coarse, heuristic feature (fit from n=6 scenes), not a
+/// bit-exact port: its Gaussian blur reuses this file's own `reflectIndex`
+/// boundary convention (`np.pad(mode: "reflect")`-equivalent) rather than
+/// exactly replicating the Python analysis's `cv2.GaussianBlur(...,
+/// borderType=cv2.BORDER_REFLECT)` (a different, edge-inclusive reflect
+/// variant) -- the resulting whole-image ratio differs by a negligible
+/// amount at the image border either way. Verified only via a synthetic-
+/// image unit test with an analytically-known ratio, not a Python fixture.
+enum SpatialAdaptiveStats {
+    /// `model.md` §3.1's analysis resolution/sigma pair (1500px long edge,
+    /// sigma 32px = 2.1333% of that width); other resolutions scale sigma
+    /// by the same width fraction (`model.md` §5), matching this file's own
+    /// `scalePx(forLongEdge:)` convention.
+    static let referenceLongEdge = 1500.0
+    static let referenceSigma = 32.0
+    static let lnFloor = 1e-4
+    static let highlightThreshold = -1.0
+
+    static func sigma(forLongEdge longEdge: Double) -> Double {
+        longEdge * (referenceSigma / referenceLongEdge)
+    }
+
+    /// Separable Gaussian blur, truncated at +-3 sigma (>99.7% of the
+    /// kernel's mass) -- see the type's doc comment re: boundary handling.
+    static func gaussianBlur(_ plane: SpatialPlane, sigma: Double) -> SpatialPlane {
+        guard sigma > 0, plane.width > 0, plane.height > 0 else { return plane }
+        let radius = max(1, Int((sigma * 3).rounded(.up)))
+        let offsets = Array(-radius...radius)
+        var kernel = offsets.map { exp(-Double($0 * $0) / (2 * sigma * sigma)) }
+        let kernelSum = kernel.reduce(0, +)
+        kernel = kernel.map { $0 / kernelSum }
+
+        var horizontal = SpatialPlane(width: plane.width, height: plane.height)
+        for y in 0..<plane.height {
+            for x in 0..<plane.width {
+                var acc = 0.0
+                for (offset, weight) in zip(offsets, kernel) {
+                    acc += plane[SpatialToneOps.reflectIndex(x + offset, plane.width), y] * weight
+                }
+                horizontal[x, y] = acc
+            }
+        }
+        var result = SpatialPlane(width: plane.width, height: plane.height)
+        for y in 0..<plane.height {
+            for x in 0..<plane.width {
+                var acc = 0.0
+                for (offset, weight) in zip(offsets, kernel) {
+                    acc += horizontal[x, SpatialToneOps.reflectIndex(y + offset, plane.height)] * weight
+                }
+                result[x, y] = acc
+            }
+        }
+        return result
+    }
+
+    /// `Ln` (log2 luminance, `lumaWeights`-projected, floored at `lnFloor`)
+    /// for straight (unpremultiplied) RGB samples.
+    static func lnPlane(rgb: [SIMD3<Double>], width: Int, height: Int, lumaWeights: SIMD3<Double>) -> SpatialPlane {
+        var values = [Double](repeating: 0, count: width * height)
+        for i in 0..<rgb.count {
+            let y = max(rgb[i].x * lumaWeights.x + rgb[i].y * lumaWeights.y + rgb[i].z * lumaWeights.z, lnFloor)
+            values[i] = log2(y)
+        }
+        return SpatialPlane(width: width, height: height, values: values)
+    }
+
+    /// The fraction of `plane`'s values greater than `highlightThreshold`.
+    static func highlightRatio(_ plane: SpatialPlane, threshold: Double = highlightThreshold) -> Double {
+        guard !plane.values.isEmpty else { return 0 }
+        let count = plane.values.reduce(0) { $1 > threshold ? $0 + 1 : $0 }
+        return Double(count) / Double(plane.values.count)
+    }
+
+    /// The full statistic from an already-decoded `[SIMD3<Double>]` buffer
+    /// (straight RGB) at `width`x`height` -- `longEdge` is `max(width,
+    /// height)`, used only to pick the matching blur sigma.
+    static func highlightRatioBase(rgb: [SIMD3<Double>], width: Int, height: Int, lumaWeights: SIMD3<Double>) -> Double {
+        let ln = lnPlane(rgb: rgb, width: width, height: height, lumaWeights: lumaWeights)
+        let blurred = gaussianBlur(ln, sigma: sigma(forLongEdge: Double(max(width, height))))
+        return highlightRatio(blurred)
+    }
+
+    /// End-to-end from a `CIImage` (any resolution): downscales to at most
+    /// `longEdge` (never upscales -- a smaller source keeps its own size,
+    /// matching `CoreImageDecoder`'s `min(1, ...)` convention), renders to a
+    /// CPU `RGBAf` buffer, unpremultiplies, and computes the statistic.
+    /// Non-throwing: a degenerate (zero/non-finite extent) `image` returns
+    /// `0` (the law's most-negative, clamp-floor-adjacent answer) rather
+    /// than propagating an error for what is a soft, best-effort feature.
+    static func highlightRatioBase(image: CIImage, longEdge: Double, lumaWeights: SIMD3<Double>) -> Double {
+        let extent = image.extent.integral
+        guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else { return 0 }
+        let currentLongEdge = max(extent.width, extent.height)
+        let scale = min(1, CGFloat(longEdge) / currentLongEdge)
+        let scaled = scale < 1 ? image.transformed(by: CGAffineTransform(scaleX: scale, y: scale)) : image
+        let scaledExtent = scaled.extent.integral
+        guard scaledExtent.width.isFinite, scaledExtent.height.isFinite, scaledExtent.width > 0, scaledExtent.height > 0 else { return 0 }
+        let width = Int(scaledExtent.width)
+        let height = Int(scaledExtent.height)
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else { return 0 }
+
+        let context = CIContext(options: [.cacheIntermediates: false])
+        let bytesPerRow = width * 4 * MemoryLayout<Float>.size
+        var buffer = [Float](repeating: 0, count: width * height * 4)
+        context.render(scaled, toBitmap: &buffer, rowBytes: bytesPerRow, bounds: scaledExtent, format: .RGBAf, colorSpace: colorSpace)
+
+        var rgb = [SIMD3<Double>](repeating: .zero, count: width * height)
+        for i in 0..<(width * height) {
+            let base = i * 4
+            let a = Double(buffer[base + 3])
+            let r = Double(buffer[base]), g = Double(buffer[base + 1]), b = Double(buffer[base + 2])
+            rgb[i] = a > 1e-7 ? SIMD3(r / a, g / a, b / a) : SIMD3(r, g, b)
+        }
+        return highlightRatioBase(rgb: rgb, width: width, height: height, lumaWeights: lumaWeights)
     }
 }
 

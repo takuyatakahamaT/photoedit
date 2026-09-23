@@ -178,6 +178,10 @@ public enum AdobeBaseRenderer {
             )
             let order = SpatialOrder.currentForRAW
             let needsSpatial = SpatialToneOps.needsSpatial(settings)
+            // round2 set A (`.photobench/phase2/spatial-adaptive/model.md`):
+            // computed (and cached, see `highlightRatioBase()`'s doc
+            // comment) only when a spatial pass will actually run.
+            let highlightRatioBase = needsSpatial ? self.highlightRatioBase() : nil
 
             var image: CIImage
             if needsSpatial && order == .preTone {
@@ -189,7 +193,7 @@ public enum AdobeBaseRenderer {
                     to: stageM, assets: effectiveAssets, cubes: effectiveCubes,
                     userEV: settings.exposure, variant: variant, through: .exposure
                 )
-                image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image)
+                image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
                 image = AdobeBaseRenderer.applyCube(effectiveCubes.look, to: image)
                 image = AdobeBaseRenderer.applyCube(effectiveCubes.tone, to: image)
             } else {
@@ -212,7 +216,7 @@ public enum AdobeBaseRenderer {
                         image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image)
                     }
                 case .sP1P2:
-                    image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image)
+                    image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
                     if ToneOps.needsPostOps(settings) {
                         image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image)
                     }
@@ -221,7 +225,7 @@ public enum AdobeBaseRenderer {
                         image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: image)
                     }
                     if order == .p1P2S {
-                        image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image)
+                        image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
                     }
                     // `.postQ`: [S] deferred to after cube Q/Calibration below.
                 case .p1SP2:
@@ -231,7 +235,7 @@ public enum AdobeBaseRenderer {
                             to: image
                         )
                     }
-                    image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image)
+                    image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
                     if ToneOps.needsPostOpsAfterContrast(settings) {
                         image = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCubeP2(settings: settings), to: image)
                     }
@@ -257,11 +261,63 @@ public enum AdobeBaseRenderer {
                 }
             }
             if needsSpatial && order == .postQ {
-                image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image)
+                image = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
             }
             return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: image)
         }
+
+        /// round2 set A (`.photobench/phase2/spatial-adaptive/model.md` §6
+        /// item 1-2): `highlightRatioBase` computed from this photo's own
+        /// *neutral* rendering (`image(through: .tone)` -- Stage H/E/L/T
+        /// only, no cube P/Q/Calibration, still linear ProPhoto), downscaled
+        /// to a fixed 750px long edge (matching preview/export so both see
+        /// the same value regardless of what resolution they actually
+        /// render at) and cached per `cacheKey` (the same identity the cube
+        /// cache uses -- dcpIdentity/lookIdentity/variant/whiteXY/
+        /// exposureEV, i.e. everything that can change what "neutral" looks
+        /// like for this photo). `Handle` itself is an immutable `Sendable`
+        /// struct, so this follows the file's established static-dictionary-
+        /// plus-lock caching pattern (`cachedCubes`) rather than instance
+        /// storage. `PHOTO_BENCH_SPATIAL_DIAG=1` prints the computed ratio
+        /// and its wall-clock cost to stderr, same convention as
+        /// `SpatialToneProcessor`'s own diagnostics.
+        public func highlightRatioBase() -> Double {
+            AdobeBaseRenderer.statsCacheLock.lock()
+            if let cached = AdobeBaseRenderer.statsCache[cacheKey] {
+                AdobeBaseRenderer.statsCacheLock.unlock()
+                return cached
+            }
+            AdobeBaseRenderer.statsCacheLock.unlock()
+
+            let diagnosticsEnabled = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] != nil
+            let startTime = diagnosticsEnabled ? DispatchTime.now() : nil
+            let neutralImage = image(through: .tone, userExposureEV: 0)
+            let ratio = SpatialAdaptiveStats.highlightRatioBase(
+                image: neutralImage, longEdge: AdobeBaseRenderer.highlightRatioBaseLongEdge, lumaWeights: SpatialToneOps.ppLuma
+            )
+            if let startTime {
+                let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds &- startTime.uptimeNanoseconds) / 1_000_000
+                FileHandle.standardError.write(Data(
+                    "AdobeBaseRenderer.Handle.highlightRatioBase: ratio=\(ratio) kS=\(SpatialAdaptiveLaw.kS(highlightRatioBase: ratio)) (\(String(format: "%.2f", elapsedMs))ms)\n".utf8
+                ))
+            }
+
+            AdobeBaseRenderer.statsCacheLock.lock()
+            AdobeBaseRenderer.statsCache[cacheKey] = ratio
+            AdobeBaseRenderer.statsCacheLock.unlock()
+            return ratio
+        }
     }
+
+    /// Fixed long edge `Handle.highlightRatioBase()`/`RenderEngine`'s non-RAW
+    /// equivalent both downscale to before computing the statistic -- a
+    /// preview decode and a full export decode of the same photo must see
+    /// the same `highlightRatioBase` (`model.md` §6 item 2), which a
+    /// resolution derived from the *caller's own* current render size would
+    /// not guarantee.
+    static let highlightRatioBaseLongEdge = 750.0
+    private static let statsCacheLock = NSLock()
+    nonisolated(unsafe) private static var statsCache: [CacheKey: Double] = [:]
 
     /// Cube H depends on the DCP and the photo's white point (it is the
     /// CCT-interpolated `ProfileHueSatMap`); cubes L and TC depend only on
@@ -739,18 +795,22 @@ public enum AdobeBaseRenderer {
     /// RAW path here, the non-RAW path (`RenderEngine.applyNonRAWStageP`),
     /// preview decodes, and export decodes all agree on the same physical
     /// detail scale through this one shared call site.
-    static func applySpatialToneOps(settings: EditSettings, to image: CIImage) -> CIImage {
+    /// `highlightRatioBase`: the per-photo statistic (`SpatialAdaptiveStats`/
+    /// `SpatialAdaptiveLaw`, `.photobench/phase2/spatial-adaptive/model.md`)
+    /// this call's `SpatialGainScale.current(highlightRatioBase:)` resolution
+    /// uses to pick an image-adaptive kS; `nil` (no statistic available,
+    /// e.g. a caller with no cached-per-photo context) falls back to
+    /// `.productionDefault`'s fixed kS. `Handle.image(settings:)` (RAW) and
+    /// `RenderEngine.applyNonRAWStageP`/`Q` (non-RAW) each resolve their own
+    /// cached value and pass it in; this is the one and only place that
+    /// consumes it, matching `SpatialGainScale.current`'s own doc comment.
+    static func applySpatialToneOps(settings: EditSettings, to image: CIImage, highlightRatioBase: Double? = nil) -> CIImage {
         let longEdge = max(image.extent.width, image.extent.height)
         let scalePx = SpatialToneOps.scalePx(forLongEdge: Double(longEdge))
-        // This is the one and only production call site that resolves
-        // `SpatialGainScale.current` (env var, falling back to
-        // `.productionDefault`) -- everything below it (`SpatialToneProcessor.
-        // apply` and beneath) takes the scale as an explicit parameter and
-        // never reads the environment itself, so every test calling those
-        // lower-level functions directly is unaffected by this default.
         guard let output = try? SpatialToneProcessor.apply(
             to: image, highlights: settings.highlights, shadows: settings.shadows, scalePx: scalePx,
-            texture: settings.texture, clarity: settings.clarity, gainScale: SpatialGainScale.current
+            texture: settings.texture, clarity: settings.clarity,
+            gainScale: SpatialGainScale.current(highlightRatioBase: highlightRatioBase)
         ) else {
             preconditionFailure("Photo BenchのHighlights/Shadows空間処理カーネルを画像へ適用できませんでした。")
         }

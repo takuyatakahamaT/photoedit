@@ -918,18 +918,75 @@ public final class RenderEngine: @unchecked Sendable {
     /// `baseImage(decoded:settings:)`, which calls `AdobeBaseRenderer.
     /// Handle.image(settings:)` instead (that RAW path's own Stage P
     /// mirrors this one, including the H/S spatial split).
+    /// `sourceURL`: `decoded.sourceURL` when called from `baseImage(decoded:
+    /// settings:)`, `nil` from every direct test call site -- used only to
+    /// cache `highlightRatioBase` (round2 set A, `.photobench/phase2/
+    /// spatial-adaptive/model.md`) per photo; `nil` computes it fresh from
+    /// `source` every call instead of skipping it, since a bare `CIImage`
+    /// has no other stable identity to cache against. `needsSpatial` gates
+    /// this so a photo whose settings never touch Highlights/Shadows/
+    /// Texture/Clarity never pays for it.
     func apply(
         settings: EditSettings,
-        to source: CIImage
+        to source: CIImage,
+        sourceURL: URL? = nil
     ) -> CIImage {
         var image = RelativeColorAdjustment.apply(
             to: source,
             relativeTemperature: settings.relativeTemperature,
             relativeTint: settings.relativeTint
         )
-        image = applyNonRAWStageP(settings: settings, to: image)
-        image = applyNonRAWStageQ(settings: settings, to: image)
+        let highlightRatioBase = SpatialToneOps.needsSpatial(settings)
+            ? Self.highlightRatioBase(source: source, sourceURL: sourceURL) : nil
+        image = applyNonRAWStageP(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
+        image = applyNonRAWStageQ(settings: settings, to: image, highlightRatioBase: highlightRatioBase)
         return image
+    }
+
+    // MARK: - round2 set A: per-photo image-adaptive Shadows2012 amplitude
+
+    /// Non-RAW counterpart to `AdobeBaseRenderer.Handle.highlightRatioBase()`
+    /// -- `RenderEngine` has no per-photo `Handle`-like value type to attach
+    /// a cached property to (`DecodedPhoto`, defined in `CoreImageDecoder.
+    /// swift`, is out of scope for this change), so this follows the same
+    /// static-dictionary-plus-lock pattern keyed by `sourceURL` instead. The
+    /// non-RAW `source` is already the "neutral" state (no Adobe-base
+    /// pipeline runs before it), already in the app's working space
+    /// (extended linear sRGB per `apply(settings:to:)`'s doc comment) -- so,
+    /// unlike the RAW path's linear-ProPhoto neutral render, this uses sRGB
+    /// primaries' own luma weights, not `SpatialToneOps.ppLuma`.
+    private static let nonRawStatsCacheLock = NSLock()
+    nonisolated(unsafe) private static var nonRawStatsCache: [URL: Double] = [:]
+    private static let sRGBLumaWeights = SIMD3<Double>(0.2126, 0.7152, 0.0722)
+
+    private static func highlightRatioBase(source: CIImage, sourceURL: URL?) -> Double {
+        if let sourceURL {
+            nonRawStatsCacheLock.lock()
+            if let cached = nonRawStatsCache[sourceURL] {
+                nonRawStatsCacheLock.unlock()
+                return cached
+            }
+            nonRawStatsCacheLock.unlock()
+        }
+
+        let diagnosticsEnabled = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] != nil
+        let startTime = diagnosticsEnabled ? DispatchTime.now() : nil
+        let ratio = SpatialAdaptiveStats.highlightRatioBase(
+            image: source, longEdge: AdobeBaseRenderer.highlightRatioBaseLongEdge, lumaWeights: sRGBLumaWeights
+        )
+        if let startTime {
+            let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds &- startTime.uptimeNanoseconds) / 1_000_000
+            FileHandle.standardError.write(Data(
+                "RenderEngine.highlightRatioBase: ratio=\(ratio) kS=\(SpatialAdaptiveLaw.kS(highlightRatioBase: ratio)) (\(String(format: "%.2f", elapsedMs))ms)\n".utf8
+            ))
+        }
+
+        if let sourceURL {
+            nonRawStatsCacheLock.lock()
+            nonRawStatsCache[sourceURL] = ratio
+            nonRawStatsCacheLock.unlock()
+        }
+        return ratio
     }
 
     /// `docs/PHASE2_DEVELOP_PIPELINE.md`'s non-RAW Stage P: working space ->
@@ -949,7 +1006,7 @@ public final class RenderEngine: @unchecked Sendable {
     /// nor any P-op nor H/S is active, so `.neutral` settings keep the exact
     /// bypass `RelativeColorAdjustmentTests.zeroIsAnExactBypassAndKeepsThe
     /// ExistingPipelineFingerprint` (and this function's own callers) rely on.
-    private func applyNonRAWStageP(settings: EditSettings, to image: CIImage) -> CIImage {
+    private func applyNonRAWStageP(settings: EditSettings, to image: CIImage, highlightRatioBase: Double?) -> CIImage {
         let order = SpatialOrder.currentForNonRAW
         let needsSpatial = SpatialToneOps.needsSpatial(settings)
         guard settings.exposure != 0 || ToneOps.needsPostOps(settings) || needsSpatial else {
@@ -970,12 +1027,12 @@ public final class RenderEngine: @unchecked Sendable {
                     let exposureOnly = AdobeBaseRenderer.buildCubeData { ToneOps.exposureNonRaw($0, ev: settings.exposure) }
                     stage = AdobeBaseRenderer.applyCube(exposureOnly, to: stage)
                 }
-                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage)
+                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, highlightRatioBase: highlightRatioBase)
                 if ToneOps.needsPostOps(settings) {
                     stage = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: stage)
                 }
             case .sP1P2:
-                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage)
+                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, highlightRatioBase: highlightRatioBase)
                 if settings.exposure != 0 || ToneOps.needsPostOps(settings) {
                     stage = AdobeBaseRenderer.applyCube(
                         AdobeBaseRenderer.postOpsCube(exposureNonRaw: settings.exposure, settings: settings), to: stage
@@ -988,7 +1045,7 @@ public final class RenderEngine: @unchecked Sendable {
                     )
                 }
                 if order == .p1P2S {
-                    stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage)
+                    stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, highlightRatioBase: highlightRatioBase)
                 }
             // `.postQ`: [S] deferred to `applyNonRAWStageQ`'s tail.
             case .p1SP2:
@@ -1000,7 +1057,7 @@ public final class RenderEngine: @unchecked Sendable {
                         to: stage
                     )
                 }
-                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage)
+                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, highlightRatioBase: highlightRatioBase)
                 if ToneOps.needsPostOpsAfterContrast(settings) {
                     stage = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCubeP2(settings: settings), to: stage)
                 }
@@ -1019,7 +1076,7 @@ public final class RenderEngine: @unchecked Sendable {
     /// exact `CIColorMatrix` kept separate from cube Q -- see
     /// `AdobeBaseRenderer.applyCalibration`'s doc comment) -> working space.
     /// Mirrors `applyNonRAWStageP`'s exact-bypass-at-neutral-settings shape.
-    private func applyNonRAWStageQ(settings: EditSettings, to image: CIImage) -> CIImage {
+    private func applyNonRAWStageQ(settings: EditSettings, to image: CIImage, highlightRatioBase: Double?) -> CIImage {
         // **Experiment only** (`SpatialOrder`'s doc comment): `.postQ`
         // defers [S] here, after cube Q/Calibration, instead of
         // `applyNonRAWStageP` running it.
@@ -1048,7 +1105,7 @@ public final class RenderEngine: @unchecked Sendable {
             }
         }
         if deferredSpatial {
-            proPhoto = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: proPhoto)
+            proPhoto = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: proPhoto, highlightRatioBase: highlightRatioBase)
         }
         return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: proPhoto)
     }
@@ -1063,7 +1120,7 @@ public final class RenderEngine: @unchecked Sendable {
     /// see `LibRawDecoder`).
     private func baseImage(decoded: DecodedPhoto, settings: EditSettings) -> CIImage {
         guard let handle = decoded.adobeBase else {
-            return apply(settings: settings, to: decoded.image)
+            return apply(settings: settings, to: decoded.image, sourceURL: decoded.sourceURL)
         }
         let rendered = handle.image(settings: settings)
         return RelativeColorAdjustment.apply(
