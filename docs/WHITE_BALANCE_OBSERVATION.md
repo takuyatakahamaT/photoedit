@@ -1,13 +1,13 @@
 # RAWホワイトバランス観測記録
 
-更新日: 2026-07-24（JST）
+更新日: 2026-09-24（JST）
 
 状態: **開発用の観測基盤と正式な2シーン観測は完了したが、製品のホワイトバランス処理は未接続である。** この結果は候補の順位、Adobe値からCore Image値への変換、Lightroom相当の品質、またはproduction採用を決める証拠ではない。
 
-機械可読な正本は、ローカルでGit管理外の次の2ファイルである。
+機械可読な正本は、Mac Studioの`~/Documents/app/photo-edit-app-calibration/`配下にある次の2ファイルである（Git管理外）。2026-07-24のMac mini run `51ba2f46-185d-4b87-8345-407d380214cd`は、Mac miniの`.photobench/white-balance-observations/`に履歴として残る。
 
-- `.photobench/white-balance-observations/51ba2f46-185d-4b87-8345-407d380214cd/run.json`
-- `.photobench/white-balance-observations/51ba2f46-185d-4b87-8345-407d380214cd/analysis.json`
+- `.photobench/white-balance-observations/efed3014-786a-420e-a6d3-74398e8722e4/run.json`
+- `.photobench/white-balance-observations/efed3014-786a-420e-a6d3-74398e8722e4/analysis.json`
 
 ## 1. この観測の目的
 
@@ -65,16 +65,21 @@ setter順序は`temperature → tint`を主経路、`tint → temperature`を比
 
 ## 5. 正式証跡
 
+2026-09-24に、校正manifest v4の再固定（処理fingerprint・source一覧・校正機）に合わせて、WB観測manifestのbase hash・source一覧・実行環境を更新し、Mac Studioで再実行した。
+
 - suite: `dc-s5-lightroom-9.3-white-balance-observation-2026-07-24-v1`
-- run ID: `51ba2f46-185d-4b87-8345-407d380214cd`
-- manifest SHA-256: `aea4c93626b0a32259c747d2e2ca4ca82b45647d0336507bb709bc86b4e0faf3`
-- source fingerprint: `413fce7eb57938b958f3e1efd7f835e6fd7cae5561e8327341e4c4faaaec8b3e`
-- release executable SHA-256: `5e08849cc3d431cde4c42aad7523fd4b704591ae5aecb3f2d11404f92a0edf44`
-- runtime: macOS `26.3.1` build `25D771280a`、`Mac16,10`、Apple M4、arm64、release
-- 検証対象: 28 source、40 / 40 artifact、2 development scene、0 holdout
+- run ID: `efed3014-786a-420e-a6d3-74398e8722e4`
+- manifest SHA-256: `d7efa286acfefa60cc01155073c24486530bbbe009e710f7dc31c740cb19031b`
+- source fingerprint: `c0fd4120c8438b74c0f335d1f32fcf624111741d8e798a5ac06b94300c3bd019`
+- release executable SHA-256: `e024be2f0030b497fd688edfe4896593682a9f0115593292cb3f97e03d45e4b6`
+- ExifTool: `13.55`（Homebrew）
+- runtime: macOS `26.5.2` build `25F84`、`Mac13,1`、Apple M1 Max、arm64、release
+- 検証対象: 44 source、40 / 40 artifact、2 development scene、0 holdout
 - validation: `passed`
 - adoption status: `exploratory-observation-only`
 - production adoption allowed: `false`
+
+2026-07-24の旧run `51ba2f46-185d-4b87-8345-407d380214cd`（manifest SHA-256 `aea4c936…`、source fingerprint `413fce7e…`、macOS `26.3.1`、`Mac16,10`、Apple M4、28 source）も同じ判定だった。
 
 runnerはprivate inputのGit追跡、出力rootのignore漏れ、symlink、既存run / 既存file、source・input・binary・ExifToolの途中変更、成果物hash・byte count・provenance・metadata契約違反を拒否する。analyzerはrunとmanifestのsnapshot、全artifact、release binary、source fingerprintを解析前後に再検証し、既存のanalysisを上書きしない。
 
@@ -84,15 +89,17 @@ runnerはprivate inputのGit追跡、出力rootのignore漏れ、symlink、既�
 
 | scene | Lightroom教師 metadata | Core Image As Shot → 固定LR参照 | custom center → 固定LR参照 |
 |---|---|---:|---:|
-| P1524180 | 3,600K / Tint +18 | mean ΔE00 `3.6660247`、EV `+0.1050286` | mean ΔE00 `3.6660261`、EV `+0.1050292` |
-| P1522877 | 5,400K / Tint +15 | mean ΔE00 `2.1292396`、EV `+0.0294950` | mean ΔE00 `2.1292412`、EV `+0.0294941` |
+| P1524180 | 3,600K / Tint +18 | mean ΔE00 `3.6660254`、EV `+0.1050280` | mean ΔE00 `3.6660273`、EV `+0.1050287` |
+| P1522877 | 5,400K / Tint +15 | mean ΔE00 `2.1292410`、EV `+0.0294952` | mean ΔE00 `2.1292424`、EV `+0.0294943` |
 
 fresh filterの中心値を書き戻したcustom centerとAs Shotの差は次のとおりだった。
 
 | scene | mean ΔE00 | p95 ΔE00 | RGB MAE | EV drift | byte exact |
 |---|---:|---:|---:|---:|---|
-| P1524180 | `0.0001510` | `0.0007313` | `5.08e-7` | `+6.78e-7` | いいえ |
-| P1522877 | `0.0003225` | `0.0014490` | `1.06e-6` | `-9.75e-7` | いいえ |
+| P1524180 | `0.0001513` | `0.0007339` | `5.09e-7` | `+6.79e-7` | いいえ |
+| P1522877 | `0.0003225` | `0.0014482` | `1.06e-6` | `-9.75e-7` | いいえ |
+
+2026-07-24のMac mini run（macOS `26.3.1`、Apple M4）との差は、上の2表の各値とも`3e-6`未満だった。
 
 この差は非常に小さいが、byte exactではない。fresh filterのgetter値を書き戻す操作がAs Shotと常に同一になる、別OS・別cameraでも同じ、Adobe値との写像が得られた、とは解釈しない。
 
@@ -105,15 +112,17 @@ setter順序の比較は両シーンでbyte exactだった。
 
 ## 7. 校正v4との関係
 
-WB観測manifestは、正式校正v4の入力・scene順・処理契約をbyte exactに継承する。WB観測実装をsource fingerprintへ加えた後、校正も再実行した。
+WB観測manifestは、正式校正v4の入力・scene順・処理契約をbyte exactに継承する。2026-09-24の再固定後、Mac Studioで校正を2回実行した。詳細は[`CALIBRATION.md`](../CALIBRATION.md)にまとめる。
 
-- calibration run ID: `1c324af0-7ec3-4c33-bc6f-3bd653794800`
-- manifest SHA-256: `9da1fd58ec4ead9b921dea477319423711567de3c06f8eb39d429c89980267f6`
-- source fingerprint: `b7d8c57fab4428679a4f4e7cfacf2f64e67b317e9b9f46a00093cf7b5bf1a858`
-- release executable SHA-256: `6f1be9b7a44529f25fb7fe8ad90b6b030bfa128e2108174bc86cab09cd775a15`
-- 7 inputs、26 source、122 / 122 artifact verified
+- calibration run ID（正本）: `e8d7318b-dc35-439c-af7d-b5a498b9e827`
+- manifest SHA-256: `1ce9fec683aa89d1d00e7876bad6349dd1e71e8241b9e26accb35327c87fc637`
+- source fingerprint: `2729638deb32cbdd86272fae5515c744c4daae059e2b111585b0715b2f827525`
+- release executable SHA-256: `0d00b5c335bbd56466b6101a31599c49c84300875b96fc3e71c5e9d4ecf5c925`
+- 7 inputs、42 source、122 / 122 artifact verified
 
-canonical settleは2シーンとも合格した。一方、Lightroom品質はP1524180 / RAWのEVが不合格で、preview parityは3,072px / 3,840pxともeligible candidateなしである。WB観測の構造合格は、これらの既知不合格を解消しない。
+Lightroom品質は4経路とも、canonical settleは2シーンとも合格した。一方、preview parityは3,072px / 3,840pxともeligible candidateがなく、LR-input経路には非決定的な描画欠損がある。WB観測の構造合格は、これらの既知不合格を解消しない。
+
+2026-07-24の旧校正run `1c324af0-7ec3-4c33-bc6f-3bd653794800`（manifest SHA-256 `9da1fd58…`、26 source）は履歴として残す。
 
 ## 8. 未解決の課題
 

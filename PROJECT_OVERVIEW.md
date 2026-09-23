@@ -213,6 +213,8 @@ Core Image RAW 8
 
 ## 7. 2026-07-24 時点の到達点
 
+2026-09-24追記: 校正manifest v4を現行の編集処理（`SpatialToneOps` / `ColorOps`）と校正機Mac Studioへ再固定し、校正とWB観測を再実行した。本節の数値と証跡IDは2026-07-24時点の履歴であり、最新の結果・証跡ID・既知の欠陥は`CALIBRATION.md`を正とする。
+
 ### 7.1 動く機能
 
 - Lumix RW2 と JPEG を同じ画面で開ける

@@ -1,6 +1,6 @@
 # Photo Bench 進捗・目標・次の作業
 
-更新日: 2026-09-23 JST
+更新日: 2026-09-24 JST
 
 ## 現在の目標
 
@@ -81,6 +81,7 @@
 
 - 個人 Mac mini（16GB）は、原寸 float パイプラインのレンダー・`swift test`・numpy の原寸比較を並行させると watchdog リセットで再起動する（06:01 と 11:27 に発生）。**実装エージェントは 1 体ずつ直列、重い処理は Mac Studio（64GB）で実行**する。入口は `scripts/studio/studio-run.sh`（sync / sync-data / run / fetch）。Studio 側の前提（libraw・pkgconf・`~/.venvs/photobench`・Lightroom CC のプロファイル資産）は整備済み。
 - Studio と mini の中立レンダーは同一の結果（0.93 / 1.15 / 1.24）。
+- 校正 suite（`calibration/manifest-v4.json`）の校正機は、2026-09-24 にオーナー判断で Mac Studio へ変更した。正式 run・benchmark・manifest を読み込むテストは Studio でのみ通り、Mac mini では実行環境不一致で fail-closed する。手順は `CALIBRATION.md`。
 
 ## 成果物・履歴
 
@@ -93,3 +94,5 @@
 - SDK・調査証跡: `.photobench/engine-research-20260922/`
 
 過去の2026-07-24 formal校正・性能結果と、その既知不合格は履歴として維持する。今回のエンジン候補の合格証拠として流用しない。
+
+2026-09-24 に校正 suite を現行の編集処理で再実行した（`CALIBRATION.md`）。RAW 経路は旧土台の Core Image RAW 8 のままなので、Lightroom 一致度の証拠にはしない。LR 入力経路で非決定的な描画欠損（下側の 256px タイル行が透明な黒）を検出した。未修正。

@@ -1,8 +1,10 @@
 # Photo Bench 性能基準
 
-更新日: 2026-07-24（JST）
+更新日: 2026-09-24（JST）
 
 状態: WB観測source追加後のmanifest v4 / benchmark report schema 3で、現行production rendering sourceと一致するsource-locked formal runを1件取得済み。4 workload中3件が合格し、warm sliderだけが不合格だった。1 runだけなので安定性は未証明で、実UIのMetal直接表示もactual present完了を正式確認できていない。
+
+2026-09-24に、manifest v4を現行PhotoCore契約と校正機Mac Studioへ再固定した（manifest SHA-256 `1ce9fec6…`、詳細は`CALIBRATION.md`）。本書のrunは、旧manifest（`9da1fd58…`）とMac miniに固定した2026-07-24の履歴で、再固定後のbenchmarkは未実行である。benchmark runnerも同じmanifestを読むため、今後はMac Studioでしか実行できない。性能は実行機に依存するので、Studioで測った値をMac miniの7月の値と直接比べない。
 
 機械可読なUTC時刻、全sample、hash、runtime条件は`.photobench/benchmark/latest.json`と`.photobench/benchmark/runs/`を正とする。
 
