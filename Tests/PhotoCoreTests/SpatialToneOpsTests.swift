@@ -253,11 +253,17 @@ struct SpatialToneOpsTests {
         try runGPUParityTest(context: context, maxOKLabDelta: 0.3, label: "hardware-metal")
     }
 
-    /// Same comparison, forced through a software `CIContext` -- exercises
-    /// `SpatialToneProcessor`'s CPU-buffer fallback (`input.metalTexture ==
-    /// nil`), which delegates directly to `SpatialToneOps`, so this is
-    /// expected to be far tighter than the GPU budget (float32 CIImage
-    /// bitmap round-trip is the only source of error).
+    /// Same comparison, with the *caller's* readback forced through a
+    /// software `CIContext`. `SpatialToneProcessor.apply` no longer depends
+    /// on which `CIContext` the caller uses at all (it manages its own
+    /// `MTLDevice`/command queue/`CIContext` internally, see this file's
+    /// class doc comment) -- its CPU fallback only ever runs when
+    /// `MTLCreateSystemDefaultDevice()` itself returns `nil`, which does not
+    /// happen on any Mac. This test's value is confirming the *output*
+    /// `CIImage` composes correctly with a software-rendering caller, not
+    /// exercising a different code path inside `SpatialToneProcessor` --
+    /// see `cpuBufferPathMatchesSpatialToneOpsDirectlyAndHandlesTiledOutput
+    /// Offsets` for a direct test of the CPU fallback's buffer logic.
     @Test func gpuProcessorMatchesCPUReferenceOnSoftwareContext() throws {
         let colorSpace = try #require(CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
         let context = CIContext(options: [
@@ -362,19 +368,19 @@ struct SpatialToneOpsTests {
 
     // MARK: - CPU-buffer path (`SpatialToneProcessor.processCPUBuffers`)
 
-    /// Empirically, `CIContext(options: [.useSoftwareRenderer: true])` does
-    /// not make Core Image actually hand `SpatialToneProcessor` a
-    /// `baseAddress`-only `CIImageProcessorInput`/`Output` on this
-    /// OS/hardware (`gpuProcessorMatchesCPUReferenceOnSoftwareContext`'s own
-    /// diagnostics print `metal=2 cpu=0` -- it still receives Metal
-    /// textures), so that test cannot actually exercise the CPU fallback
-    /// path a real render would take on a system without one. This test
-    /// calls `processCPUBuffers` -- the exact buffer-marshaling code
-    /// `processCPU` delegates to -- directly with hand-built buffers
-    /// instead, covering the two things that code does beyond calling
+    /// `processCPUBuffers` is the buffer-marshaling code
+    /// `applyCPUFallback` (only reachable when `MTLCreateSystemDefaultDevice()`
+    /// returns `nil`, which no real Mac does) delegates to -- there is no
+    /// way to force a real render through that fallback on this hardware,
+    /// so this calls `processCPUBuffers` directly with hand-built buffers
+    /// instead, covering the two things it does beyond calling
     /// `SpatialToneOps` (which is already exhaustively fixture-tested):
-    /// premultiplied-alpha unwrapping and the `output.region` `!=`
-    /// `input.region` (tiled) offset.
+    /// premultiplied-alpha unwrapping and an output window offset into a
+    /// larger input (retained from this design's earlier
+    /// `CIImageProcessorKernel` incarnation, where it handled Core Image's
+    /// tiled `output.region != input.region`; `applyCPUFallback` itself
+    /// never actually needs a nonzero offset now, but the general logic is
+    /// still worth covering directly).
     @Test func cpuBufferPathMatchesSpatialToneOpsDirectlyAndHandlesTiledOutputOffsets() throws {
         let width = 20
         let height = 16
@@ -501,6 +507,119 @@ struct SpatialToneOpsTests {
         for sample in recovered {
             #expect(maximumAbsoluteDifference(sample, first) < 1e-4)
         }
+    }
+
+    /// Regression test from this design's two earlier, abandoned
+    /// `CIImageProcessorKernel` incarnations (see `SpatialToneProcessor`'s
+    /// class doc comment): an input that traces back through
+    /// `AdobeBaseRenderer.applyCube` (`CIGammaAdjust`+`CIColorCube`, exactly
+    /// like real cube P1 in production) used to make a custom kernel's
+    /// `process(with:...)` never get called at all. The explicit
+    /// `CIContext.render(_:to:MTLTexture:...)` round trip this type uses
+    /// instead does not have that failure mode, but this input shape is
+    /// exactly what production always feeds `apply(to:...)`, so it stays as
+    /// a end-to-end regression check: asserts both that `apply` actually ran
+    /// and that the result is a plausible (non-zero, finite)
+    /// contrast+Highlights/Shadows output.
+    @Test func gpuKernelIsReachedThroughACubeChainedInput() throws {
+        let width = 20
+        let height = 16
+        var pixels = [Float](repeating: 0, count: width * height * 4)
+        for i in 0..<(width * height) {
+            pixels[i * 4] = 0.5
+            pixels[i * 4 + 1] = 0.3
+            pixels[i * 4 + 2] = 0.2
+            pixels[i * 4 + 3] = 1
+        }
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
+        let raw = CIImage(
+            bitmapData: pixels.withUnsafeBytes { Data($0) }, bytesPerRow: width * 4 * MemoryLayout<Float>.size,
+            size: CGSize(width: width, height: height), format: .RGBAf, colorSpace: colorSpace
+        )
+        // Mirrors real cube P1: `AdobeBaseRenderer.applyCube` wraps
+        // `CIColorCube` in `CIGammaAdjust`/`CIGammaAdjust`.
+        let cube = AdobeBaseRenderer.postOpsCubeP1(exposureNonRaw: 0, contrast: -37)
+        let cubed = AdobeBaseRenderer.applyCube(cube, to: raw)
+
+        SpatialToneProcessor.resetDiagnostics()
+        let output = try SpatialToneProcessor.apply(
+            to: cubed, highlights: -88, shadows: 37, scalePx: SpatialToneOps.scalePx(forLongEdge: Double(max(width, height)))
+        )
+        let context = CIContext(options: [.workingColorSpace: colorSpace, .outputColorSpace: colorSpace])
+        var rendered = [Float](repeating: 0, count: width * height * 4)
+        context.render(
+            output, toBitmap: &rendered, rowBytes: width * 4 * MemoryLayout<Float>.size,
+            bounds: CGRect(x: 0, y: 0, width: width, height: height), format: .RGBAf, colorSpace: colorSpace
+        )
+
+        #expect(SpatialToneProcessor.diagnosticsSnapshot.total >= 1)
+        for index in 0..<(width * height) {
+            let base = index * 4
+            #expect(rendered[base].isFinite && rendered[base] > 0)
+            #expect(rendered[base + 1].isFinite && rendered[base + 1] > 0)
+            #expect(rendered[base + 2].isFinite && rendered[base + 2] > 0)
+            #expect(abs(rendered[base + 3] - 1) < 1e-4)
+        }
+    }
+
+    /// Verifies the explicit GPU round trip's vertical orientation:
+    /// `CIContext.render(_:to:MTLTexture:commandBuffer:bounds:colorSpace:)`
+    /// (write) and `CIImage(mtlTexture:options:)` (read) must agree on which
+    /// texture row is the top of the image, or the output would come back
+    /// vertically mirrored. Uses a `highlights: 0, shadows: 0` call, which
+    /// makes the compute pass an exact identity (`y_ratio == 1` everywhere,
+    /// no early-return shortcut skips the round trip itself -- `apply`
+    /// always renders into `inputTexture` and wraps `outputTexture` back
+    /// up), so any row-order mismatch shows up directly as a pixel mismatch
+    /// against the untouched input. The fixture is asymmetric top-to-bottom
+    /// (bright top half, dark bottom half) so a flip is unmistakable.
+    @Test func gpuRoundTripPreservesVerticalOrientation() throws {
+        let width = 24
+        let height = 32
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
+        var pixels = [Float](repeating: 0, count: width * height * 4)
+        for y in 0..<height {
+            let value: Float = y < height / 2 ? 0.85 : 0.1
+            for x in 0..<width {
+                let base = (y * width + x) * 4
+                pixels[base] = value
+                pixels[base + 1] = value * 0.6
+                pixels[base + 2] = value * 0.3
+                pixels[base + 3] = 1
+            }
+        }
+        let bytesPerRow = width * 4 * MemoryLayout<Float>.size
+        let image = CIImage(
+            bitmapData: pixels.withUnsafeBytes { Data($0) }, bytesPerRow: bytesPerRow,
+            size: CGSize(width: width, height: height), format: .RGBAf, colorSpace: colorSpace
+        )
+
+        let output = try SpatialToneProcessor.apply(to: image, highlights: 0, shadows: 0, scalePx: 16)
+        let context = CIContext(options: [.workingColorSpace: colorSpace, .outputColorSpace: colorSpace])
+        var rendered = [Float](repeating: 0, count: width * height * 4)
+        context.render(
+            output, toBitmap: &rendered, rowBytes: bytesPerRow,
+            bounds: CGRect(x: 0, y: 0, width: width, height: height), format: .RGBAf, colorSpace: colorSpace
+        )
+
+        var maxAbsoluteDifference: Float = 0
+        var nonFiniteCount = 0
+        for index in 0..<(width * height * 4) {
+            guard rendered[index].isFinite else {
+                nonFiniteCount += 1
+                continue
+            }
+            maxAbsoluteDifference = max(maxAbsoluteDifference, abs(rendered[index] - pixels[index]))
+        }
+        #expect(nonFiniteCount == 0, "\(nonFiniteCount) non-finite output values")
+        #expect(maxAbsoluteDifference < 1e-4, "identity round trip drifted by \(maxAbsoluteDifference) -- check for a vertical flip")
+
+        // Directly pin top-stays-bright/bottom-stays-dark (would read
+        // backwards if `needsVerticalFlipAfterRoundTrip` should be `true`).
+        let topRowFirstPixel = rendered[0]
+        let bottomRowFirstPixel = rendered[((height - 1) * width) * 4]
+        #expect(topRowFirstPixel > 0.5, "row 0 should still be the bright top half")
+        #expect(bottomRowFirstPixel < 0.5, "the last row should still be the dark bottom half")
     }
 
     // MARK: - Helpers

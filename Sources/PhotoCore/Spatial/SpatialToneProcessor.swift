@@ -2,15 +2,15 @@ import CoreImage
 import Foundation
 import Metal
 
-/// GPU (`CIImageProcessorKernel`/Metal compute) implementation of
-/// `SpatialToneOps.applyHighlightsShadows`, plus a CPU-buffer fallback for
-/// non-Metal `CIContext`s (`.useSoftwareRenderer: true`, or any context that
-/// otherwise can't hand this kernel a Metal texture).
+/// GPU (explicit Metal compute, driven by a manually managed
+/// `MTLCommandBuffer`) implementation of `SpatialToneOps.
+/// applyHighlightsShadows`, plus a CPU-buffer fallback for systems with no
+/// Metal device.
 ///
-/// Every dispatch mirrors `SpatialToneOps`/`SpatialToneMetalSource`'s
-/// doc comments 1:1; this file is purely the Swift-side orchestration
-/// (texture allocation, dispatch order, and the two required entry points a
-/// `CIImageProcessorKernel` subclass needs) around those kernels.
+/// Every dispatch mirrors `SpatialToneOps`/`SpatialToneMetalSource`'s doc
+/// comments 1:1; this file is purely the Swift-side orchestration (texture
+/// allocation/pooling, dispatch order, and the explicit GPU round trip
+/// around those kernels).
 ///
 /// **Alpha**: Core Image images are premultiplied. Straight (unpremultiplied)
 /// RGB matters only for computing `Ln` (the log-luminance the whole pyramid
@@ -26,315 +26,162 @@ import Metal
 /// the correctly premultiplied output, since `yRatio` is a per-pixel scalar
 /// (homogeneous in RGB). Production photos are always fully opaque, but this
 /// keeps the same "no accidental coupling to alpha" invariant the deleted
-/// `BasicToneModel` CIKernel had, and `SpatialToneOpsTests`
-/// (`ToneAndCalibrationTests.swift`'s replacement test) exercises it.
+/// `BasicToneModel` CIKernel had, and `SpatialToneOpsTests` exercises it.
 ///
-/// **Two Core Image limitations found while building this file, both
-/// reproduced only as "the input never reaches `process(with:...)` at all" --
-/// no thrown Swift error, no console log, an all-zero (transparent black)
-/// result, on both a Metal-backed and a `.useSoftwareRenderer` `CIContext`:**
-///
-/// 1. **A `height == 1` input.** Any image whose height is exactly 1 pixel
-///    silently fails this way, regardless of how it was constructed. Width
-///    == 1 (a 1-pixel-*wide*, tall image) works fine, as does any height >=
-///    2. This never affects a real photo (never 1px tall) or this pipeline's
-///    own use (below), but it means test fixtures for this kernel must not
-///    reuse this module's sibling tests' 1-row "ramp" image convention
-///    (`ToneAndCalibrationTests.image(from:)`) -- see
-///    `ToneAndCalibrationTests.highlightsShadowsPreserveStraightColorAcross
-///    PremultipliedAlpha`'s own comment, which hit exactly this.
-/// 2. **An input that traces back through `CIGammaAdjust`, `CIColorCube`, or
-///    `CIImage(mtlTexture:options:)`** -- confirmed with a minimal repro: a
-///    plain `CIImage(bitmapData:...)` works, and chaining a `CIColorMatrix`
-///    onto one still works, but chaining *only* `CIGammaAdjust` (no cube at
-///    all) already fails, an identity `CIColorCube` alone already fails, and
-///    reconstructing a `CIImage` from an explicit, freshly rendered
-///    `MTLTexture` (`CIImage(mtlTexture:options:)`, entirely GPU-side, no
-///    CPU array) *also* fails even for otherwise-untouched content.
-///    `insertingIntermediate()` and an unpremultiply/premultiply round trip
-///    do not help either. The **only** construction found to reliably work
-///    regardless of history is a true CPU buffer round trip: render to a
-///    `[Float]` via `CIContext.render(_:toBitmap:...)`, then
-///    `CIImage(bitmapData:...)` from that buffer -- see
-///    `materializeForCustomKernelInput`, which `apply(to:highlights:shadows:
-///    scalePx:)` runs unconditionally, since every real caller
-///    (`AdobeBaseRenderer.applySpatialToneOps`) feeds this kernel an image
-///    that has already gone through at least one `applyCube`
-///    (`CIGammaAdjust`+`CIColorCube`) -- Stage H/L/T for RAW, cube P1
-///    otherwise -- so this is not a defensive-only measure, it is load-
-///    bearing for correctness in the actual pipeline. The performance cost
-///    (one full-resolution GPU render to a CPU buffer and back) is reported
-///    in this task's own measurements; a cheaper GPU-resident fix (e.g. an
-///    IOSurface/`CVPixelBuffer`-backed round trip) is a plausible follow-up
-///    but was not found to work in the time available -- see this file's
-///    change history/the C3 report for the full repro matrix this comment
-///    summarizes.
-public final class SpatialToneProcessor: CIImageProcessorKernel {
+/// **Why this is not a `CIImageProcessorKernel` subclass (it was, twice,
+/// during this feature's development -- see git history for the full
+/// story)**: a custom kernel's `roi(forInput:arguments:outputRect:)` must
+/// answer, for the coarsest pyramid levels and Shadows' whole-image min/max,
+/// "the whole input" regardless of `outputRect`. Returning `.infinite` for
+/// that turned out to silently never invoke `process(with:...)` at all
+/// whenever the input traced back through `CIGammaAdjust`/`CIColorCube`
+/// (which every real caller's input does -- Stage H/L/T for RAW, cube
+/// P/P1/P2/Q). Returning the input's own *exact finite* extent instead
+/// fixed that -- but for a large image, Core Image tiles the *output*, and
+/// because this kernel's `roi` always demands the whole input for any tile,
+/// Core Image re-evaluated the *entire upstream graph* (every DCP cube) once
+/// per output tile, then this kernel's own (many-dispatch) pyramid
+/// computation on top of that, per tile -- dozens of full-image
+/// recomputations for one `apply()` call, observed as `process(with:...)`
+/// called dozens of times and multi-minute renders on a full-resolution
+/// photo. Neither fix is usable, so this type does its own single, explicit
+/// GPU round trip instead: `CIContext.render(_:to:MTLTexture:commandBuffer:
+/// bounds:colorSpace:)` renders the whole input into one texture exactly
+/// once, this file's own compute dispatches run on that texture in the same
+/// command buffer, and the result is wrapped back into a `CIImage` with
+/// `CIImage(mtlTexture:options:)` -- no custom kernel, no `roi`, no tiling
+/// decision for Core Image to make about this stage at all.
+public enum SpatialToneProcessor {
     enum ProcessorError: Error {
-        case missingResources
+        case deviceUnavailable
+        case commandBufferCreationFailed
         case pipelineCreationFailed(String)
-        case invalidTileGeometry
+        case commandBufferFailed(String)
+        case outputConstructionFailed
     }
 
     // MARK: - Public entry point
 
-    /// Thin wrapper around `CIImageProcessorKernel.apply(withExtent:inputs:
-    /// arguments:)`. `scalePx` should already be `SpatialToneOps.scalePx(
-    /// forLongEdge:)` of the image `image` is (the caller's own long edge,
-    /// at whatever resolution it is actually processing).
-    ///
-    /// Runs `image` through `materializeForCustomKernelInput` first --
-    /// unconditionally, not just for known-bad inputs -- see this class's
-    /// doc comment for why that is required for correctness here, not
-    /// optional defensive cleanup.
-    public static func apply(to image: CIImage, highlights: Double, shadows: Double, scalePx: Double) throws -> CIImage {
-        let materialized = materializeForCustomKernelInput(image)
-        return try self.apply(
-            withExtent: materialized.extent,
-            inputs: [materialized],
-            arguments: ["highlights": highlights, "shadows": shadows, "scalePx": scalePx]
-        )
-    }
-
-    /// A CPU buffer round trip (`CIContext.render(_:toBitmap:...)` then
-    /// `CIImage(bitmapData:...)`) -- see this class's doc comment (point 2)
-    /// for why this specific, expensive-looking construction is the one
-    /// empirically found to work regardless of `image`'s filter-graph
-    /// history. `.extendedLinearSRGB` here is purely a wide-range, no-clip
-    /// numeric container (matching this codebase's existing convention for
-    /// non-sRGB intermediate data, e.g. `PhotoBenchRender`'s stage-debug
-    /// TIFF dump) -- both the render and the reconstruction use the exact
-    /// same tag, so no gamut/primaries conversion actually happens; the
-    /// image reaching this function is linear ProPhoto, and it stays that
-    /// way numerically.
-    static func materializeForCustomKernelInput(_ image: CIImage) -> CIImage {
-        let extent = image.extent.integral
-        guard extent.width.isFinite, extent.height.isFinite,
-              extent.width > 0, extent.height > 0
-        else {
-            return image
-        }
-        let width = Int(extent.width)
-        let height = Int(extent.height)
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else { return image }
-
-        let bytesPerRow = width * 4 * MemoryLayout<Float>.size
-        var buffer = [Float](repeating: 0, count: width * height * 4)
-        materializationContext.render(
-            image, toBitmap: &buffer, rowBytes: bytesPerRow,
-            bounds: extent, format: .RGBAf, colorSpace: colorSpace
-        )
-        let data = buffer.withUnsafeBytes { Data($0) }
-        return CIImage(
-            bitmapData: data, bytesPerRow: bytesPerRow,
-            size: CGSize(width: width, height: height), format: .RGBAf, colorSpace: colorSpace
-        )
-    }
-
-    /// Dedicated to `materializeForCustomKernelInput`'s render call --
-    /// `.cacheIntermediates: false` since each render is a one-shot
-    /// materialization, never revisited.
-    private static let materializationContext = CIContext(options: [.cacheIntermediates: false])
-
-    // MARK: - Diagnostics (`process(with:...)` call count -- tiling check)
+    /// `PHOTO_BENCH_SPATIAL_DIAG=1` prints, to stderr, this call's index and
+    /// wall time (encoding + GPU execution) in milliseconds -- for
+    /// `photobench-render`/manual profiling, not routine use.
+    private static let diagnosticsEnabled = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] != nil
 
     private static let diagnosticsLock = NSLock()
-    nonisolated(unsafe) private static var diagnosticsCallCount = 0
-    nonisolated(unsafe) private static var diagnosticsMetalCallCount = 0
-    nonisolated(unsafe) private static var diagnosticsCPUCallCount = 0
+    nonisolated(unsafe) private static var applyCallCount = 0
+    nonisolated(unsafe) private static var gpuCallCount = 0
+    nonisolated(unsafe) private static var cpuFallbackCallCount = 0
 
-    /// Exposed so tests/the phase3 gate script's Swift entry point can
-    /// confirm whether Core Image split one `apply(to:...)` into multiple
-    /// `process(with:...)` calls (tiling) -- see the C3 brief's "process の
-    /// 呼び出し回数" report item.
+    /// Exposed for tests (and manual diagnostics) to confirm how many times
+    /// `apply(to:...)` actually ran, and via which path.
     public static func resetDiagnostics() {
         diagnosticsLock.lock()
-        diagnosticsCallCount = 0
-        diagnosticsMetalCallCount = 0
-        diagnosticsCPUCallCount = 0
+        applyCallCount = 0
+        gpuCallCount = 0
+        cpuFallbackCallCount = 0
         diagnosticsLock.unlock()
     }
 
     public static var diagnosticsSnapshot: (total: Int, metal: Int, cpu: Int) {
         diagnosticsLock.lock()
         defer { diagnosticsLock.unlock() }
-        return (diagnosticsCallCount, diagnosticsMetalCallCount, diagnosticsCPUCallCount)
+        return (applyCallCount, gpuCallCount, cpuFallbackCallCount)
     }
 
-    // MARK: - CIImageProcessorKernel overrides
-
-    override public class func roi(forInput input: Int32, arguments: [String: Any]?, outputRect: CGRect) -> CGRect {
-        // The Gaussian/Laplacian pyramid's coarsest levels (and, for
-        // Shadows, the global min/max the discretization grid is built
-        // from) have global support: even a small requested output tile can
-        // depend on the whole image. `.infinite` tells Core Image "the
-        // entire input", which it resolves to the input's actual (finite)
-        // extent when building this kernel's `CIImageProcessorInput`.
-        .infinite
-    }
-
-    override public class func formatForInput(at input: Int32) -> CIFormat {
-        .RGBAf
-    }
-
-    override public class var outputFormat: CIFormat {
-        .RGBAf
-    }
-
-    override public class func process(
-        with inputs: [CIImageProcessorInput]?,
-        arguments: [String: Any]?,
-        output: CIImageProcessorOutput
-    ) throws {
+    /// `scalePx` should already be `SpatialToneOps.scalePx(forLongEdge:)` of
+    /// the image `image` is (the caller's own long edge, at whatever
+    /// resolution it is actually processing).
+    public static func apply(to image: CIImage, highlights: Double, shadows: Double, scalePx: Double) throws -> CIImage {
         diagnosticsLock.lock()
-        diagnosticsCallCount += 1
+        applyCallCount += 1
+        let callIndex = applyCallCount
         diagnosticsLock.unlock()
-
-        guard let input = inputs?.first else { throw ProcessorError.missingResources }
-        let highlights = (arguments?["highlights"] as? Double) ?? 0
-        let shadows = (arguments?["shadows"] as? Double) ?? 0
-        let scalePx = (arguments?["scalePx"] as? Double) ?? 32
-
-        if let inputTexture = input.metalTexture,
-           let outputTexture = output.metalTexture,
-           let commandBuffer = output.metalCommandBuffer {
-            diagnosticsLock.lock()
-            diagnosticsMetalCallCount += 1
-            diagnosticsLock.unlock()
-            try processMetal(
-                inputTexture: inputTexture, inputRegion: input.region,
-                outputTexture: outputTexture, outputRegion: output.region,
-                commandBuffer: commandBuffer,
-                highlights: highlights, shadows: shadows, scalePx: scalePx
-            )
-        } else {
-            diagnosticsLock.lock()
-            diagnosticsCPUCallCount += 1
-            diagnosticsLock.unlock()
-            try processCPU(input: input, output: output, highlights: highlights, shadows: shadows, scalePx: scalePx)
-        }
-    }
-
-    // MARK: - CPU (software-`CIContext`) fallback
-
-    /// Delegates straight to `SpatialToneOps` (already exhaustively checked
-    /// against the Python reference fixture) rather than re-implementing the
-    /// algorithm a second time in terms of raw buffers -- this path exists
-    /// for correctness (software `CIContext`s, or any context that cannot
-    /// hand this kernel a Metal texture), not performance.
-    private static func processCPU(
-        input: CIImageProcessorInput,
-        output: CIImageProcessorOutput,
-        highlights: Double,
-        shadows: Double,
-        scalePx: Double
-    ) throws {
-        let width = Int(input.region.width.rounded())
-        let height = Int(input.region.height.rounded())
-        let outWidth = Int(output.region.width.rounded())
-        let outHeight = Int(output.region.height.rounded())
-        let offsetX = Int((output.region.origin.x - input.region.origin.x).rounded())
-        let offsetY = Int((output.region.origin.y - input.region.origin.y).rounded())
-        try processCPUBuffers(
-            inputBase: input.baseAddress, inputBytesPerRow: input.bytesPerRow, inputWidth: width, inputHeight: height,
-            outputBase: output.baseAddress, outputBytesPerRow: output.bytesPerRow,
-            outputWidth: outWidth, outputHeight: outHeight, offsetX: offsetX, offsetY: offsetY,
-            highlights: highlights, shadows: shadows, scalePx: scalePx
-        )
-    }
-
-    /// The actual buffer marshaling `processCPU` delegates to (RGBAf,
-    /// premultiplied, row-major, 4 floats/pixel) -- split out so it is
-    /// directly unit-testable with hand-built buffers. `SpatialToneOpsTests`
-    /// exercises this because, empirically (see that test file's comment),
-    /// `CIContext(options: [.useSoftwareRenderer: true])` does not appear to
-    /// make Core Image actually hand this `CIImageProcessorKernel` a
-    /// `baseAddress`-only `CIImageProcessorInput`/`Output` on this
-    /// OS/hardware combination (`process(with:)` still receives Metal
-    /// textures either way), so this path cannot currently be forced through
-    /// a real render the way the brief's GPU-vs-CPU test anticipated.
-    static func processCPUBuffers(
-        inputBase: UnsafeRawPointer,
-        inputBytesPerRow: Int,
-        inputWidth: Int,
-        inputHeight: Int,
-        outputBase: UnsafeMutableRawPointer,
-        outputBytesPerRow: Int,
-        outputWidth: Int,
-        outputHeight: Int,
-        offsetX: Int,
-        offsetY: Int,
-        highlights: Double,
-        shadows: Double,
-        scalePx: Double
-    ) throws {
-        guard inputWidth > 0, inputHeight > 0 else { throw ProcessorError.invalidTileGeometry }
-        guard offsetX >= 0, offsetY >= 0,
-              offsetX + outputWidth <= inputWidth, offsetY + outputHeight <= inputHeight
-        else {
-            throw ProcessorError.invalidTileGeometry
-        }
-
-        var rgb = [SIMD3<Double>](repeating: .zero, count: inputWidth * inputHeight)
-        var alphas = [Double](repeating: 1, count: inputWidth * inputHeight)
-        for y in 0..<inputHeight {
-            let row = inputBase.advanced(by: y * inputBytesPerRow).assumingMemoryBound(to: Float.self)
-            for x in 0..<inputWidth {
-                let base = x * 4
-                let r = Double(row[base])
-                let g = Double(row[base + 1])
-                let b = Double(row[base + 2])
-                let a = Double(row[base + 3])
-                let index = y * inputWidth + x
-                alphas[index] = a
-                rgb[index] = a > 1e-7 ? SIMD3(r / a, g / a, b / a) : SIMD3(r, g, b)
+        let startTime = diagnosticsEnabled ? DispatchTime.now() : nil
+        defer {
+            if let startTime {
+                let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds &- startTime.uptimeNanoseconds) / 1_000_000
+                FileHandle.standardError.write(Data(
+                    "SpatialToneProcessor.apply #\(callIndex): \(String(format: "%.2f", elapsedMs))ms\n".utf8
+                ))
             }
         }
 
-        let resultStraight = SpatialToneOps.applyHighlightsShadows(
-            rgb: rgb, width: inputWidth, height: inputHeight,
-            highlights: highlights, shadows: shadows, scalePx: scalePx
-        )
-
-        for y in 0..<outputHeight {
-            let srcY = y + offsetY
-            let row = outputBase.advanced(by: y * outputBytesPerRow).assumingMemoryBound(to: Float.self)
-            for x in 0..<outputWidth {
-                let srcIndex = srcY * inputWidth + (x + offsetX)
-                let straight = resultStraight[srcIndex]
-                let alpha = alphas[srcIndex]
-                let base = x * 4
-                row[base] = Float(straight.x * alpha)
-                row[base + 1] = Float(straight.y * alpha)
-                row[base + 2] = Float(straight.z * alpha)
-                row[base + 3] = Float(alpha)
-            }
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            diagnosticsLock.lock(); cpuFallbackCallCount += 1; diagnosticsLock.unlock()
+            return try applyCPUFallback(to: image, highlights: highlights, shadows: shadows, scalePx: scalePx)
         }
+        diagnosticsLock.lock(); gpuCallCount += 1; diagnosticsLock.unlock()
+        return try applyGPU(device: device, to: image, highlights: highlights, shadows: shadows, scalePx: scalePx)
     }
 
-    // MARK: - Metal (GPU) path
+    // MARK: - GPU path: one explicit command buffer, no custom kernel
 
-    private static func processMetal(
-        inputTexture: MTLTexture,
-        inputRegion: CGRect,
-        outputTexture: MTLTexture,
-        outputRegion: CGRect,
-        commandBuffer: MTLCommandBuffer,
-        highlights: Double,
-        shadows: Double,
-        scalePx: Double
-    ) throws {
-        let device = commandBuffer.device
+    /// Vertical orientation between `CIContext.render(_:to:MTLTexture:...)`
+    /// (write) and `CIImage(mtlTexture:options:)` (read) -- verified by
+    /// `SpatialToneOpsTests.gpuRoundTripPreservesVerticalOrientation` with a
+    /// top-bright/bottom-dark asymmetric fixture run through an identity
+    /// (`highlights: 0, shadows: 0`) call, which still exercises this whole
+    /// round trip (there is no early-return shortcut for that case). Flip
+    /// this if that test ever needs it on a different OS/hardware; measured
+    /// `false` (no flip needed) on this configuration.
+    static let needsVerticalFlipAfterRoundTrip = false
+
+    private static func applyGPU(
+        device: MTLDevice, to image: CIImage, highlights: Double, shadows: Double, scalePx: Double
+    ) throws -> CIImage {
         let resources = try metalResources(for: device)
-        let width = inputTexture.width
-        let height = inputTexture.height
+
+        let extent = image.extent.integral
+        guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else {
+            return image
+        }
+        let width = Int(extent.width)
+        let height = Int(extent.height)
+
+        guard let commandBuffer = resources.commandQueue.makeCommandBuffer() else {
+            throw ProcessorError.commandBufferCreationFailed
+        }
+        commandBuffer.label = "SpatialToneProcessor.apply"
+
+        let allocator = TextureAllocator(device: device)
+        // The single explicit GPU round trip: render the whole (possibly
+        // cube-chained) input CIImage graph into one texture, once, in this
+        // same command buffer. `.shaderWrite` is required here even though
+        // this file never itself writes to `inputTexture` via compute --
+        // without it, `CIContext.render(to:MTLTexture:)` silently leaves the
+        // texture untouched (no thrown error, no `commandBuffer.error`; it
+        // just never actually renders), because Core Image's own internal
+        // Metal pipeline apparently needs compute-shader write access to its
+        // destination for at least part of what it does. Found by a minimal
+        // repro (`/tmp/probe2.swift`-style standalone script) after this
+        // exact omission made every pixel of every render come back as
+        // whatever garbage was already in the freshly allocated `.private`
+        // texture (observed as all-zero in isolation, and as NaN once fed
+        // through `log2` in this file's own luminance kernel) --
+        // `SpatialToneOpsTests.gpuRoundTripPreservesVerticalOrientation`
+        // guards against this regressing silently again.
+        let inputTexture = allocator.track(checkoutTexture(
+            device: device, width: width, height: height, format: .rgba32Float,
+            usage: [.shaderRead, .shaderWrite, .renderTarget]
+        ))
+        // `CIContext.render(_:to:MTLTexture:...)` requires a concrete
+        // `CGColorSpace` (unlike the `toBitmap:` variant, there is no `nil`/
+        // "no color management" overload for a texture destination).
+        // `.extendedLinearSRGB` is this codebase's established "generic
+        // wide-range linear container, no gamut conversion intended" tag
+        // (matching `RenderEngine`'s own `.workingColorSpace` and
+        // `PhotoBenchRender`'s stage-debug TIFF dump) -- verified numerically
+        // unchanged by `SpatialToneOpsTests`' fixture/GPU-parity tests.
+        resources.ciContext.render(
+            image, to: inputTexture, commandBuffer: commandBuffer, bounds: extent, colorSpace: resources.numericPassthroughColorSpace
+        )
 
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
-            throw ProcessorError.missingResources
+            throw ProcessorError.commandBufferCreationFailed
         }
         encoder.label = "SpatialToneProcessor.compute"
 
-        let ln0 = makePlaneTexture(device: device, width: width, height: height)
+        let ln0 = allocator.plane(width: width, height: height)
         runLuminance(encoder: encoder, resources: resources, rgba: inputTexture, lnOut: ln0)
 
         let levelsH = max(1, Int(log2(max(scalePx, 2.0)).rounded(.toNearestOrEven)))
@@ -343,7 +190,7 @@ public final class SpatialToneProcessor: CIImageProcessorKernel {
         if highlights != 0 {
             let curveBuffer = makeCurveBuffer(device: device, values: SpatialToneOps.highlightsGainCurve(highlights))
             currentLn = applySingleOpLLF(
-                encoder: encoder, resources: resources, device: device,
+                encoder: encoder, resources: resources, allocator: allocator,
                 ln: currentLn, curveBuffer: curveBuffer,
                 alpha: SpatialToneOps.highlightsParams.alpha,
                 beta: SpatialToneOps.highlightsParams.beta,
@@ -355,7 +202,7 @@ public final class SpatialToneProcessor: CIImageProcessorKernel {
             let levelsS = max(1, levelsH + SpatialToneOps.shadowsLevelsOffset)
             let curveBuffer = makeCurveBuffer(device: device, values: SpatialToneOps.shadowsGainCurve(shadows))
             currentLn = applySingleOpLLF(
-                encoder: encoder, resources: resources, device: device,
+                encoder: encoder, resources: resources, allocator: allocator,
                 ln: currentLn, curveBuffer: curveBuffer,
                 alpha: SpatialToneOps.shadowsParams.alpha,
                 beta: SpatialToneOps.shadowsParams.beta,
@@ -364,35 +211,32 @@ public final class SpatialToneProcessor: CIImageProcessorKernel {
             )
         }
 
-        let scratchRGBA = makeRGBATexture(device: device, width: width, height: height)
-        runApplyRatio(encoder: encoder, resources: resources, rgbaIn: inputTexture, lnFinal: currentLn, ln0: ln0, rgbaOut: scratchRGBA)
+        // Not pooled: this texture escapes into the returned `CIImage` and
+        // its lifetime passes to Core Image/ARC, unlike every intermediate
+        // above (all fully consumed by the time `waitUntilCompleted`
+        // returns, and safe to recycle from that point on).
+        let outputTexture = makeRGBATexture(device: device, width: width, height: height)
+        runApplyRatio(encoder: encoder, resources: resources, rgbaIn: inputTexture, lnFinal: currentLn, ln0: ln0, rgbaOut: outputTexture)
 
         encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        checkinTextures(allocator.allocated)
 
-        // `output.region` may be a tile of `input.region` (Core Image is
-        // free to split the graph up); copy only the requested sub-rect out
-        // of the full-image result computed above. In the common (untiled)
-        // case this is a same-size, zero-offset copy.
-        let offsetX = Int((outputRegion.origin.x - inputRegion.origin.x).rounded())
-        let offsetY = Int((outputRegion.origin.y - inputRegion.origin.y).rounded())
-        guard offsetX >= 0, offsetY >= 0,
-              offsetX + outputTexture.width <= scratchRGBA.width,
-              offsetY + outputTexture.height <= scratchRGBA.height
-        else {
-            throw ProcessorError.invalidTileGeometry
+        if let error = commandBuffer.error {
+            throw ProcessorError.commandBufferFailed(String(describing: error))
         }
-        guard let blit = commandBuffer.makeBlitCommandEncoder() else {
-            throw ProcessorError.missingResources
+
+        guard var output = CIImage(mtlTexture: outputTexture, options: [.colorSpace: NSNull()]) else {
+            throw ProcessorError.outputConstructionFailed
         }
-        blit.label = "SpatialToneProcessor.blit"
-        blit.copy(
-            from: scratchRGBA, sourceSlice: 0, sourceLevel: 0,
-            sourceOrigin: MTLOrigin(x: offsetX, y: offsetY, z: 0),
-            sourceSize: MTLSize(width: outputTexture.width, height: outputTexture.height, depth: 1),
-            to: outputTexture, destinationSlice: 0, destinationLevel: 0,
-            destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
-        )
-        blit.endEncoding()
+        if needsVerticalFlipAfterRoundTrip {
+            output = output.transformed(by: CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: -CGFloat(height)))
+        }
+        if extent.origin != .zero {
+            output = output.transformed(by: CGAffineTransform(translationX: extent.origin.x, y: extent.origin.y))
+        }
+        return output
     }
 
     /// `SpatialToneOps.applySingleOpLLF`'s GPU counterpart: identical
@@ -402,7 +246,7 @@ public final class SpatialToneProcessor: CIImageProcessorKernel {
     private static func applySingleOpLLF(
         encoder: MTLComputeCommandEncoder,
         resources: MetalResources,
-        device: MTLDevice,
+        allocator: TextureAllocator,
         ln: MTLTexture,
         curveBuffer: MTLBuffer,
         alpha: Double,
@@ -411,46 +255,46 @@ public final class SpatialToneProcessor: CIImageProcessorKernel {
         levels: Int,
         nDisc: Int = 10
     ) -> MTLTexture {
-        let g = gaussianPyramid(encoder: encoder, resources: resources, device: device, base: ln, levels: levels)
+        let g = gaussianPyramid(encoder: encoder, resources: resources, allocator: allocator, base: ln, levels: levels)
 
         if alpha == 1.0 && beta == 1.0 {
-            var lap = laplacianPyramid(encoder: encoder, resources: resources, device: device, g: g)
+            var lap = laplacianPyramid(encoder: encoder, resources: resources, allocator: allocator, g: g)
             let lastIndex = lap.count - 1
-            let newBase = makePlaneTexture(device: device, width: lap[lastIndex].width, height: lap[lastIndex].height)
+            let newBase = allocator.plane(width: lap[lastIndex].width, height: lap[lastIndex].height)
             runAddCurve(encoder: encoder, resources: resources, src: lap[lastIndex], dst: newBase, curveBuffer: curveBuffer)
             lap[lastIndex] = newBase
-            return reconstruct(encoder: encoder, resources: resources, device: device, lap: lap)
+            return reconstruct(encoder: encoder, resources: resources, allocator: allocator, lap: lap)
         }
 
         // Shadows: the whole-image min/max, the g0 discretization grid, and
         // every per-level bracket/weight all stay on the GPU -- there is no
         // CPU round trip between them (see `SpatialToneMetalSource`'s
         // `spatialComputeG0Grid` doc comment).
-        let minMaxBuffer = makeMinMaxBuffer(device: device)
+        let minMaxBuffer = makeMinMaxBuffer(device: allocator.device)
         runMinMaxReduceInit(encoder: encoder, resources: resources, buffer: minMaxBuffer)
         runMinMaxReduce(encoder: encoder, resources: resources, ln: ln, resultBuffer: minMaxBuffer)
 
         let n = nDisc
-        let g0Buffer = makeG0Buffer(device: device, count: n)
+        let g0Buffer = makeG0Buffer(device: allocator.device, count: n)
         runComputeG0Grid(encoder: encoder, resources: resources, minMaxBuffer: minMaxBuffer, g0Buffer: g0Buffer, n: n)
 
         var idxTextures: [MTLTexture] = []
         var fracTextures: [MTLTexture] = []
         for level in 0..<levels {
-            let idxTex = makePlaneTexture(device: device, width: g[level].width, height: g[level].height)
-            let fracTex = makePlaneTexture(device: device, width: g[level].width, height: g[level].height)
+            let idxTex = allocator.plane(width: g[level].width, height: g[level].height)
+            let fracTex = allocator.plane(width: g[level].width, height: g[level].height)
             runComputeBracket(encoder: encoder, resources: resources, g: g[level], idxOut: idxTex, fracOut: fracTex, g0Buffer: g0Buffer, n: n)
             idxTextures.append(idxTex)
             fracTextures.append(fracTex)
         }
 
-        let acc: [MTLTexture] = (0..<levels).map { makePlaneTexture(device: device, width: g[$0].width, height: g[$0].height) }
+        let acc: [MTLTexture] = (0..<levels).map { allocator.plane(width: g[$0].width, height: g[$0].height) }
 
         for k in 0..<n {
-            let remapped = makePlaneTexture(device: device, width: ln.width, height: ln.height)
+            let remapped = allocator.plane(width: ln.width, height: ln.height)
             runRemap(encoder: encoder, resources: resources, ln: ln, out: remapped, g0Buffer: g0Buffer, k: k, sigmaR: sigmaR, alpha: alpha, beta: beta)
-            let gk = gaussianPyramid(encoder: encoder, resources: resources, device: device, base: remapped, levels: levels)
-            let lk = laplacianPyramid(encoder: encoder, resources: resources, device: device, g: gk)
+            let gk = gaussianPyramid(encoder: encoder, resources: resources, allocator: allocator, base: remapped, levels: levels)
+            let lk = laplacianPyramid(encoder: encoder, resources: resources, allocator: allocator, g: gk)
             for level in 0..<levels {
                 runAccumulateWeighted(
                     encoder: encoder, resources: resources,
@@ -460,26 +304,26 @@ public final class SpatialToneProcessor: CIImageProcessorKernel {
             }
         }
 
-        let baseFinal = makePlaneTexture(device: device, width: g[levels].width, height: g[levels].height)
+        let baseFinal = allocator.plane(width: g[levels].width, height: g[levels].height)
         runAddCurve(encoder: encoder, resources: resources, src: g[levels], dst: baseFinal, curveBuffer: curveBuffer)
 
         var lapFull = acc
         lapFull.append(baseFinal)
-        return reconstruct(encoder: encoder, resources: resources, device: device, lap: lapFull)
+        return reconstruct(encoder: encoder, resources: resources, allocator: allocator, lap: lapFull)
     }
 
     private static func gaussianPyramid(
-        encoder: MTLComputeCommandEncoder, resources: MetalResources, device: MTLDevice,
+        encoder: MTLComputeCommandEncoder, resources: MetalResources, allocator: TextureAllocator,
         base: MTLTexture, levels: Int
     ) -> [MTLTexture] {
         var g = [base]
         for _ in 0..<levels {
             let previous = g[g.count - 1]
-            let vBlurred = makePlaneTexture(device: device, width: previous.width, height: previous.height)
+            let vBlurred = allocator.plane(width: previous.width, height: previous.height)
             runBlurVertical(encoder: encoder, resources: resources, src: previous, dst: vBlurred)
             let outWidth = (previous.width + 1) / 2
             let outHeight = (previous.height + 1) / 2
-            let down = makePlaneTexture(device: device, width: outWidth, height: outHeight)
+            let down = allocator.plane(width: outWidth, height: outHeight)
             runDownsampleHorizontal(encoder: encoder, resources: resources, src: vBlurred, dst: down)
             g.append(down)
         }
@@ -487,25 +331,25 @@ public final class SpatialToneProcessor: CIImageProcessorKernel {
     }
 
     private static func pyrUp(
-        encoder: MTLComputeCommandEncoder, resources: MetalResources, device: MTLDevice,
+        encoder: MTLComputeCommandEncoder, resources: MetalResources, allocator: TextureAllocator,
         src: MTLTexture, outWidth: Int, outHeight: Int
     ) -> MTLTexture {
         let height2 = src.height * 2
-        let vUp = makePlaneTexture(device: device, width: src.width, height: height2)
+        let vUp = allocator.plane(width: src.width, height: height2)
         runUpsampleVertical(encoder: encoder, resources: resources, src: src, dst: vUp)
-        let out = makePlaneTexture(device: device, width: outWidth, height: outHeight)
+        let out = allocator.plane(width: outWidth, height: outHeight)
         runUpsampleHorizontalScaled(encoder: encoder, resources: resources, src: vUp, dst: out)
         return out
     }
 
     private static func laplacianPyramid(
-        encoder: MTLComputeCommandEncoder, resources: MetalResources, device: MTLDevice, g: [MTLTexture]
+        encoder: MTLComputeCommandEncoder, resources: MetalResources, allocator: TextureAllocator, g: [MTLTexture]
     ) -> [MTLTexture] {
         var lap: [MTLTexture] = []
         lap.reserveCapacity(g.count)
         for i in 0..<(g.count - 1) {
-            let up = pyrUp(encoder: encoder, resources: resources, device: device, src: g[i + 1], outWidth: g[i].width, outHeight: g[i].height)
-            let diff = makePlaneTexture(device: device, width: g[i].width, height: g[i].height)
+            let up = pyrUp(encoder: encoder, resources: resources, allocator: allocator, src: g[i + 1], outWidth: g[i].width, outHeight: g[i].height)
+            let diff = allocator.plane(width: g[i].width, height: g[i].height)
             runSubtract(encoder: encoder, resources: resources, a: g[i], b: up, out: diff)
             lap.append(diff)
         }
@@ -514,13 +358,13 @@ public final class SpatialToneProcessor: CIImageProcessorKernel {
     }
 
     private static func reconstruct(
-        encoder: MTLComputeCommandEncoder, resources: MetalResources, device: MTLDevice, lap: [MTLTexture]
+        encoder: MTLComputeCommandEncoder, resources: MetalResources, allocator: TextureAllocator, lap: [MTLTexture]
     ) -> MTLTexture {
         var x = lap[lap.count - 1]
         var i = lap.count - 2
         while i >= 0 {
-            let up = pyrUp(encoder: encoder, resources: resources, device: device, src: x, outWidth: lap[i].width, outHeight: lap[i].height)
-            let sum = makePlaneTexture(device: device, width: lap[i].width, height: lap[i].height)
+            let up = pyrUp(encoder: encoder, resources: resources, allocator: allocator, src: x, outWidth: lap[i].width, outHeight: lap[i].height)
+            let sum = allocator.plane(width: lap[i].width, height: lap[i].height)
             runAdd(encoder: encoder, resources: resources, a: up, b: lap[i], out: sum)
             x = sum
             i -= 1
@@ -692,18 +536,207 @@ public final class SpatialToneProcessor: CIImageProcessorKernel {
         dispatch(encoder, width: acc.width, height: acc.height)
     }
 
-    // MARK: - Resource allocation
+    // MARK: - CPU fallback (no Metal device)
 
-    private static func makePlaneTexture(device: MTLDevice, width: Int, height: Int) -> MTLTexture {
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r32Float, width: max(width, 1), height: max(height, 1), mipmapped: false
+    /// Only reached when `MTLCreateSystemDefaultDevice()` returns `nil`.
+    /// Renders the whole (possibly cube-chained) input graph to a CPU
+    /// buffer once, delegates to the already-fixture-tested `SpatialToneOps`
+    /// directly, and rebuilds a fresh `CIImage` -- the same shape as the GPU
+    /// path's single round trip, just entirely on the CPU.
+    private static func applyCPUFallback(
+        to image: CIImage, highlights: Double, shadows: Double, scalePx: Double
+    ) throws -> CIImage {
+        let extent = image.extent.integral
+        guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else {
+            return image
+        }
+        let width = Int(extent.width)
+        let height = Int(extent.height)
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else {
+            throw ProcessorError.outputConstructionFailed
+        }
+
+        let bytesPerRow = width * 4 * MemoryLayout<Float>.size
+        var inputBuffer = [Float](repeating: 0, count: width * height * 4)
+        cpuFallbackContext.render(
+            image, toBitmap: &inputBuffer, rowBytes: bytesPerRow, bounds: extent, format: .RGBAf, colorSpace: colorSpace
         )
-        descriptor.usage = [.shaderRead, .shaderWrite]
+
+        var outputBuffer = [Float](repeating: 0, count: width * height * 4)
+        try inputBuffer.withUnsafeBytes { inRaw in
+            try outputBuffer.withUnsafeMutableBytes { outRaw in
+                try processCPUBuffers(
+                    inputBase: inRaw.baseAddress!, inputBytesPerRow: bytesPerRow, inputWidth: width, inputHeight: height,
+                    outputBase: outRaw.baseAddress!, outputBytesPerRow: bytesPerRow,
+                    outputWidth: width, outputHeight: height, offsetX: 0, offsetY: 0,
+                    highlights: highlights, shadows: shadows, scalePx: scalePx
+                )
+            }
+        }
+
+        let data = outputBuffer.withUnsafeBytes { Data($0) }
+        var output = CIImage(
+            bitmapData: data, bytesPerRow: bytesPerRow,
+            size: CGSize(width: width, height: height), format: .RGBAf, colorSpace: colorSpace
+        )
+        if extent.origin != .zero {
+            output = output.transformed(by: CGAffineTransform(translationX: extent.origin.x, y: extent.origin.y))
+        }
+        return output
+    }
+
+    private static let cpuFallbackContext = CIContext(options: [.cacheIntermediates: false])
+
+    /// The actual buffer marshaling `applyCPUFallback` delegates to (RGBAf,
+    /// premultiplied, row-major, 4 floats/pixel) -- split out so it is
+    /// directly unit-testable with hand-built buffers (`SpatialToneOpsTests`
+    /// exercises alpha handling and the general offset/window logic this
+    /// way, independent of whatever full-image or tiled shape a caller
+    /// passes; `applyCPUFallback` itself always calls it with
+    /// `offsetX == offsetY == 0` and matching input/output dimensions, since
+    /// there is no tiling concept left in this design).
+    static func processCPUBuffers(
+        inputBase: UnsafeRawPointer,
+        inputBytesPerRow: Int,
+        inputWidth: Int,
+        inputHeight: Int,
+        outputBase: UnsafeMutableRawPointer,
+        outputBytesPerRow: Int,
+        outputWidth: Int,
+        outputHeight: Int,
+        offsetX: Int,
+        offsetY: Int,
+        highlights: Double,
+        shadows: Double,
+        scalePx: Double
+    ) throws {
+        guard inputWidth > 0, inputHeight > 0 else { throw ProcessorError.outputConstructionFailed }
+        guard offsetX >= 0, offsetY >= 0,
+              offsetX + outputWidth <= inputWidth, offsetY + outputHeight <= inputHeight
+        else {
+            throw ProcessorError.outputConstructionFailed
+        }
+
+        var rgb = [SIMD3<Double>](repeating: .zero, count: inputWidth * inputHeight)
+        var alphas = [Double](repeating: 1, count: inputWidth * inputHeight)
+        for y in 0..<inputHeight {
+            let row = inputBase.advanced(by: y * inputBytesPerRow).assumingMemoryBound(to: Float.self)
+            for x in 0..<inputWidth {
+                let base = x * 4
+                let r = Double(row[base])
+                let g = Double(row[base + 1])
+                let b = Double(row[base + 2])
+                let a = Double(row[base + 3])
+                let index = y * inputWidth + x
+                alphas[index] = a
+                rgb[index] = a > 1e-7 ? SIMD3(r / a, g / a, b / a) : SIMD3(r, g, b)
+            }
+        }
+
+        let resultStraight = SpatialToneOps.applyHighlightsShadows(
+            rgb: rgb, width: inputWidth, height: inputHeight,
+            highlights: highlights, shadows: shadows, scalePx: scalePx
+        )
+
+        for y in 0..<outputHeight {
+            let srcY = y + offsetY
+            let row = outputBase.advanced(by: y * outputBytesPerRow).assumingMemoryBound(to: Float.self)
+            for x in 0..<outputWidth {
+                let srcIndex = srcY * inputWidth + (x + offsetX)
+                let straight = resultStraight[srcIndex]
+                let alpha = alphas[srcIndex]
+                let base = x * 4
+                row[base] = Float(straight.x * alpha)
+                row[base + 1] = Float(straight.y * alpha)
+                row[base + 2] = Float(straight.z * alpha)
+                row[base + 3] = Float(alpha)
+            }
+        }
+    }
+
+    // MARK: - Texture allocation and pooling
+
+    /// Collects every texture allocated while building one `apply()` call's
+    /// GPU graph, so they can all be returned to the pool in bulk once
+    /// `waitUntilCompleted()` confirms nothing on the GPU is still
+    /// reading/writing them. Not thread-safe by itself (one instance per
+    /// `apply()` call, used only from that call's thread); the pool it
+    /// checks in/out of is what needs (and has) its own lock.
+    private final class TextureAllocator {
+        let device: MTLDevice
+        private(set) var allocated: [MTLTexture] = []
+
+        init(device: MTLDevice) {
+            self.device = device
+        }
+
+        @discardableResult
+        func track(_ texture: MTLTexture) -> MTLTexture {
+            allocated.append(texture)
+            return texture
+        }
+
+        func plane(width: Int, height: Int) -> MTLTexture {
+            track(SpatialToneProcessor.checkoutTexture(
+                device: device, width: width, height: height, format: .r32Float, usage: [.shaderRead, .shaderWrite]
+            ))
+        }
+    }
+
+    private struct TextureKey: Hashable {
+        let width: Int
+        let height: Int
+        let format: MTLPixelFormat
+    }
+
+    private static let texturePoolLock = NSLock()
+    nonisolated(unsafe) private static var texturePool: [TextureKey: [MTLTexture]] = [:]
+
+    /// Reuses a pooled texture of the exact same `(width, height, format)`
+    /// if one is free, else allocates a fresh one. Every texture that ever
+    /// enters the pool was created with the same `usage` for that
+    /// `(width, height, format)` key in practice (`.r32Float` intermediates
+    /// via `TextureAllocator.plane`; `.rgba32Float` *input* textures here --
+    /// the *output* texture is deliberately never pooled, see `applyGPU`),
+    /// so a pooled hit's usage always matches what the caller needs.
+    private static func checkoutTexture(device: MTLDevice, width: Int, height: Int, format: MTLPixelFormat, usage: MTLTextureUsage) -> MTLTexture {
+        let key = TextureKey(width: max(width, 1), height: max(height, 1), format: format)
+        texturePoolLock.lock()
+        if var bucket = texturePool[key], let texture = bucket.popLast() {
+            texturePool[key] = bucket
+            texturePoolLock.unlock()
+            return texture
+        }
+        texturePoolLock.unlock()
+
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: format, width: key.width, height: key.height, mipmapped: false
+        )
+        descriptor.usage = usage
         descriptor.storageMode = .private
         guard let texture = device.makeTexture(descriptor: descriptor) else {
-            preconditionFailure("SpatialToneProcessor: failed to allocate a \(width)x\(height) r32Float plane texture")
+            preconditionFailure("SpatialToneProcessor: failed to allocate a \(key.width)x\(key.height) texture (format \(format.rawValue))")
         }
         return texture
+    }
+
+    private static func checkinTextures(_ textures: [MTLTexture]) {
+        texturePoolLock.lock()
+        for texture in textures {
+            let key = TextureKey(width: texture.width, height: texture.height, format: texture.pixelFormat)
+            texturePool[key, default: []].append(texture)
+        }
+        texturePoolLock.unlock()
+    }
+
+    /// Test-only escape hatch: pooled textures are keyed only by size/format,
+    /// so a stale texture from an earlier, differently-shaped test can in
+    /// principle be handed back out. Production never needs this (the pool
+    /// is a pure performance optimization, not a correctness dependency).
+    static func clearTexturePoolForTesting() {
+        texturePoolLock.lock()
+        texturePool.removeAll()
+        texturePoolLock.unlock()
     }
 
     private static func makeRGBATexture(device: MTLDevice, width: Int, height: Int) -> MTLTexture {
@@ -713,7 +746,7 @@ public final class SpatialToneProcessor: CIImageProcessorKernel {
         descriptor.usage = [.shaderRead, .shaderWrite]
         descriptor.storageMode = .private
         guard let texture = device.makeTexture(descriptor: descriptor) else {
-            preconditionFailure("SpatialToneProcessor: failed to allocate a \(width)x\(height) rgba32Float scratch texture")
+            preconditionFailure("SpatialToneProcessor: failed to allocate a \(width)x\(height) rgba32Float output texture")
         }
         return texture
     }
@@ -740,14 +773,31 @@ public final class SpatialToneProcessor: CIImageProcessorKernel {
         return buffer
     }
 
-    // MARK: - Per-device compiled pipeline cache
+    // MARK: - Per-device compiled pipeline / command queue / CIContext cache
 
     private final class MetalResources {
         let device: MTLDevice
+        let commandQueue: MTLCommandQueue
+        /// Dedicated to this file's one `CIContext.render(_:to:MTLTexture:
+        /// commandBuffer:bounds:colorSpace:)` call -- `.cacheIntermediates:
+        /// false` since each render is a one-shot materialization, never
+        /// revisited.
+        let ciContext: CIContext
+        let numericPassthroughColorSpace: CGColorSpace
         private let pipelineStates: [String: MTLComputePipelineState]
 
         init(device: MTLDevice) throws {
             self.device = device
+            guard let commandQueue = device.makeCommandQueue() else {
+                throw ProcessorError.commandBufferCreationFailed
+            }
+            self.commandQueue = commandQueue
+            self.ciContext = CIContext(mtlDevice: device, options: [.cacheIntermediates: false])
+            guard let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else {
+                throw ProcessorError.commandBufferCreationFailed
+            }
+            self.numericPassthroughColorSpace = colorSpace
+
             let library = try device.makeLibrary(source: SpatialToneMetalSource.source, options: nil)
             var built: [String: MTLComputePipelineState] = [:]
             for name in SpatialToneMetalSource.functionNames {
