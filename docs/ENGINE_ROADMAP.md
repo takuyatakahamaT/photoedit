@@ -284,6 +284,13 @@ Texture / Clarity2012（Laplacian 段別線形ゲイン、Clarity は +3 段）�
 
 **ゲイン表の振幅再フィット（Python、出力参照の位置、`.photobench/phase2/spatial-v2.1/`）**: RAW 3 scene × 6 variant ＋ JPEG round0 2 ケースの 20 ケースで、H±／S± の振幅係数を座標降下法で fit。採用 `kHneg=0.65, kHpos=0.61, kSneg=0.76, kSpos=0.85`（表は全体に強すぎた）。20 ケース平均の領域平均 ΔE 1.79 → 1.44、|EV| 0.14 → 0.11。tone-all（held-out）6.53 → 5.43。Highlights は 10 ケース全部で改善する一方、Shadows は scene 別最適値が kSneg 0.43〜1.53、kSpos 0.63〜1.23 と 2〜3.5 倍ばらつき（LR の画像適応）、大域係数では 4/20 ケースが悪化する。round0 の `r0_jpg` は P1013558 と同一写真（独立 scene ではない）。この位置（出力参照）は非RAW の `s-p1-p2` と同じ領域なので、非RAW 側の係数の裏付けに使う。RAW の `pre-tone` 位置の係数は実エンジンの格子探索で決める。
 
+**round2 セット B／C／D の解析（2026-09-23、`.photobench/phase2/round2-bcd/model.md`）**: オーナーの round2 書き出し（153 枚）のうち 3 scene 分。
+
+- **Dehaze（C）**: トーン表の `amount/50`、彩度倍率の `amount/40` の単純比例が崩れている（小振幅で弱く、大振幅で飽和）。負側（−40）は今回が実写初検証。区分線形に差し替えると 9 ケース平均 ΔE 3.56 → 2.83（全ケース改善）。→ `ToneOps.dehaze` の 2 箇所を区分線形へ。
+- **Texture／Clarity（C）**: 段別プロファイルの形は amount に依らず不変、振幅は大振幅で飽和するが ΔE への影響はノイズ水準（±0.01〜0.06）。低優先。
+- **HSL 青（D）**: Blue の色相（帯中心 229.7°、境界振幅式）は実写で追認、変更不要。**Blue の輝度**は K,P,Q を再 fit（負側の P が 0 → 0.84）で ΔE 0.43 → 0.33（負側 −35%）。→ `ColorOps.hslLumParamsAt60` の Blue 行を差し替え、fixture 再生成。Aqua は標本少。
+- **合成（B）**: 最大の相互作用は **Exposure × H/S** で、H/S を露出より前に適用する方が該当 12 ケースすべてで良い（領域 ΔE 5.23 → 3.04）。位置切替実験（非RAW `s-p1-p2`）と独立に同じ結論。H×S の相互作用は弱く、S×Blacks は現行順（Blacks が最後）で正しい。H×Whites は標本少。
+
 **4 プリセットの残差分解（2026-09-23、`.photobench/phase5/preset-residuals/model.md`）**: 4 プリセット × 11 操作グループの中立化 XMP（48 種）を RAW / JPEG で 104 枚描画し、LR 参照と比較。
 
 - 共通の 1 位は **C3 の Highlights／Shadows**（確定）: 8 組中 7 組で「外すと改善」し、改善幅は |Highlights2012| にほぼ比例（colorful −88 / night −87 で最大、pastel −44 で最小）。RAW では中間調（相対輝度 0.33〜0.56）で EV 誤差がピーク。→ 振幅の再フィット（spatial-v2.1）が対処。
