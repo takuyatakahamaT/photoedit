@@ -42,6 +42,13 @@ Core Image / Metal 実装: ピラミッド（`CILanczosScaleTransform` ではな
 
 位置: P1（Contrast）の後、P2（Whites…）の前（v1 仮置き）。cube 間に挟むため、cube P は P1 と P2 の2つに分ける（P2 のキャッシュキーに Contrast は含めない）。
 
+### C3 実装での決定（2026-09-23、`b70f123`）
+
+- 空間処理は `CIImageProcessorKernel`（`SpatialToneProcessor`）＋ 実行時コンパイルの Metal compute（14 カーネル）。Shadows の `g0_grid` に必要な画像全体の min/max も GPU 内で reduction し、CPU へ読み戻さない。CPU 参照 `SpatialToneOps` は `spatial_model_v2.py` の 1 対 1 移植で、fixture（`Tests/Fixtures/phase2/spatial-ops.json`、`.photobench/phase2/spatial-v2/make_fixture.py` で生成）と相対誤差 0.0。
+- `scale_px = 32 × 長辺 / 1500` を `SpatialToneOps.scalePx(forLongEdge:)` に一本化（原寸 6000px → 128 → Highlights 7 段 / Shadows 4 段）。preview / export / 非RAW も同じ。
+- H/S が 0 のときは cube P 1 本のまま（C1/C2 の結果とキャッシュキーを変えない）。有効時だけ P1（Contrast）→ S → P2 に分割。
+- ゲートの結果と残差の分析は [ENGINE_ROADMAP.md](ENGINE_ROADMAP.md)「フェーズ2 C3 の結果」。12 ケース平均 2.84 で目標 2.3 は未達だが、参照実装を自前中立レンダーに掛けた値と一致するため移植は忠実と判断し、C4 へ進む。
+
 ### C3 テスト・ゲート
 - CPU 参照（純Swift、縮小画像で）と CI 実装の一致（ΔE00 ≤ 0.3、1500×1000 で）。
 - 実写ゲート（P1013558 / P1013207 / P1012822、参照は round1 の `Highlights2012_-100/-50/+50`、`Shadows2012_-50/+50/+100`。ゲート用 XMP は `.photobench/phase2/c3-gate/`）: H/S 単体 12 ケースの **領域平均ΔE ≤ 2.3、画素ΔE（1500×1000）≤ 2.6**（参照実装 v2 の到達点 2.08 / 2.37）、ハローの目視（比較画像を `exports/phase3/` へ）。

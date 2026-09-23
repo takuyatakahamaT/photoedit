@@ -46,7 +46,7 @@
 - **フェーズ1完了:** RAWの基準現像を LibRaw + Adobe Standard DCP + Adobe Color（Lightroom同梱の資産を実行時に読む）へ切り替え、プリセット無しでLR既定と平均ΔE00 1.2〜1.9（旧: 2.4〜3.0、明るく高彩度）。アプリの写真情報に「現像: Adobe Standard + Adobe Color（LibRaw）」が出る。`photobench-render` CLI で GUI 無しに書き出せる。
 - **round0 / round1 の計測完了（2026-09-22）。** 機械生成XMPはLRが読み、手動適用と完全一致。チャート194枚・実写94枚から操作ごとの式を同定した（`.photobench/phase2/{tone,hsl,color,spatial}/model.md`）。RAW実写で確定: 露出＝トーンカーブ前のリニア倍率、絶対WB＝DNG SDKの式、基準露出 −0.135 EV、Adobe Colorの点カーブ＝sRGB符号化RGBTone、コントラスト／白／黒／parametric／点カーブ＝トーンカーブ後のsRGB符号化空間、HSLとCalibration＝出力参照。
 - ハイライト／シャドウは空間処理（HALDでは測れない）。同定した「大域カーブ＋ディテール保持」モデルの到達点は実写15ケース平均ΔE 3.1（大域のみと同程度）で、ここが最後まで残る残差。
-- 実装は3段: C1（露出・絶対WB・コントラスト・白黒・parametric・点カーブ、[PHASE2_DEVELOP_PIPELINE.md](PHASE2_DEVELOP_PIPELINE.md)）→ C2（HSL・Calibration・Color Grading・Vibrance／Saturation）→ C3（ハイライト／シャドウ）、[PHASE2_C2_C3.md](PHASE2_C2_C3.md)。C1 は `2df8f6a` で完了（単一操作ゲート 1.2〜2.1。bluesky2全体は 5.0〜7.1 まで改善、開始時 17〜22）。C2 は `c1d274d` で完了（実写ゲート: HSL 1.38 / Saturation 1.27 / Vibrance 1.30 / SplitToning 1.33 / Calibration 2.24 / GreenHue+50 2.0〜2.2 / BlueSat+50 2.6〜2.7。bluesky2全体は **4.16 / 5.55 / 5.62**、彩度比 0.93〜1.07。残りは旧近似のハイライト／シャドウで EV +0.18〜+0.33）。**C3（ハイライト／シャドウの局所ラプラシアン）を 2026-09-23 に実装中。** 並行して Texture／Clarity／Dehaze の同定（round1 の書き出しを使用）と、アプリ UI への HSL・カーブ・グレーディング・Calibration・絶対WB の露出を進めている。
+- 実装は3段: C1（露出・絶対WB・コントラスト・白黒・parametric・点カーブ、[PHASE2_DEVELOP_PIPELINE.md](PHASE2_DEVELOP_PIPELINE.md)）→ C2（HSL・Calibration・Color Grading・Vibrance／Saturation）→ C3（ハイライト／シャドウ）、[PHASE2_C2_C3.md](PHASE2_C2_C3.md)。C1 は `2df8f6a` で完了（単一操作ゲート 1.2〜2.1。bluesky2全体は 5.0〜7.1 まで改善、開始時 17〜22）。C2 は `c1d274d` で完了（実写ゲート: HSL 1.38 / Saturation 1.27 / Vibrance 1.30 / SplitToning 1.33 / Calibration 2.24 / GreenHue+50 2.0〜2.2 / BlueSat+50 2.6〜2.7。bluesky2全体は **4.16 / 5.55 / 5.62**、彩度比 0.93〜1.07。残りは旧近似のハイライト／シャドウで EV +0.18〜+0.33）。**C3（ハイライト／シャドウの局所ラプラシアン）は `b70f123` で完了**（H/S 単体 12 ケース平均 2.84。参照実装を自前中立レンダーに掛けた値と一致し、差は基準現像とモデル自体の残差。bluesky2 全体 7.15 / 4.67 / 5.18、EV −0.26〜−0.45 で暗い）。同日に Texture／Clarity／Dehaze の同定（`.photobench/phase2/detail/`、15 ケース平均 1.93）、RW2 埋め込みレンズ歪曲補正の同定（`.photobench/phase4/lens/`、中立 0.93〜1.22）、アプリ UI の LR 相当パネル化（`f5a7985`）を実施。C4（Texture／Clarity／Dehaze）とレンズ歪曲補正を実装中。
 
 根拠・方式比較・出典は[ENGINE_ROADMAP.md](ENGINE_ROADMAP.md)。過去の調査は[汎用XMPエンジン設計](GENERIC_XMP_ENGINE.md)、[エンジン比較・根拠](ENGINE_RESEARCH.md)。
 
@@ -58,7 +58,7 @@
 | 1 | ~~RAW基準現像（DCP＋Adobe Color＋ACR既定カーブ＋基準露出）~~ **完了（`ce91bfc`）。** 設計は[PHASE1_BASE_RENDERING.md](PHASE1_BASE_RENDERING.md)。3枚とも平均ΔE00 1.2〜1.9、EV差 ±0.03 で合格。旧土台は 2.4〜3.0 | プリセット無しでLR既定と平均ΔE00 ≤ 2、平均EV差 ≤ 0.05（`compare_renders.py`） |
 | 2 | 画素単位の色操作。計測・同定は完了。~~実装 C1 → C2~~ **完了（`2df8f6a`、`c1d274d`）** | 実写（round0/1の参照）で操作ごとに平均ΔE00 ≤ 2（基準現像 1.2〜1.4 と同水準） |
 | 3 | 空間操作（ハイライト／シャドウ→Texture／Clarity／Dehaze）。同定 v2 完了（局所ラプラシアン、H/S 単体 12 ケース領域平均 2.08）。実装 C3（進行中）→ C4（Texture／Clarity／Dehaze、同定中） | v1: 実写15ケース平均 ≤ 3.1。以降、局所モデルの改良で 2 以下を目指す |
-| 4 | 既定シャープ／NR、レンズ補正、周辺光量・粒子、速度 | 100%表示の解像感がLRと同等 |
+| 4 | 既定シャープ／NR、レンズ補正（歪曲は RW2 埋め込み係数で確定・実装中。周辺光量は同定できず保留）、粒子、速度 | 100%表示の解像感がLRと同等 |
 | 5 | 未使用プリセット×未使用写真の総合検証 | オーナーが普段使いできると判断 |
 | 6 | NIHO Desktop統合 | — |
 
@@ -66,9 +66,18 @@
 
 ## オーナーにお願いする作業
 
-1. ~~Lightroomでの一括書き出し~~ round0 / round1 は完了。C1〜C3 の実装後、追加計測（スライダー値の細かい刻み、未使用プリセット）を依頼する可能性がある。
-2. **新エンジンの目視確認。** `dist/Photo Bench.app` でRAWを開き、写真情報に「現像: Adobe Standard + Adobe Color（LibRaw）」が出ること、プリセット無しの見た目がLRの既定に近いことを確認する。
-3. 教師データを作れるのはLR契約中だけ。フェーズ2〜3の書き出しが済むまで契約を継続する。
+1. **新 UI の実機確認**（2026-09-23 の `f5a7985`。`scripts/build-app.sh` で `dist/Photo Bench.app` を再ビルドしてから）:
+   - RAW を開き、基本補正 > ホワイトバランスの色温度／色かぶり補正が撮影時の値から始まり、動かすと「カスタム」になり、「撮影時」で戻る。
+   - トーンカーブ: 空き位置クリックで点追加、ドラッグで移動、枠の外へドラッグして離すと削除、「カーブをリセット」。
+   - HSL・カラーグレーディング・キャリブレーションがプレビューに反映され、各セクションの「リセット」がそのセクションだけ戻す。
+   - ⌘Z / ⇧⌘Z でスライダー 1 回のドラッグやカーブ操作が 1 回の Undo になる。
+   - プリセット適用時に旧「HSL・カーブ近似」トグルが無く、HSL／カーブが常に反映される。JPEG 書き出しにも反映される。
+2. **LR 追加書き出し（round2、フェーズ3 の残差改善用）**。LR 契約中に済ませたい。内容は主担当が `exports/lr-measure/round2/` に生成する予定:
+   - Highlights × Shadows × Blacks の同時スイープ（合成の偏りの切り分け）
+   - Texture／Clarity／Dehaze の ±20／±40／±80（線形性）、Dehaze −40（彩度の負側）
+   - シャドウの画像適応を見るための実写 10 枚以上（暗部の面積が違うもの）
+   - 周辺光量用の平坦な被写体（グレーカード・曇天）を同じレンズ・同じ絞りで数枚
+3. 教師データを作れるのは LR 契約中だけ。round2 の書き出しが済むまで契約を継続する。
 
 ## 成果物・履歴
 
