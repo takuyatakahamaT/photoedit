@@ -92,11 +92,33 @@ public enum SpatialToneProcessor {
     /// wall time (encoding + GPU execution) in milliseconds -- for
     /// `photobench-render`/manual profiling, not routine use.
     private static let diagnosticsEnabled = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] != nil
+    /// `PHOTO_BENCH_SPATIAL_DIAG=2` (a superset of `=1`'s per-call total-time
+    /// line): also prints one `applyGPU` call's stage breakdown -- encode
+    /// (Swift-side command-buffer building), `waitUntilCompleted` wait, GPU
+    /// execution (`MTLCommandBuffer.gpuStartTime`/`gpuEndTime`, only valid
+    /// once the buffer has completed), and total dispatch count. Added to
+    /// profile the owner-reported "apply() is ~200-350ms and barely moves
+    /// with resolution" sluggishness -- dispatch *count* (not per-pixel
+    /// work) was the suspected dominant cost; this is how that was measured.
+    private static let verboseDiagnosticsEnabled = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] == "2"
 
     private static let diagnosticsLock = NSLock()
     nonisolated(unsafe) private static var applyCallCount = 0
     nonisolated(unsafe) private static var gpuCallCount = 0
     nonisolated(unsafe) private static var cpuFallbackCallCount = 0
+    /// One `applyGPU` call's dispatch count, valid only for `=2` profiling of
+    /// a single sequential call -- like `applyCallCount` etc. above, a global
+    /// counter under `diagnosticsLock`, reset at the start of each `applyGPU`
+    /// call and read at its end. Concurrent `apply()` calls (from different
+    /// threads/photos) would interleave and give a meaningless count for
+    /// each; this feature is for deliberate, sequential profiling runs
+    /// (`photobench-render`), not routine concurrent production use.
+    nonisolated(unsafe) private static var currentDispatchCount = 0
+
+    private static func countDispatch() {
+        guard verboseDiagnosticsEnabled else { return }
+        diagnosticsLock.lock(); currentDispatchCount += 1; diagnosticsLock.unlock()
+    }
 
     /// Exposed for tests (and manual diagnostics) to confirm how many times
     /// `apply(to:...)` actually ran, and via which path.
@@ -223,6 +245,11 @@ public enum SpatialToneProcessor {
         }
         encoder.label = "SpatialToneProcessor.compute"
 
+        if verboseDiagnosticsEnabled {
+            diagnosticsLock.lock(); currentDispatchCount = 0; diagnosticsLock.unlock()
+        }
+        let encodeStartTime = verboseDiagnosticsEnabled ? DispatchTime.now() : nil
+
         let ln0 = allocator.plane(width: width, height: height)
         runLuminance(encoder: encoder, resources: resources, rgba: inputTexture, lnOut: ln0)
 
@@ -274,12 +301,30 @@ public enum SpatialToneProcessor {
         runApplyRatio(encoder: encoder, resources: resources, rgbaIn: inputTexture, lnFinal: currentLn, ln0: ln0, rgbaOut: outputTexture)
 
         encoder.endEncoding()
+        let encodeEndTime = verboseDiagnosticsEnabled ? DispatchTime.now() : nil
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        let waitEndTime = verboseDiagnosticsEnabled ? DispatchTime.now() : nil
         checkinTextures(allocator.allocated)
 
         if let error = commandBuffer.error {
             throw ProcessorError.commandBufferFailed(String(describing: error))
+        }
+
+        if verboseDiagnosticsEnabled, let encodeStartTime, let encodeEndTime, let waitEndTime {
+            let encodeMs = Double(encodeEndTime.uptimeNanoseconds &- encodeStartTime.uptimeNanoseconds) / 1_000_000
+            let waitMs = Double(waitEndTime.uptimeNanoseconds &- encodeEndTime.uptimeNanoseconds) / 1_000_000
+            // `gpuStartTime`/`gpuEndTime` are `CFTimeInterval` (seconds since
+            // an unspecified epoch, monotonic only relative to each other) --
+            // only their *difference* is meaningful, not either value alone.
+            let gpuMs = (commandBuffer.gpuEndTime - commandBuffer.gpuStartTime) * 1000
+            diagnosticsLock.lock()
+            let dispatches = currentDispatchCount
+            diagnosticsLock.unlock()
+            let message = "SpatialToneProcessor.applyGPU breakdown: encode=\(String(format: "%.2f", encodeMs))ms "
+                + "wait=\(String(format: "%.2f", waitMs))ms gpu=\(String(format: "%.2f", gpuMs))ms "
+                + "dispatches=\(dispatches)\n"
+            FileHandle.standardError.write(Data(message.utf8))
         }
 
         guard var output = CIImage(mtlTexture: outputTexture, options: [.colorSpace: NSNull()]) else {
@@ -390,6 +435,9 @@ public enum SpatialToneProcessor {
         return reconstruct(encoder: encoder, resources: resources, allocator: allocator, lap: lap)
     }
 
+    /// Kept as separate vertical-blur + horizontal-blur-and-downsample
+    /// dispatches -- see `SpatialToneMetalSource.spatialBlurVertical`'s doc
+    /// comment for why a fused single-dispatch version measured *slower*.
     private static func gaussianPyramid(
         encoder: MTLComputeCommandEncoder, resources: MetalResources, allocator: TextureAllocator,
         base: MTLTexture, levels: Int
@@ -463,6 +511,7 @@ public enum SpatialToneProcessor {
     }
 
     private static func dispatch(_ encoder: MTLComputeCommandEncoder, width: Int, height: Int) {
+        countDispatch()
         encoder.dispatchThreadgroups(threadgroups(width: width, height: height), threadsPerThreadgroup: defaultThreadgroupSize)
     }
 
@@ -579,6 +628,7 @@ public enum SpatialToneProcessor {
     private static func runMinMaxReduceInit(encoder: MTLComputeCommandEncoder, resources: MetalResources, buffer: MTLBuffer) {
         encoder.setComputePipelineState(resources.pipeline("spatialMinMaxReduceInit"))
         encoder.setBuffer(buffer, offset: 0, index: 0)
+        countDispatch()
         encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
     }
 
@@ -595,6 +645,7 @@ public enum SpatialToneProcessor {
         encoder.setBuffer(g0Buffer, offset: 0, index: 1)
         var nn = UInt32(n)
         encoder.setBytes(&nn, length: MemoryLayout<UInt32>.size, index: 2)
+        countDispatch()
         encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
     }
 

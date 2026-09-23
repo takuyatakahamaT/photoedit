@@ -20,6 +20,16 @@ import Foundation
 ///     `_pyr_up`'s zero-insertion into each blur pass (a zero-inserted
 ///     sample contributes exactly zero to the blur sum, so it is simply
 ///     skipped rather than written and read back).
+///
+/// **Preview-responsiveness investigation** (owner-reported apply() latency,
+/// `PHOTO_BENCH_SPATIAL_DIAG=2`): further fusing these into fewer, larger
+/// dispatches (one 5x5 direct 2D sum per pyramid step instead of two
+/// separable 5-tap passes; folding the subsequent subtract/add into the
+/// upsample kernel too) was tried and measured, on this hardware, to
+/// *increase* total GPU time enough to erase the dispatch-count saving, so
+/// the kernels below stay as they were. Where apply()'s time actually goes
+/// (2026-09-24, Studio, 3072px): a cold first call in a process is
+/// 180-330ms, warm calls 78-132ms, with GPU execution itself 67-122ms.
 enum SpatialToneMetalSource {
     /// Every `kernel void` entry point below, in the order
     /// `SpatialToneProcessor` looks them up and builds one
@@ -105,9 +115,26 @@ enum SpatialToneMetalSource {
     }
 
     // MARK: - Pyramid (single-channel `r32Float` planes)
+    //
+    // Kept as separable two-pass blurs (`spatialBlurVertical` +
+    // `spatialDownsampleHorizontal`, `spatialUpsampleVertical` +
+    // `spatialUpsampleHorizontalScaled`). Fusing each pair into one
+    // dispatch halved the dispatch count but measured slower on Studio
+    // (`PHOTO_BENCH_SPATIAL_DIAG=2`, 2026-09-24), so it was reverted -- see
+    // `spatialBlurVertical`'s doc comment.
 
     /// `_blur5_axis(x, axis=0)` (vertical/row axis), full resolution --
     /// `_pyr_down`'s first pass.
+    ///
+    /// Measured with `PHOTO_BENCH_SPATIAL_DIAG=2`: fusing this pass with the
+    /// horizontal downsample (a direct 25-tap 2D sum per output pixel,
+    /// tried first) *increased* measured GPU time enough to erase the
+    /// dispatch-count saving -- 25 independent device-memory texture reads
+    /// per thread costs more than this kernel's own dispatch-issue overhead
+    /// saves, on this hardware/workload size. Kept as the original separable
+    /// two-pass form (the upsample side, fused the same way, also measured
+    /// slower). Most of a cold `apply()`'s wall time is first-call texture/
+    /// pipeline setup; warm calls in one process are ~2.3x faster.
     kernel void spatialBlurVertical(
         texture2d<float, access::read> src [[texture(0)]],
         texture2d<float, access::write> dst [[texture(1)]],
@@ -123,12 +150,10 @@ enum SpatialToneMetalSource {
         dst.write(float4(sum, 0.0, 0.0, 0.0), gid);
     }
 
-    /// `_blur5_axis(x, axis=1)` fused with `_pyr_down`'s `[::2, ::2]`
-    /// column subsample: only ever computes the horizontal blur at the
-    /// columns `_pyr_down` keeps (mathematically identical to blurring every
-    /// column then discarding half -- the discarded ones are never read).
-    /// `src` is `spatialBlurVertical`'s full-resolution output; `dst` is
-    /// `(ceil(w/2), ceil(h/2))`.
+    /// `_blur5_axis(x, axis=1)` fused with `_pyr_down`'s `[::2, ::2]` column
+    /// subsample: only ever computes the horizontal blur at the columns
+    /// `_pyr_down` keeps. `src` is `spatialBlurVertical`'s full-resolution
+    /// output; `dst` is `(ceil(w/2), ceil(h/2))`.
     kernel void spatialDownsampleHorizontal(
         texture2d<float, access::read> src [[texture(0)]],
         texture2d<float, access::write> dst [[texture(1)]],
@@ -150,7 +175,11 @@ enum SpatialToneMetalSource {
     /// zero-inserted sample contributes exactly `0` to the weighted sum, so
     /// odd rows are simply skipped rather than materialized. `src` is
     /// `(w, h)`; `dst` is `(w, 2h)` (the width doubling happens in the next,
-    /// horizontal pass).
+    /// horizontal pass). (A version fusing this with the horizontal pass
+    /// *and* the subsequent subtract/add was tried and measured *slower*
+    /// under `PHOTO_BENCH_SPATIAL_DIAG=2` -- same finding as
+    /// `spatialBlurVertical`'s doc comment -- so this stays a plain
+    /// three-dispatch pipeline.)
     kernel void spatialUpsampleVertical(
         texture2d<float, access::read> src [[texture(0)]],
         texture2d<float, access::write> dst [[texture(1)]],
