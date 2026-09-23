@@ -282,6 +282,8 @@ Texture / Clarity2012（Laplacian 段別線形ゲイン、Clarity は +3 段）�
 - 点カーブの後・出力参照の最後は明確に悪い。
 - 次: RAW=pre-tone、非RAW=s-p1-p2 を固定して、ゲイン表の振幅係数（kH、kS）と Calibration の順序（cube Q の前）を実エンジンの格子探索で決める（学習: 単体 12 + tone-all 3 + 非RAW 3、ホールドアウト: full 3 + 4 プリセット × 2 scene）。
 
+**ゲイン表の振幅再フィット（Python、出力参照の位置、`.photobench/phase2/spatial-v2.1/`）**: RAW 3 scene × 6 variant ＋ JPEG round0 2 ケースの 20 ケースで、H±／S± の振幅係数を座標降下法で fit。採用 `kHneg=0.65, kHpos=0.61, kSneg=0.76, kSpos=0.85`（表は全体に強すぎた）。20 ケース平均の領域平均 ΔE 1.79 → 1.44、|EV| 0.14 → 0.11。tone-all（held-out）6.53 → 5.43。Highlights は 10 ケース全部で改善する一方、Shadows は scene 別最適値が kSneg 0.43〜1.53、kSpos 0.63〜1.23 と 2〜3.5 倍ばらつき（LR の画像適応）、大域係数では 4/20 ケースが悪化する。round0 の `r0_jpg` は P1013558 と同一写真（独立 scene ではない）。この位置（出力参照）は非RAW の `s-p1-p2` と同じ領域なので、非RAW 側の係数の裏付けに使う。RAW の `pre-tone` 位置の係数は実エンジンの格子探索で決める。
+
 **4 プリセットの残差分解（2026-09-23、`.photobench/phase5/preset-residuals/model.md`）**: 4 プリセット × 11 操作グループの中立化 XMP（48 種）を RAW / JPEG で 104 枚描画し、LR 参照と比較。
 
 - 共通の 1 位は **C3 の Highlights／Shadows**（確定）: 8 組中 7 組で「外すと改善」し、改善幅は |Highlights2012| にほぼ比例（colorful −88 / night −87 で最大、pastel −44 で最小）。RAW では中間調（相対輝度 0.33〜0.56）で EV 誤差がピーク。→ 振幅の再フィット（spatial-v2.1）が対処。
