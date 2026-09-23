@@ -287,6 +287,51 @@ struct XMPAndSettingsTests {
         })
     }
 
+    /// Lightroom sidecars embed the profile look (`crs:Look` > `crs:Parameters`)
+    /// with Adobe Color's own point curve inside. Only the root curve is the
+    /// photo's edit; the nested one used to overwrite it, so Adobe Color's
+    /// curve was applied twice.
+    @Test func ignoresPointCurveNestedInsideLookParameters() throws {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <x:xmpmeta xmlns:x="adobe:ns:meta/">
+          <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+            <rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:ToneCurveName2012="Linear">
+              <crs:ToneCurvePV2012>
+                <rdf:Seq>
+                  <rdf:li>0, 0</rdf:li>
+                  <rdf:li>255, 255</rdf:li>
+                </rdf:Seq>
+              </crs:ToneCurvePV2012>
+              <crs:Look>
+                <rdf:Description crs:Name="Adobe Color">
+                  <crs:Parameters>
+                    <rdf:Description crs:ProcessVersion="15.4">
+                      <crs:ToneCurvePV2012>
+                        <rdf:Seq>
+                          <rdf:li>0, 0</rdf:li>
+                          <rdf:li>22, 16</rdf:li>
+                          <rdf:li>40, 35</rdf:li>
+                          <rdf:li>127, 127</rdf:li>
+                          <rdf:li>224, 230</rdf:li>
+                          <rdf:li>240, 246</rdf:li>
+                          <rdf:li>255, 255</rdf:li>
+                        </rdf:Seq>
+                      </crs:ToneCurvePV2012>
+                    </rdf:Description>
+                  </crs:Parameters>
+                </rdf:Description>
+              </crs:Look>
+            </rdf:Description>
+          </rdf:RDF>
+        </x:xmpmeta>
+        """
+        let preset = try XMPPresetParser.parse(data: Data(xml.utf8), fallbackName: "sidecar")
+        let curvePoints = preset.settings.toneCurves.flatMap(\.points)
+        #expect(curvePoints.count <= 2)
+        #expect(!curvePoints.contains { abs($0.x - 22.0 / 255.0) < 1e-9 })
+    }
+
     private func parse(_ filename: String) throws -> XMPPreset {
         try XMPPresetParser.parse(url: projectRoot.appendingPathComponent(filename))
     }

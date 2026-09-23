@@ -269,7 +269,12 @@ private final class XMPDelegate: NSObject, XMLParserDelegate {
             )
         }
 
-        if Self.curveMap[qualified] != nil {
+        // Only the photo's own (root) curves. A nested `crs:Look` carries its
+        // profile's own parameters -- Adobe Color's look point curve among them
+        // -- which the base rendering already applies; reading that nested
+        // `ToneCurvePV2012` here used to overwrite the root "Linear" curve and
+        // apply Adobe Color's curve a second time (-0.07 to -0.11 EV).
+        if Self.curveMap[qualified] != nil, descriptionDepth == 1 {
             activeSequence = qualified
             sequences[qualified] = []
         }
