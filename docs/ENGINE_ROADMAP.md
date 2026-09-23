@@ -267,6 +267,14 @@ Texture / Clarity2012（Laplacian 段別線形ゲイン、Clarity は +3 段）�
 - ハイライトは 3 scene とも我々が暗い（H−100 で −0.11〜−0.18 EV）＝**モデルの効きが強すぎる**。シャドウは写真によって強すぎ／弱すぎ（LR の画像適応）。両者と Blacks の偏りが同符号で積み上がり、tone-all で −0.38 EV になる。合成順序の問題ではなく、単体の振幅の問題が主。
 - 対応中: (1) 空間処理の位置の切替実験（Contrast 前／後、点カーブ後、トーンカーブ前、出力参照の最後）、(2) ゲイン表の振幅 4 係数（H±、S±）を実写 20 ケースで再フィット（spatial-v2.1）、(3) 4 プリセットの残差分解（色相帯・トーン別）。結果は本節に追記する。
 
+**4 プリセットの残差分解（2026-09-23、`.photobench/phase5/preset-residuals/model.md`）**: 4 プリセット × 11 操作グループの中立化 XMP（48 種）を RAW / JPEG で 104 枚描画し、LR 参照と比較。
+
+- 共通の 1 位は **C3 の Highlights／Shadows**（確定）: 8 組中 7 組で「外すと改善」し、改善幅は |Highlights2012| にほぼ比例（colorful −88 / night −87 で最大、pastel −44 で最小）。RAW では中間調（相対輝度 0.33〜0.56）で EV 誤差がピーク。→ 振幅の再フィット（spatial-v2.1）が対処。
+- **night の 2 位は Calibration の適用順**（確定）: 外すと 1.75 / 1.35 改善。`color/model.md`・`hsl/model.md` の同定は Calibration → Vibrance/Saturation → HSL → Grading だが、実装は Calibration を cube Q の **後**（出力参照の最後）に置いている。night は HSL 8 帯すべてが稼働するため順序依存の影響が最大。→ 出力参照の位置は保ったまま、cube Q の **先頭**（Vibrance の前）に移す変更を検証する。
+- night の絶対 WB（6214K / +13）は正しく機能している（As Shot に戻すと 9.35 → 20.25 に激悪化）。
+- night の有彩画素の 99% を占める Red/Orange（肌・木床）で chroma 比 0.65〜0.76、色相 −11〜−15° のドリフト。bluesky2 は Blue/Aqua 帯で +8〜+42°、colorful は Blue/Purple で −7° の色相ドリフト（`hsl/model.md` の既知の弱点: LuminanceAdjustmentBlue が 48 変種中最悪、スライダー線形性未検証）。
+- 次の計測案: P1524180 / DSC02072 のプリセット無し LR 書き出し、night の H/S 個別 ablation、Calibration 順序入れ替えの再検証、Hue 系スライダーの多点実写。
+
 ### フェーズ4 レンズ補正の調査（2026-09-23、`.photobench/phase4/lens/`）
 
 - **歪曲は確定。** LR は RW2 埋め込みの補正（`LensProfileSetup=LensDefaults`、`LensProfileIsEmbedded=True`）を使っており、ExifTool `PanasonicRaw.pm` の式 `Ru = scale·(Rd + a·Rd³ + b·Rd⁵ + c·Rd⁷)` に、IFD0 タグ 0x0119（DistortionInfo、int16×16）の `scale = 1/(1+data[5]/32768)`、`a = data[8]/32768`、`b = data[4]/32768`、`c = data[11]/32768`、正規化半径 **`R0 = data[12]`（DistortionN、DC-S5 は 3605 = 6000×4000 の半対角）** を入れると、自由パラメータ 0 個で LR との格子点対応が RMS 0.42〜0.63 px（Sigma 50/1.4 と Lumix S 35/1.8）。中心は画像の幾何中心、接線成分なし。
