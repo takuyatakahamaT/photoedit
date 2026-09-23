@@ -3,11 +3,11 @@
   "suiteID": "dc-s5-lightroom-9.3-2026-07-23-v1",
   "description": "Lumix DC-S5のRAWとAdobe Lightroom 9.3による16bit sRGB基準を使うPhoto Bench回帰校正。現2シーンはどちらも開発時に参照済みで、独立holdoutではない。",
   "expectedEnvironment": {
-    "macOSVersion": "27.0.0",
-    "macOSBuild": "26A428",
+    "macOSVersion": "26.5.2",
+    "macOSBuild": "25F84",
     "architecture": "arm64",
-    "hardwareModel": "Mac16,10",
-    "metalDevice": "Apple M4",
+    "hardwareModel": "Mac13,1",
+    "metalDevice": "Apple M1 Max",
     "rawDecoderBackend": "Core Image RAW 8"
   },
   "processing": {

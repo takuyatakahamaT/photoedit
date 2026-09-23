@@ -5,16 +5,16 @@
   "adoptionStatus": "exploratory-observation-only",
   "baseCalibrationManifest": {
     "path": "calibration/manifest-v4.json",
-    "sha256": "89bb360013a501b3fad9c78bdeec203ef38ae77ef18ce98bafaa5df677b302e9",
+    "sha256": "1ce9fec683aa89d1d00e7876bad6349dd1e71e8241b9e26accb35327c87fc637",
     "suiteID": "dc-s5-lightroom-9.3-canonical-settle-2026-07-24-v4",
     "schemaVersion": 4
   },
   "expectedEnvironment": {
-    "macOSVersion": "27.0.0",
-    "macOSBuild": "26A428",
+    "macOSVersion": "26.5.2",
+    "macOSBuild": "25F84",
     "architecture": "arm64",
-    "hardwareModel": "Mac16,10",
-    "metalDevice": "Apple M4",
+    "hardwareModel": "Mac13,1",
+    "metalDevice": "Apple M1 Max",
     "rawDecoderBackend": "Core Image RAW 8"
   },
   "processing": {
