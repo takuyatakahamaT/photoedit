@@ -339,6 +339,9 @@ HSL Blue の輝度再 fit は、純度の高い青で `yMid` 除算が発散し�
 
 プリセット内訳（A）: RAW P1524180 bluesky2 1.97 / colorful 2.27 / night 6.04 / pastel 1.45、JPEG DSC02072 2.92 / 2.92 / 5.86 / 2.57。B が良いのは P1524180 の pastel（1.11）だけ。セット A の絶対値が 6 scene 時点（2.28）より高いのは、追加 scene のうち非常に暗い 2 枚（P1581356 / P1581368）で基準現像自体の精度が落ちるため（既知の課題）。
 
+**シャドウ帯域の位置の適応（2026-09-23、`spatial-adaptive/model.md` §10、14 scene）**: 暗い scene ほど LR のシャドウは深い側に効く（P1581237 では 2 段）。ゲイン曲線の参照 Ln をずらす `PHOTO_BENCH_SPATIAL_SHIFT`（`c2ac2d1`）で 14 scene × {S+50, S+100} × sShift 7 × kS 5 を格子探索し、`sShift = clamp(1.5609 + 0.5757·mean_full, −3, 0)`（mean_full = log2 輝度の平均。r = 0.78〜0.88）、再 fit `kS = clamp(0.619 + 0.944·highlightRatioBase, 0.6, 1.5)`。単体 LOO は 固定 4.87 / 適応 kS 3.41 / shift＋旧 kS 3.02 / shift＋再 fit 3.13。複合（中立統計量で評価）では shift＋旧 kS が 10/10 で悪化、shift＋再 fit は 6/10 で改善と割れる。本番の preHS 統計量と組み合わせた A/B/C で採否を決める。
+- 縦位置 2 枚（P1581356 / P1581368）は LR 書き出しがどの向き・鏡映とも一致せず、幾何の参照から除外（model.md §9 訂正）。
+
 **4 プリセットの残差分解（2026-09-23、`.photobench/phase5/preset-residuals/model.md`）**: 4 プリセット × 11 操作グループの中立化 XMP（48 種）を RAW / JPEG で 104 枚描画し、LR 参照と比較。
 
 - 共通の 1 位は **C3 の Highlights／Shadows**（確定）: 8 組中 7 組で「外すと改善」し、改善幅は |Highlights2012| にほぼ比例（colorful −88 / night −87 で最大、pastel −44 で最小）。RAW では中間調（相対輝度 0.33〜0.56）で EV 誤差がピーク。→ 振幅の再フィット（spatial-v2.1）が対処。
