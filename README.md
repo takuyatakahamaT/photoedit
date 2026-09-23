@@ -2,16 +2,13 @@
 
 **進捗・現在の目標・次の作業:** [PROGRESS.md](./docs/PROGRESS.md)
 
-自分専用のmacOS向けローカル写真編集アプリです。現在は**4つのXMPプリセットの登録・適用、明るさと相対的な色味調整、Undo / Redo、写真ごとの自動保存、原寸JPEG書き出し**を揃えた日常編集の初版です。2026-09-22の作業範囲と確認結果は[日常編集の初版](./docs/EDITING_MVP.md)を参照してください。
+自分専用の macOS 向けローカル写真編集アプリです。Lightroom で作った XMP プリセットを登録し、RAW／JPEG に適用して Lightroom 相当のパネル（基本補正・トーンカーブ・HSL・カラーグレーディング・キャリブレーション）で微調整し、原寸 JPEG を書き出します。編集は写真ごとに自動保存され、Undo／Redo できます。
 
-現在の要件は、**LightroomのXMPをプリセット共通の現像処理で再現すること**です。3組の写真へbluesky2専用の変換を合わせる試作は、この要件に合わないため中止しました。[汎用XMPエンジンの設計・不足項目](./docs/GENERIC_XMP_ENGINE.md)を現行方針とし、[専用補正の比較](./docs/BLUESKY2_REFERENCE.md)は調査履歴として残します。現時点で汎用的なLightroom互換は完成していません。
+現在の要件は、**Lightroom の XMP をプリセット共通の現像処理で再現すること**です。方針は「Lightroom を教師にして操作ごとの応答を計測し、プリセット非依存の共通モデルへ落とす」で、正は [ENGINE_ROADMAP.md](./docs/ENGINE_ROADMAP.md) です。2026-09-23 時点で、RAW の基準現像（LibRaw + Adobe Standard DCP + Adobe Color）、基本補正・カーブ・HSL・グレーディング・Calibration・Texture／Clarity／Dehaze・RW2 埋め込みレンズ歪曲補正まで計測モデルで実装済みです。**ただし Lightroom との一致はまだ完成していません**（単体操作は平均 ΔE00 1〜2.5 の水準、プリセット全体では 4〜10 で、ハイライト／シャドウの振幅が実写に合わない問題を調整中）。
 
-Lightroomとの発色・階調差、特に`night`のWB差は残っています。HSL・カーブの近似は引き続き初期OFFで、**4プリセットの画質受け入れ完了やLightroomの置き換えを宣言する段階ではありません**。このREADME内のformal画質・性能数値は2026-07-24時点の履歴です。今回の相対色調整に対する校正合格へ流用しません。
+公開 Git リポジトリには source・tests・docs・契約 manifest だけを置き、個人写真、Lightroom 基準画像、生成 render、署名済み app は含めません。詳細は [Repository and local data policy](./DATA_POLICY.md) を参照してください。
 
-公開Gitリポジトリにはsource・tests・docs・契約manifestだけを置き、個人写真、Lightroom基準画像、生成render、署名済みappは含めません。詳細は[Repository and local data policy](./DATA_POLICY.md)を参照してください。
-
-このプロジェクトの目的、Lightroomから移行するための完成条件、これまでの取り組み、現在の到達点、残課題、承認済みP1方針は、まず[プロジェクト概要](./PROJECT_OVERVIEW.md)を参照してください。
-
+このプロジェクトの目的、Lightroom から移行するための完成条件、これまでの取り組みは [プロジェクト概要](./PROJECT_OVERVIEW.md) を参照してください。
 ## 起動
 
 Finderから`open-photo.command`をダブルクリックします。ターミナルからなら次でも起動できます。
@@ -31,31 +28,30 @@ Finderから`open-photo.command`をダブルクリックします。ターミナ
 ## 普段の使い方
 
 1. 「フォルダを開く」で写真フォルダを選び、写真をクリックします。
-2. 右側のプリセットライブラリから`colorful` / `bluesky2` / `night` / `pastel`を選びます。追加XMPは上部の「プリセットを読み込む」から登録できます。
-3. 「露出・色温度・色かぶり・彩度」を微調整します。色温度と色かぶりは撮影時の色からの相対値で、LightroomのKelvin値ではありません。
-4. 編集は自動保存されます。取り消しは`⌘Z`、やり直しは`⇧⌘Z`。「詳細な明るさ・彩度」からほかの階調も調整できます。
-5. 「JPEGを書き出す」で仕上がりを別ファイルに保存します。
+2. 右側のプリセットライブラリから `colorful` / `bluesky2` / `night` / `pastel` を選びます。追加 XMP は上部の「プリセットを読み込む」から登録できます。
+3. 右側の編集パネルで調整します。**基本補正**（RAW は色温度 K／色かぶり補正の絶対 WB、露光量・コントラスト・ハイライト・シャドウ・白レベル・黒レベル・テクスチャ・明瞭度・かすみの除去・自然な彩度・彩度）、**トーンカーブ**（parametric と点カーブ。クリックで点追加、ドラッグで移動、枠の外へドラッグで削除）、**HSL**（8 色 × 色相／彩度／輝度）、**カラーグレーディング**、**キャリブレーション**。各セクションに「リセット」があります。
+4. 編集は自動保存されます。取り消しは `⌘Z`、やり直しは `⇧⌘Z`（スライダー 1 回のドラッグが 1 操作）。
+5. 「JPEG を書き出す」で仕上がりを別ファイルに保存します。
 
-編集と登録XMPはアプリのApplication Support / PhotoBench内に保存し、原本には書き込みません。写真を移動・改名すると別の写真として扱います。Undo履歴は起動中のみ保持します。保存に失敗した場合は「再試行」を使え、失敗が残ったままの終了時は確認を表示します。
+編集と登録 XMP はアプリの Application Support / PhotoBench 内に保存し、原本には書き込みません。写真を移動・改名すると別の写真として扱います。Undo 履歴は起動中のみ保持します。保存に失敗した場合は「再試行」を使え、失敗が残ったままの終了時は確認を表示します。
 
 ## 現在できること
 
-- ユーザーが選んだフォルダ以下にあるJPEG / HEIC / PNG / TIFF / RAWを非同期走査し、選択権限を次回起動へ安全に保存
-- Lumix DC-S5の`.RW2`をCore Image RAW 8で6000×4000の原寸デコード。Make/Model一致時だけ`boost=0.9`・Apple default EDRの`extendedDynamicRangeAmount=1`を使う`panasonic-dc-s5-lightroom-9.3-edr1-v2`を選択し、ほかの機種へ流用しない
-- 露出、相対色温度・色かぶり、コントラスト、ハイライト、シャドウ、白レベル、黒レベル、自然な彩度、彩度をスライダー調整
-- 写真ごとの編集・適用プリセットをバージョン付きJSONに自動保存し、再起動後に復元。破損・未知形式の記録は上書きせず読み込みエラーを表示
-- ドラッグを1操作として取り消し・やり直し。写真ごとのセッション履歴を最大100操作保持
-- 4 XMPを初期登録し、追加読込・重複抑止・登録削除に対応。適用済みの写真はプリセット登録を削除しても維持
-- `colorful` / `bluesky2` / `night` / `pastel`のProcess Version 11 XMPを解析
-- XMPの属性形式と要素形式を解析し、基本8項目を近似適用。WBはモード・絶対値・増分値・明示的な0を区別して保持
-- 既存delegateのAs Shot出力と、fresh Core Image RAW 8 filterへ設定したcustom Temperature・Tintを、製品未接続の開発用経路で観測。個人RAWと生成artifactをGit管理外に置き、2scene×18候補をhash-lockする
-- RGBトーンカーブをencoded-sRGBの1D区分線形曲線で適用し、0〜1外は正の端点傾きで外挿。8色カラーミキサーはOKLChで色相・クロマを補間し、XMP Luminanceを効果量100%の色で`+100 = +1 EV`となる色域別局所露光として扱い、低彩度色を保護する。Adobe HSL Luminanceと同義ではない実験的近似なので、curveとmixerは初期OFF
-- RAWとカラー編集途中はextended-linear sRGBを保持し、preview / 指定サイズ時はedge-clamped Lanczosで縮小した後にterminal sRGB transformを適用。既にbounded sRGBで、かつカラー編集がneutralなJPEG等は変換をbypassする
-- 原寸sRGB JPEGを書き出し。選択中だけでなく走査済みの全原本、既存のsymlink / hard link、既存フォルダは上書きしない
-- 17,000枚を想定し、フォルダ走査を画面外で実行、フィルムストリップを遅延生成
-- `PHOTO_BENCH_PREVIEW_ROUTE=metal-direct`の完全一致の起動環境変数を指定した場合だけ、原寸decode graphを`CIRenderDestination`からsRGB / SDRの`MTKView`へ直接描画する実験経路を使用。表示に失敗したらその起動中は従来表示へ一方向fallbackする
+- ユーザーが選んだフォルダ以下にある JPEG / HEIC / PNG / TIFF / RAW を非同期走査し、選択権限を次回起動へ安全に保存
+- **RAW の基準現像**: LibRaw でカメラ RGB を取り出し、Lightroom 同梱の Adobe Standard DCP（ColorMatrix／ForwardMatrix／HueSatMap／LookTable）と Adobe Color のルックテーブル・点カーブ、ACR 既定トーンカーブを DNG 仕様どおりに適用（`docs/PHASE1_BASE_RENDERING.md`）。プリセット無しで Lightroom 既定と平均 ΔE00 0.9〜1.2（レンズ歪曲補正込み）
+- **RW2 埋め込みレンズ歪曲補正**: Panasonic DistortionInfo（IFD0 0x0119）の係数で Lightroom と同じ 6000×4000 の幾何に補正（自由パラメータ 0 個、格子点残差 0.4〜0.6 px）
+- **計測モデルの現像操作**（`docs/PHASE2_DEVELOP_PIPELINE.md`、`docs/PHASE2_C2_C3.md`）: 露出（RAW はトーンカーブ前のリニア倍率）、絶対 WB（DNG SDK の式）、コントラスト／白／黒／parametric／点カーブ（sRGB 符号化空間の RGBTone）、HSL 8 帯、Vibrance／Saturation、Color Grading／Split Toning、Camera Calibration、Highlights／Shadows（局所ラプラシアン、Metal compute）、Texture／Clarity（Laplacian 段別ゲイン）、Dehaze（大域カーブ＋彩度倍率）
+- XMP の属性形式と要素形式を解析し、未対応項目（シャープ／NR、粒子、周辺光量、増分 WB、Refine Saturation ≠ 100）は互換性一覧で表示
+- 写真ごとの編集・適用プリセットをバージョン付き JSON に自動保存し、再起動後に復元。破損・未知形式の記録は上書きせず読み込みエラーを表示
+- ドラッグを 1 操作として取り消し・やり直し。写真ごとのセッション履歴を最大 100 操作保持
+- 4 XMP を初期登録し、追加読込・重複抑止・登録削除に対応。適用済みの写真はプリセット登録を削除しても維持
+- RAW とカラー編集途中は extended-linear sRGB を保持し、preview / 指定サイズ時は edge-clamped Lanczos で縮小した後に terminal sRGB transform を適用
+- 原寸 sRGB JPEG を書き出し。原本・既存ファイルは上書きしない
+- `photobench-render` CLI で GUI 無しに書き出し（計測ゲート用）。`PHOTO_BENCH_PREVIEW_ROUTE=metal-direct` の実験的な直接表示経路は従来どおり
 
-## 画質校正の現在地
+## 画質校正の現在地（2026-07-24 時点の履歴）
+
+以下「画質校正」「RAW ホワイトバランス」「性能基準」「Metal 直接表示」の 4 節は、2026-07-24 時点の旧エンジン（Core Image RAW 土台）に対する formal 校正の記録です。現行エンジン（LibRaw + DCP、計測モデル）の到達値は `docs/ENGINE_ROADMAP.md` を参照してください。
 
 DC-S5の2組の「Lightroom適用前 / `colorful`適用後」16bit TIFFを基準に、RAW直結とLightroom適用前TIFF入力の2経路を測定します。`basic`はXMP HSL／カーブを除く既定経路、`full`は実験的なencoded-sRGB 1DカーブとOKLCh 8バンド・ミキサーまで有効にした経路です。
 
@@ -110,14 +106,13 @@ process-freshは新しいworker processですが、timer前のmanifest検証がR
 
 ## 重要な制限
 
-- Adobe Color、Adobe PV2012の非公開数式、camera profile / DCP、レンズプロファイルは再現していません。
-- WBはXMPのモード・絶対値・増分値・明示的な0を区別して解析・保持し、開発用のRAW観測経路もありますが、製品のpreview / export / persistenceへは未接続です。未知のCamera Raw画像処理項目と埋め込みAdobe Lookは「未対応」として表示します。
-- クロップ、ブラシマスク、SQLiteカタログ、評価・選別、アルバム、移動した写真の再リンクは未実装です。
-- DC-S5以外のRAWは読めても機種別の色校正はされません。
-- 2つのdevelopment sceneだけで独立holdoutがありません。最終判定には5〜10以上の探索sceneとsealed holdout、各スライダー単独の教師書き出しが必要です。
-- 日常編集の初版は試用できますが、Lightroom相当のプリセット発色、Adobeの絶対WB、写真管理全般は引き続き改善対象です。
-- WB観測は2 development scene、1 camera model、0 holdoutで、Lightroomの固定As Shot参照だけです。構造検証の合格を画質やproduction採用の合格に読み替えません。
-- 校正archiveの置換はatomicですがcross-process lockがなく、同じrootの並行校正は禁止です。
+- Lightroom との一致は完成していません。単体操作は平均 ΔE00 1〜2.5 の水準ですが、ハイライト／シャドウのゲイン表の振幅が実写に合わず（Lightroom は画像適応）、プリセット全体では 0.24〜0.58 EV 暗くなります。再フィット中です（`docs/ENGINE_ROADMAP.md`「フェーズ3 C4 の結果」）。
+- Adobe の現像数式は非公開で、計測に基づく近似です。カメラプロファイル（DCP）と Adobe Color は Lightroom の導入先から実行時に読み、リポジトリには含めません。DC-S5 以外の機種は DCP があれば動きますが検証していません。
+- 周辺光量補正、色収差補正、既定シャープ／NR、粒子、非 RAW の増分 WB は未実装です。
+- クロップ、ブラシマスク、SQLite カタログ、評価・選別、アルバム、移動した写真の再リンクは未実装です。
+- 教師データは 3 scene（同一カメラ）と 4 プリセット × 2 scene が中心で、独立 holdout はまだ少数です。
+- 校正 archive の置換は atomic ですが cross-process lock がなく、同じ root の並行校正は禁止です。
+- 個人用 Mac mini（16GB）では原寸 float パイプラインの並行実行で watchdog リセットが起きたため、重い処理は Mac Studio で `scripts/studio/studio-run.sh` 経由で実行します（`docs/PROGRESS.md`「実行環境の注意」）。
 
 ## データの扱い
 
@@ -132,35 +127,22 @@ process-freshは新しいworker processですが、timer前のmanifest検証がR
 
 ```sh
 cd /path/to/photoedit
-swift test
-swift run -c release PhotoBenchCalibration .
-python3 scripts/analyze-calibration.py .
-python3 scripts/test_analyze_calibration.py
-swift run -c release PhotoBenchWhiteBalanceObservation .
-python3 scripts/analyze-white-balance-observation.py . \
-  --run .photobench/white-balance-observations/<run-id>/run.json
-python3 -m unittest scripts/test_analyze_white_balance_observation.py
-swift run -c release PhotoBenchBenchmark .
+swift test --filter PhotoCoreTests --jobs 2
+swift build -c release --product photobench-render --jobs 2
+python3 scripts/lr_measure/run_gate.py --render-binary .build/release/photobench-render --out-dir .photobench/phase2/c3-gate-results
+python3 scripts/lr_measure/compare_renders.py --reference <LR 参照ディレクトリ> --renders <描画ディレクトリ> --no-align
 ```
 
-2026-09-22のSwift全体は**129件中121成功**。8件は過去の校正manifestがmacOS 26.3.1 / 25D771280aを要求する一方、このPCが27.0 / 26A428へ更新されているため実行条件不一致です。日常編集に関係するAppSupport・相対色調整の**20件は最終sourceで全件成功**。実UIでも再起動後の復元、ドラッグUndo、保存失敗からの復旧、RAW / JPEG書き出しを確認しました。詳しくは[今回の確認結果](./docs/EDITING_MVP.md)を参照してください。
+2026-09-23 時点で `PhotoCoreTests` は **128 件全成功**（Mac mini と Mac Studio の両方）。空間処理は Python 参照実装との fixture 照合（相対誤差 0.0）と GPU／CPU の一致（最大 OKLab 距離 0.004）、レンズ補正は Python オラクルとの照合（< 1e-3 px）を含みます。`PhotoBenchCalibrationSupportTests` の一部（2026-07 の校正 manifest）は OS 固定条件により失敗する既知事項です。
 
-2026-07-24の履歴ではSwift Testing **119 tests / 10 suites**、Python calibration analyzer **61 tests**、Python WB observation analyzer **17 tests**が成功しています。旧 / 新graphの識別、edge-clamped Lanczos後のterminal transform、未clamp縮小との境界alpha比較、canonical settleの整数clip count、fresh RAW WB filter、18候補の固定集合、private data / provenance / no-replace契約を検証しています。これは2sceneの生成rasterと観測構造の契約であり、実画面のpresent lifecycle、production WB、holdout品質をテストしたものではありません。
-
-厳格モードでは、全gate合格をexit `0`、eligible runの数値不合格をexit `1`、構造・hash・runtime不整合をexit `2`にします。校正run `1c324af0-7ec3-4c33-bc6f-3bd653794800`はcanonical settleに合格しますが、Lightroom品質とpreview parityが不合格なので、全gate enforceの期待exitは`1`です。WB analyzerは正式runの構造検証に成功してexit `0`ですが、production adoptionは契約上falseです。既存benchmarkもslider gate不合格のためexit `1`です。
-
-```sh
-python3 scripts/analyze-calibration.py . \
-  --enforce \
-  --enforce-preview-parity \
-  --enforce-canonical-settle
-swift run -c release PhotoBenchBenchmark . --enforce
-```
-
-2026-07-23の実UI監査では、`P1524180.RW2`へ`niho-priset_colorful.xmp`を読み込み、`exports/ui-audit-P1524180.jpg`へ6000×4000・sRGB IEC61966-2.1のJPEGを書き出しました。書き出し後もRAWとXMPのSHA-256は事前値と一致し、同じ`.app`の再起動では選択ダイアログなしで10枚を復元しました。
+実写ゲート（Lightroom 書き出し比、30×20 領域平均 ΔE00、Mac Studio で実行）の到達値は `docs/ENGINE_ROADMAP.md` の各フェーズの結果節を正とします。2026-07-24 の formal 校正・性能結果（`CALIBRATION.md`、`BENCHMARK.md`）は履歴として維持し、今回のエンジンの合格証拠には流用しません。
 
 ## 文書
 
+- [進捗・現在の目標・次の作業](./docs/PROGRESS.md)
+- [汎用 XMP 現像エンジン: 調査結果と実行計画（現行方針の正）](./docs/ENGINE_ROADMAP.md)
+- [フェーズ1 RAW 基準現像の設計](./docs/PHASE1_BASE_RENDERING.md) / [フェーズ2 現像パイプライン C1](./docs/PHASE2_DEVELOP_PIPELINE.md) / [C2・C3 設計](./docs/PHASE2_C2_C3.md)
+- [日常編集の初版（2026-09-22）](./docs/EDITING_MVP.md)
 - [プロジェクト概要・別セッション向け引継ぎ](./PROJECT_OVERVIEW.md)
 - [全体設計](./DESIGN.md)
 - [DC-S5 / Lightroom色校正](./CALIBRATION.md)
