@@ -3,6 +3,7 @@
 # 同じ LAN 上の Mac Studio（64GB、Lightroom CC のプロファイル資産あり）で実行するための入口。
 #
 #   scripts/studio/studio-run.sh sync                 # 作業ツリーのソースを Studio へ同期（.build / exports / .photobench / dist は除く）
+#                                                     # 私物の写真（*.tif・P152*・DSC0*）は送りも消しもしない。Studio 側へ別に置く
 #   scripts/studio/studio-run.sh sync-data <path...>  # exports/ や .photobench/ の個別ディレクトリを同期（相対パス）
 #   scripts/studio/studio-run.sh run  <command...>    # Studio のリポジトリで実行（PATH に Homebrew と venv を通す）
 #   scripts/studio/studio-run.sh fetch <path...>      # Studio 側の相対パスをこちらへ取り込む（結果 JSON など）
@@ -28,7 +29,7 @@ case "${1:-}" in
   sync)
     /usr/bin/rsync -a --delete \
       --exclude .build --exclude dist --exclude exports --exclude .photobench \
-      --exclude '*.tif' --exclude 'P152*' --exclude 'DSC020*' --exclude '.DS_Store' \
+      --exclude '*.tif' --exclude 'P152*' --exclude 'DSC0*' --exclude '.DS_Store' \
       "$LOCAL_ROOT/" "$STUDIO_HOST:$STUDIO_DIR/"
     echo "synced source -> $STUDIO_HOST:$STUDIO_DIR"
     ;;

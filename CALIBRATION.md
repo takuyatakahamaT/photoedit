@@ -26,7 +26,7 @@ Lightroom適用後の16bit sRGB参照TIFFと、同じシーンのRAW / Lightroom
 
 ## 正式 v4 証跡
 
-現行契約の正本は`calibration/manifest-v4.json`である。2026-09-23〜24に次の3点を更新した（commit `4a963b9`、`ffad370`、`8ee1648`）。その後、別作業の`ColorOps` v2（commit `3aa3e33`）で`colorMixer`が`measured-color-ops-cube-q-v2`になった。
+現行契約の正本は`calibration/manifest-v4.json`である。2026-09-23〜24に次の3点を更新した（commit `4a963b9`、`ffad370`、`8ee1648`）。その後、別作業の`ColorOps` v2（commit `3aa3e33`）で`colorMixer`が`measured-color-ops-cube-q-v2`になった。さらに`ToneOps` v2（Whites / Blacks の輝度比ミックス。suite の colorful は Whites −53 / Blacks +95 なので描画が変わる）で、`basicTone`を`spatial-v2-local-laplacian-highlights-shadows-v1+measured-tone-ops-cube-p-v2`にした。このときの manifest SHA-256 は`211dc0a8…`で、この版での正式 run はまだ回していない（下の5回目までは`1e7742ff…`）。
 
 - `processing.fingerprint`: `basicTone`を`spatial-v2-local-laplacian-highlights-shadows-v1`、`colorMixer`を`measured-color-ops-cube-q-v1`へ更新した。フェーズ2 C2 / C3で実装を置き換えた後も、旧`BasicToneModel` / `PerceptualColorMixer`の識別子のままだった。
 - `processing.sourceFiles`: 削除済みの2 fileを外し、`Sources/PhotoCore`配下をsubdirectoryまで網羅した（26 → 42 file）。

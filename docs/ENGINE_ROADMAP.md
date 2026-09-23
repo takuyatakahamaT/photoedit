@@ -404,6 +404,36 @@ round4（5 scene × 14 variant）を、描画を通さない「LR 書き出し�
 
 colorful・pastel の +0.04〜+0.19 は、旧 HSL の「彩度を下げると明るくなる」誤りが基準現像の暗さ（P1524180 の中立で EV −0.06、DSC02072 の非RAW で −0.03〜−0.14）を打ち消していた分が消えたため。残差は基準現像側（露出）で扱う。
 
+### round5: 強い Whites / Blacks で彩度が落ちる問題の修正（2026-09-24、ToneOps v2）
+
+round5（オーナーの LR 書き出し 198 枚: RAW 5 scene × 21 variant、LR 由来 JPEG 5 scene × 9 variant、カメラ JPEG 3 枚 × 16 variant）を、
+round4 と同じ「LR 書き出し同士（基準 → variant）」の比較で分解した。
+
+- **Whites を下げる・Blacks を上げるとき、LR は彩度をほぼ保ったまま明るさだけを動かす。** 自前の RGBTone（sRGB 符号化空間で max/min にカーブ）は、
+  持ち上げた暗部と押し下げた明部の彩度を落としていた（W−83 → B+89 の組み合わせで自前の彩度比 0.80）。
+  同じ灰色カーブで線形 ProPhoto の Y だけを動かして RGB を Y の比で拡大縮小した結果（色度保存）と、RGBTone の結果を β で混ぜる。
+  β は Whites 下げ 0 / 上げ 0.4、Blacks 上げ 0.4 / 下げ 1（= 従来どおり）。輝度比で持ち上げる側は、最大チャンネルが 1 を超えない倍率までに抑える。
+  LR 書き出し同士の比較: W−60 0.875 → 0.771、W−83 1.088 → 0.911、B+60 1.270 → 1.156、B+89 2.171 → 1.899、W−83→B+89 2.371 → 1.896。
+- `ToneOps.identifier`（`measured-tone-ops-cube-p-v2`）を追加し、処理 fingerprint の `basicTone` に連結した（校正 suite の colorful は Whites −53 / Blacks +95 で描画が変わるため）。
+
+| ゲート（描画を通した実写比較、平均 ΔE00） | 変更前 | ToneOps v2 |
+|---|---:|---:|
+| round5 RAW（21 variant × 5 scene） | 2.70 | **2.57** |
+| 　night_tone / colorful_tone / W−83 と B+89 | 3.51 / 3.26 / 2.68 | **2.88 / 2.65 / 2.31**（彩度比 0.76〜0.80 → 0.89〜0.92） |
+| 　full_colorful / full_night / full_pastel | 2.95 / 4.03 / 2.66 | 2.76 / 3.71 / 2.88 |
+| round5 LR 由来 JPEG（9 variant × 5 scene） | 3.05 | **2.62** |
+| 　Blacks +89 / W−83 と B+89 / night_tone | 1.06 / 1.96 / 3.34 | **0.43 / 1.01 / 2.57** |
+| round5 カメラ JPEG（16 variant × 3 枚） | 1.51 | **1.43** |
+| 　Blacks +89 / colorful_tone / Whites −50 / full_colorful | 0.85 / 2.06 / 0.64 / 2.12 | **0.33 / 1.81** / 0.79 / 2.21 |
+| round3（JPEG 入力 8 scene × 6 variant） | 1.93 | **1.84**（トーン合成 3.05 → 2.52） |
+
+悪化したのは full_pastel（RAW +0.21、JPEG +0.14）、カメラ JPEG の Whites −50（+0.15）と full_colorful（+0.10）。いずれも彩度比が 1 を超えた
+（RAW の full_pastel 0.98 → 1.05、カメラ JPEG の full_colorful 1.07 → 1.23）。従来は Whites / Blacks の彩度低下が、別の操作の彩度の出すぎ
+（カメラ JPEG の Shadows +100 は彩度比 1.18）を打ち消していた。round4 で「LR の Shadows は持ち上げた画素の彩度を 7% 下げる」と測っており、
+その結合（空間処理のゲインに彩度を結び付ける）を v2 の上で測り直す。
+
+RAW の full_bluesky2（8.0）は比較に使えない。round5 のサイドカー生成で `WhiteBalance=Custom` を `Temperature` なしで書いたため、基準サイドカーに色温度が無い scene で LR 側の WB が崩れている（カメラ JPEG と LR 由来 JPEG の bluesky2 は有効）。
+
 ### フェーズ4 レンズ補正の調査（2026-09-23、`.photobench/phase4/lens/`）
 
 - **歪曲は確定。** LR は RW2 埋め込みの補正（`LensProfileSetup=LensDefaults`、`LensProfileIsEmbedded=True`）を使っており、ExifTool `PanasonicRaw.pm` の式 `Ru = scale·(Rd + a·Rd³ + b·Rd⁵ + c·Rd⁷)` に、IFD0 タグ 0x0119（DistortionInfo、int16×16）の `scale = 1/(1+data[5]/32768)`、`a = data[8]/32768`、`b = data[4]/32768`、`c = data[11]/32768`、正規化半径 **`R0 = data[12]`（DistortionN、DC-S5 は 3605 = 6000×4000 の半対角）** を入れると、自由パラメータ 0 個で LR との格子点対応が RMS 0.42〜0.63 px（Sigma 50/1.4 と Lumix S 35/1.8）。中心は画像の幾何中心、接線成分なし。

@@ -69,9 +69,13 @@ public struct PhotoCoreProcessingFingerprint: Codable, Equatable, Sendable {
     // way: phase2 C3 deleted `BasicToneModel` (Highlights/Shadows' clean-room
     // approximation) in favor of `SpatialToneOps`'s measured local-Laplacian
     // model, but the JSON field itself is an existing `Codable` contract.
+    // Since ToneOps v2 it also carries cube P's `ToneOps.identifier`
+    // (Contrast/Whites/Blacks), joined by "+".
+    static let basicToneIdentifier = "\(SpatialToneOps.identifier)+\(ToneOps.identifier)"
+
     public static let current = PhotoCoreProcessingFingerprint(
         rawDecode: CoreImageDecoder.processingIdentifier,
-        basicTone: SpatialToneOps.identifier,
+        basicTone: basicToneIdentifier,
         toneCurve: ToneCurveModel.identifier,
         colorMixer: ColorOps.identifier,
         outputTransform: SRGBOutputTransform.identifier,
@@ -80,7 +84,7 @@ public struct PhotoCoreProcessingFingerprint: Codable, Equatable, Sendable {
 
     public static let legacyCurrentRawDecode = PhotoCoreProcessingFingerprint(
         rawDecode: CoreImageDecoder.processingIdentifier,
-        basicTone: SpatialToneOps.identifier,
+        basicTone: basicToneIdentifier,
         toneCurve: ToneCurveModel.identifier,
         colorMixer: ColorOps.identifier,
         outputTransform: SRGBOutputTransform.identifier,

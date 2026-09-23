@@ -19,8 +19,16 @@ import Foundation
 /// module): each operation's "gray curve" `f_enc: encoded -> encoded` is
 /// evaluated on the sRGB-*encoded* (not decoded) max/min channel and mixed
 /// hue-preservingly, matching `model.md`'s Q2 conclusion that this beats
-/// every alternative (yratio, maxratio, linear RGBTone) tried.
+/// every alternative (yratio, maxratio, linear RGBTone) tried. v2's one
+/// exception: Whites (lowered/raised) and Blacks (raised) mix that result
+/// with a luminance-ratio result (`rgbToneMixedWithLuminanceRatio`), fitted
+/// on strong real-photo settings where pure RGBTone loses saturation.
 public enum ToneOps {
+    /// Covered by `PhotoCoreProcessingFingerprint.basicTone` together with
+    /// `SpatialToneOps.identifier` (Contrast/Whites/Blacks are basic-tone
+    /// sliders too).
+    public static let identifier = "measured-tone-ops-cube-p-v2"
+
     // MARK: - Shared helpers
 
     /// `tone_model._power_ratio`: `u^a / (u^a + c*(1-u)^a)`, clamping only
@@ -205,6 +213,37 @@ public enum ToneOps {
         min(max(anchor + m * (powerRatio(u, a: a, c: c) - anchor), 0.0), 1.0)
     }
 
+    /// v2 (`tone_model.WHITES_BETA_*` / `BLACKS_BETA_*`, RAW real-photo
+    /// round1 +-60 and round5 Whites -83 / Blacks +89): when Whites goes down
+    /// or Blacks goes up, LR moves brightness while keeping saturation. The
+    /// RGBTone result is mixed with a chromaticity-preserving luminance-ratio
+    /// result by `beta` (1 = v1's pure RGBTone).
+    private static let whitesBetaNegative = 0.0
+    private static let whitesBetaPositive = 0.4
+    private static let blacksBetaPositive = 0.4
+    private static let blacksBetaNegative = 1.0
+    private static let ppLuma = SIMD3<Double>(0.2880402, 0.7118741, 0.0000857)
+
+    /// `tone_model._rgbtone_mixed_with_luminance_ratio`: the gray curve moves
+    /// linear ProPhoto Y only and RGB is scaled by the Y ratio; a lifting
+    /// ratio stops where the largest channel reaches 1 (keeps high-chroma,
+    /// low-Y colors such as deep blue from blowing out).
+    private static func rgbToneMixedWithLuminanceRatio(
+        _ value: SIMD3<Double>, beta: Double, _ curve: (Double) -> Double
+    ) -> SIMD3<Double> {
+        let tone = encodedCurve(value, curve)
+        guard beta < 1.0 else { return tone }
+        let clipped = SIMD3(max(value.x, 0.0), max(value.y, 0.0), max(value.z, 0.0))
+        let y = max(clipped.x * ppLuma.x + clipped.y * ppLuma.y + clipped.z * ppLuma.z, 1e-6)
+        var gain = DNGColorSpace.srgbDecode(curve(DNGColorSpace.srgbEncode(y))) / y
+        if gain > 1.0 {
+            let largest = max(max(clipped.x, clipped.y), max(clipped.z, 1e-6))
+            gain = min(gain, max(1.0, 1.0 / largest))
+        }
+        let ratio = clipped * gain
+        return ratio + beta * (tone - ratio)
+    }
+
     /// `tone_model.apply_whites`. anchor=0 (black fixed; `m>1` overshoots
     /// white and clips highlights).
     public static func whites(_ value: SIMD3<Double>, amount: Double) -> SIMD3<Double> {
@@ -212,7 +251,8 @@ public enum ToneOps {
         let m = piecewiseLinear(amount, xs: whitesAmount, ys: whitesM)
         let a = piecewiseLinear(amount, xs: whitesAmount, ys: whitesA)
         let c = piecewiseLinear(amount, xs: whitesAmount, ys: whitesC)
-        return encodedCurve(value) { anchoredRatio($0, anchor: 0.0, m: m, a: a, c: c) }
+        let beta = amount < 0 ? whitesBetaNegative : whitesBetaPositive
+        return rgbToneMixedWithLuminanceRatio(value, beta: beta) { anchoredRatio($0, anchor: 0.0, m: m, a: a, c: c) }
     }
 
     /// `tone_model.apply_blacks`. anchor=1 (white fixed; `m>1` undershoots
@@ -222,7 +262,8 @@ public enum ToneOps {
         let m = piecewiseLinear(amount, xs: blacksAmount, ys: blacksM)
         let a = piecewiseLinear(amount, xs: blacksAmount, ys: blacksA)
         let c = piecewiseLinear(amount, xs: blacksAmount, ys: blacksC)
-        return encodedCurve(value) { anchoredRatio($0, anchor: 1.0, m: m, a: a, c: c) }
+        let beta = amount > 0 ? blacksBetaPositive : blacksBetaNegative
+        return rgbToneMixedWithLuminanceRatio(value, beta: beta) { anchoredRatio($0, anchor: 1.0, m: m, a: a, c: c) }
     }
 
     // MARK: - 4) Parametric Shadows/Darks/Lights/Highlights

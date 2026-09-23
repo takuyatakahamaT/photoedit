@@ -49,6 +49,7 @@
 - 実装は3段: C1（露出・絶対WB・コントラスト・白黒・parametric・点カーブ、[PHASE2_DEVELOP_PIPELINE.md](PHASE2_DEVELOP_PIPELINE.md)）→ C2（HSL・Calibration・Color Grading・Vibrance／Saturation）→ C3（ハイライト／シャドウ）、[PHASE2_C2_C3.md](PHASE2_C2_C3.md)。C1 は `2df8f6a` で完了（単一操作ゲート 1.2〜2.1。bluesky2全体は 5.0〜7.1 まで改善、開始時 17〜22）。C2 は `c1d274d` で完了（実写ゲート: HSL 1.38 / Saturation 1.27 / Vibrance 1.30 / SplitToning 1.33 / Calibration 2.24 / GreenHue+50 2.0〜2.2 / BlueSat+50 2.6〜2.7。bluesky2全体は **4.16 / 5.55 / 5.62**、彩度比 0.93〜1.07。残りは旧近似のハイライト／シャドウで EV +0.18〜+0.33）。**C3（ハイライト／シャドウの局所ラプラシアン）は `b70f123` で完了**（H/S 単体 12 ケース平均 2.84。参照実装を自前中立レンダーに掛けた値と一致し、差は基準現像とモデル自体の残差。bluesky2 全体 7.15 / 4.67 / 5.18、EV −0.26〜−0.45 で暗い）。同日に Texture／Clarity／Dehaze の同定（`.photobench/phase2/detail/`、15 ケース平均 1.93）、RW2 埋め込みレンズ歪曲補正の同定（`.photobench/phase4/lens/`、中立 0.93〜1.22）、アプリ UI の LR 相当パネル化（`f5a7985`）を実施。**C4（Texture／Clarity／Dehaze、`8c1569f`）とレンズ歪曲補正（`13b62f0`）も完了。** ただし 4 プリセット × 2 scene は 8 組すべてが EV −0.24〜−0.58 で暗く、C2 時点の旧近似より悪い（原因はハイライト／シャドウのゲイン表の振幅が実写に合っていないこと。合成で積み上がる）。その後、空間処理の位置（RAW はトーンカーブ前、非RAW は露出前）と振幅係数（kH 0.5 / kS 0.8）を実エンジンの格子探索で決め、Dehaze の量応答を round2 の実測で区分線形にした（`334fa20`）。さらに round2 セット A（16 scene）と round3（JPEG 入力 8 scene）から、ハイライト／シャドウの振幅と帯域位置を写真ごとの統計量で決める画像適応（RAW: shift＋再 fit kS、非RAW: 専用の kH・kS・shift）を入れた（`206880a`〜`46b4989`）。**4 プリセット × 2 scene は RAW: bluesky2 1.89 / pastel 1.16 / colorful 2.26 / night 6.04、JPEG: 2.74 / 1.83 / 1.99 / 5.43**（今朝 RAW 4.2 / 3.9 / 6.5 / 9.8、JPEG 4.9 / 5.6 / 7.6 / 10.4）。縦位置 RAW の向きも修正（`23bf87c`）。スライダーのドラッグ中は軽い品質で描画し確定時に本来の品質で再描画するプレビュー（`6c57b67`、更新コスト 480 → 236ms）。残課題は night の色（Red/Orange のドリフト、Calibration の順序）、明るい JPEG での法則の外挿、非常に暗い scene、シャープ／NR・周辺光量（[ENGINE_ROADMAP.md](ENGINE_ROADMAP.md)「新既定の再計測」）。
 
 - **2026-09-24 未明: night の色を修正（`3aa3e33`、round4 の解析）。** Calibration はチャート行列が白を保っておらず（無彩色に最大 5% の色かぶり）、行の和で正規化して cube Q の前へ。HSL は彩度を下げるときの支点を HSL の L に（旧式は下げると明るくなっていた）。Split Toning は色付けの向き（輝度保存）と Blending 50 の形・彩度保護を実写に合わせた。あわせて XMP 読み取りのバグ（サイドカーの `crs:Look` 内にある Adobe Color の点カーブをユーザーのカーブとして読み、2 回掛けていた、`df94bb1`）を修正。**4 プリセット × 2 scene: RAW bluesky2 1.74 / colorful 2.39 / night 4.02 / pastel 1.20、JPEG 1.19 / 2.09 / 3.43 / 2.02（平均 2.92 → 2.26）**。round4 の night の色すべては 4.11 → 2.16。詳細は [ENGINE_ROADMAP.md](ENGINE_ROADMAP.md)「round4」。
+- **2026-09-24 朝: 強い Whites / Blacks で彩度が落ちる問題を修正（ToneOps v2）。** round5 の LR 書き出し同士の比較で、LR は Whites を下げる・Blacks を上げるときに彩度を保つと分かった。輝度だけを動かす式と従来の RGBTone を混ぜ、round5 の平均 ΔE00 は RAW 2.70 → 2.57、LR 由来 JPEG 3.05 → 2.62、カメラ JPEG 1.51 → 1.43、round3 1.93 → 1.84。full_pastel などで彩度が出すぎる側へ振れたので、Shadows の持ち上げと彩度の結合を測り直す（[ENGINE_ROADMAP.md](ENGINE_ROADMAP.md) の round5 節）。
 - 空間処理の速度（`3eaeef1`）: カーネル融合は Studio 実測でかえって遅く差し戻し。3072px の `apply()` は Studio でプロセス内の初回 180〜330ms、2 回目以降 78〜132ms。**ただしオーナーが使う mini では 2 回目以降でも interactive 440〜710ms、final 600〜1300ms**（GPU 実行自体は 150〜280ms、残りは GPU の取り合い待ち。Claude アプリなど画面側の GPU 利用が多い）。目標の 0.1 秒台には、空間処理を毎ティックやり直さない仕組み（下流の色・トーンだけ動かすときは空間処理の結果を使い回す等）が必要。
 
 根拠・方式比較・出典は[ENGINE_ROADMAP.md](ENGINE_ROADMAP.md)。過去の調査は[汎用XMPエンジン設計](GENERIC_XMP_ENGINE.md)、[エンジン比較・根拠](ENGINE_RESEARCH.md)。
@@ -61,15 +62,15 @@
 | 1 | ~~RAW基準現像（DCP＋Adobe Color＋ACR既定カーブ＋基準露出）~~ **完了（`ce91bfc`）。** 設計は[PHASE1_BASE_RENDERING.md](PHASE1_BASE_RENDERING.md)。3枚とも平均ΔE00 1.2〜1.9、EV差 ±0.03 で合格。旧土台は 2.4〜3.0 | プリセット無しでLR既定と平均ΔE00 ≤ 2、平均EV差 ≤ 0.05（`compare_renders.py`） |
 | 2 | 画素単位の色操作。計測・同定は完了。~~実装 C1 → C2~~ **完了（`2df8f6a`、`c1d274d`）** | 実写（round0/1の参照）で操作ごとに平均ΔE00 ≤ 2（基準現像 1.2〜1.4 と同水準） |
 | 3 | 空間操作。~~C3（H/S）→ C4（Texture／Clarity／Dehaze）~~ **実装完了（`b70f123`、`4062010`、`8c1569f`）。** H/S 18 ケース 2.22、detail 15 ケース 2.18。残課題: H/S の振幅が実写に合わず合成で暗い（再フィット中） | v1: 実写15ケース平均 ≤ 3.1。以降、局所モデルの改良で 2 以下を目指す |
-| 4 | 既定シャープ／NR、レンズ補正（歪曲は RW2 埋め込み係数で確定・実装中。周辺光量は同定できず保留）、粒子、速度 | 100%表示の解像感がLRと同等 |
-| 5 | 未使用プリセット×未使用写真の総合検証（2026-09-24: RAW bluesky2 1.74 / colorful 2.39 / night 4.02 / pastel 1.20、JPEG 1.19 / 2.09 / 3.43 / 2.02。残りは night のトーン（極端な Whites −83 / Blacks +89 / Highlights −87）と基準現像の露出） | オーナーが普段使いできると判断 |
-| 6 | NIHO Desktop統合 | — |
+| 4 | ~~既定シャープ／NR、周辺光量、レンズ補正の拡張、粒子~~ **2026-09-24 にオーナー判断で対象外**（細かい機能のため。RW2 の歪曲補正は実装済みのまま）。残りは速度（スライダーの更新を mini で 0.2 秒以内） | ドラッグ中の更新が mini で 0.2 秒以内 |
+| 5 | 未使用プリセット×未使用写真の総合検証（2026-09-24 の round5、ToneOps v2 後: RAW 5 scene colorful 2.76 / night 3.71 / pastel 2.88、カメラ JPEG 3 枚 bluesky2 1.17 / colorful 2.21 / night 3.44 / pastel 2.05。残りは彩度の出すぎ（Shadows の持ち上げなど）、基準現像の露出、P1581215 の基準現像） | オーナーが普段使いできると判断 |
+| 6 | NIHO Desktop統合。2026-09-24 の検討: 現像エンジンを NIHO 本体に組み込まず、写真編集ページを開いたときだけ起動する別プロセスにすれば、記事制作と同じような機能ページ（デスクトップ版だけで表示）として統合できる。使っていない間の NIHO の重さは変わらない。前提は 4 の速度改善 | — |
 
 各フェーズの所要は前フェーズの実測後に見積もり直す。現時点の見立てはAI作業で延べ25〜45時間規模・複数セッション。完全一致は約束せず、ゲートの数値とオーナーの目視で到達点を判断する。
 
 ## オーナーにお願いする作業
 
-0. **LR 追加書き出し（round5、生成済み、2026-09-24）**: Lightroom「ローカル」で `exports/lr-measure/round5/round5-photos/`（198 枚: RAW 105 枚は APFS クローン＋サイドカー、JPEG 45 枚とカメラ JPEG 48 枚は設定埋め込み）を開き、全選択 → 書き出し（JPG 100%・フルサイズ・sRGB・出力シャープ OFF・ファイル名そのまま）→ `exports/lr-measure/round5/lr-export/`。15〜20 分。手順は同フォルダの `README.md`。目的: night・colorful に残る差（強い Whites −83 / Blacks +89 / Contrast −43 で自前の彩度が LR より落ちる、カメラ JPEG では Highlights と Whites が効きすぎる）を極端な値の実写で直接測る。あわせて 4 プリセット全体を 5 枚の写真で確認し、Split Toning の Blending と未検証の Calibration スライダーを測る。
+0. ~~**LR 追加書き出し（round5）**~~ **2026-09-24 に完了（198 枚）。** 以下は記録: Lightroom「ローカル」で `exports/lr-measure/round5/round5-photos/`（198 枚: RAW 105 枚は APFS クローン＋サイドカー、JPEG 45 枚とカメラ JPEG 48 枚は設定埋め込み）を開き、全選択 → 書き出し（JPG 100%・フルサイズ・sRGB・出力シャープ OFF・ファイル名そのまま）→ `exports/lr-measure/round5/lr-export/`。15〜20 分。手順は同フォルダの `README.md`。目的: night・colorful に残る差（強い Whites −83 / Blacks +89 / Contrast −43 で自前の彩度が LR より落ちる、カメラ JPEG では Highlights と Whites が効きすぎる）を極端な値の実写で直接測る。あわせて 4 プリセット全体を 5 枚の写真で確認し、Split Toning の Blending と未検証の Calibration スライダーを測る。
 1. **再ビルドしたアプリの確認（2026-09-24）**: `dist/Photo Bench.app`（デスクトップのリンク）を開き直す。ad-hoc 署名のため写真フォルダの再選択が必要な場合がある。
    - night・bluesky2 の色（肌や木の赤み、青空、影の色付き）が Lightroom に近づいたか。
    - スライダーのドラッグ中の更新の体感（mini の実測では空間処理だけで 1 回 0.4〜0.7 秒。改善は次の作業）。
@@ -82,7 +83,7 @@
 3. **LR 追加書き出し（round2、完了済み）**。`exports/lr-measure/round2/round2-photos/`（153 枚の RAW クローン＋サイドカー、実容量は増えない）を Lightroom「ローカル」で開き、全選択 → 書き出し（JPG 100%・フルサイズ・sRGB・出力シャープ OFF・ファイル名そのまま）を `exports/lr-measure/round2/lr-export-photos/` へ。所要 10〜15 分、約 1.5〜2 GB。手順は同フォルダの `README.md`。内容: A = ハイライト／シャドウの画像適応（全 6 scene）、B = 複数スライダー合成（3 scene）、C = Texture／Clarity／Dehaze の線形性、D = HSL の青。
    - 手持ちの RAW を追加したい場合は、フォルダにまとめて `python3 scripts/lr_measure/make_round2.py --extra-raw-dir <dir>` で再生成できる（暗部の面積が違う写真を 5〜10 枚足せると画像適応の fit が安定する）。
    - 周辺光量用の平坦な被写体（グレーカード・曇天）を同じレンズ・同じ絞りで数枚撮れると、フェーズ4 の周辺光量補正に使える（任意）。
-4. 教師データを作れるのは LR 契約中だけ。round5 の書き出しが済むまで契約を継続する。
+4. 教師データを作れるのは LR 契約中だけ。round5 は済んだ。追加の書き出しが要るかは、round5 の解析と総合検証の結果で判断する（それまでは契約を継続）。
 
 ## 実行環境の注意（2026-09-23）
 

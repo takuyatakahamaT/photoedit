@@ -40,7 +40,7 @@ Finderから`open-photo.command`をダブルクリックします。ターミナ
 - ユーザーが選んだフォルダ以下にある JPEG / HEIC / PNG / TIFF / RAW を非同期走査し、選択権限を次回起動へ安全に保存
 - **RAW の基準現像**: LibRaw でカメラ RGB を取り出し、Lightroom 同梱の Adobe Standard DCP（ColorMatrix／ForwardMatrix／HueSatMap／LookTable）と Adobe Color のルックテーブル・点カーブ、ACR 既定トーンカーブを DNG 仕様どおりに適用（`docs/PHASE1_BASE_RENDERING.md`）。プリセット無しで Lightroom 既定と平均 ΔE00 0.9〜1.2（レンズ歪曲補正込み）
 - **RW2 埋め込みレンズ歪曲補正**: Panasonic DistortionInfo（IFD0 0x0119）の係数で Lightroom と同じ 6000×4000 の幾何に補正（自由パラメータ 0 個、格子点残差 0.4〜0.6 px）
-- **計測モデルの現像操作**（`docs/PHASE2_DEVELOP_PIPELINE.md`、`docs/PHASE2_C2_C3.md`）: 露出（RAW はトーンカーブ前のリニア倍率）、絶対 WB（DNG SDK の式）、コントラスト／白／黒／parametric／点カーブ（sRGB 符号化空間の RGBTone）、HSL 8 帯、Vibrance／Saturation、Color Grading／Split Toning、Camera Calibration、Highlights／Shadows（局所ラプラシアン、Metal compute）、Texture／Clarity（Laplacian 段別ゲイン）、Dehaze（大域カーブ＋彩度倍率）
+- **計測モデルの現像操作**（`docs/PHASE2_DEVELOP_PIPELINE.md`、`docs/PHASE2_C2_C3.md`）: 露出（RAW はトーンカーブ前のリニア倍率）、絶対 WB（DNG SDK の式）、コントラスト／白／黒／parametric／点カーブ（sRGB 符号化空間の RGBTone。白を下げる・上げる、黒を上げるときは、輝度だけを動かす式と混ぜて LR と同じく彩度を保つ）、HSL 8 帯、Vibrance／Saturation、Color Grading／Split Toning、Camera Calibration、Highlights／Shadows（局所ラプラシアン、Metal compute）、Texture／Clarity（Laplacian 段別ゲイン）、Dehaze（大域カーブ＋彩度倍率）
 - XMP の属性形式と要素形式を解析し、未対応項目（シャープ／NR、粒子、周辺光量、増分 WB、Refine Saturation ≠ 100）は互換性一覧で表示
 - 写真ごとの編集・適用プリセットをバージョン付き JSON に自動保存し、再起動後に復元。破損・未知形式の記録は上書きせず読み込みエラーを表示
 - ドラッグを 1 操作として取り消し・やり直し。写真ごとのセッション履歴を最大 100 操作保持
