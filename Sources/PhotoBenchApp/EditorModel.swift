@@ -299,6 +299,13 @@ final class EditorModel: ObservableObject {
         } else {
             finishSliderGesture()
             flushPendingEditSave()
+            // Owner-reported preview sluggishness: the drag itself just ran
+            // at `.interactive` quality (`scheduleRender()`'s own check of
+            // `activeSliderGesturePhotoID`, now `nil` again after
+            // `finishSliderGesture()` above) -- re-render once more at
+            // `.final` so the settled result the user is looking at matches
+            // what an export would actually produce.
+            scheduleRender()
         }
     }
 
@@ -494,6 +501,13 @@ final class EditorModel: ObservableObject {
         let revision = renderRevision
         let capturedSettings = renderSettings
         let coordinator = renderCoordinator
+        // Owner-reported preview sluggishness (RAW Shadows/Highlights felt
+        // laggy while dragging, even though the measured *effect size*
+        // already matches Lightroom): render at cheaper `.interactive`
+        // quality while a slider drag is in flight, `.final` otherwise --
+        // `sliderEditingChanged(false)` schedules one more `.final` render
+        // once the drag ends so the settled preview always matches export.
+        let quality: SpatialToneQuality = activeSliderGesturePhotoID != nil ? .interactive : .final
         hasPreviewInFlight = true
         os_signpost(
             .event,
@@ -506,7 +520,8 @@ final class EditorModel: ObservableObject {
             do {
                 let frame = try await coordinator.prepareProductionPreview(
                     decoded: decodedPhoto,
-                    settings: capturedSettings
+                    settings: capturedSettings,
+                    quality: quality
                 )
                 try Task.checkCancellation()
                 guard let self, self.renderRevision == revision else { return }

@@ -10,7 +10,12 @@ import PhotoCore
 ///   photobench-render <input...> --output-dir <dir>
 ///       [--preset <xmp>] [--engine libraw-dcp|coreimage]
 ///       [--max-dimension N] [--stage matrix|huesat|exposure|look|tone|full]
-///       [--format jpg|tif16]
+///       [--format jpg|tif16] [--quality interactive|final]
+///
+/// `--quality` (default `final`) is a benchmark-only knob for measuring the
+/// preview `.interactive` path's speed/quality trade-off (owner-reported
+/// slider sluggishness) -- like `--max-dimension`, it is only honored for
+/// `--format tif16`; real JPEG export always renders at `.final`.
 
 enum CLIError: LocalizedError {
     case missingValue(String)
@@ -48,6 +53,12 @@ struct CLIOptions {
     var maxDimension: Int?
     var stage: AdobeBaseRenderer.Handle.Stage?
     var format: OutputFormat = .jpg
+    /// Benchmark-only override (default `.final`, matching every production
+    /// caller): mirrors `--max-dimension`'s "comparison shortcut, not real
+    /// export" convention exactly, so it is only honored for `--format
+    /// tif16` below -- real JPEG export always resolves `.final` and has no
+    /// way to ask for anything else.
+    var quality: SpatialToneQuality = .final
 }
 
 func parseArguments(_ arguments: [String]) throws -> CLIOptions {
@@ -79,6 +90,13 @@ func parseArguments(_ arguments: [String]) throws -> CLIOptions {
                 throw CLIError.invalidValue(flag: argument, value: value)
             }
             options.maxDimension = dimension
+        case "--quality":
+            let value = try nextValue(for: argument)
+            switch value {
+            case "interactive": options.quality = .interactive
+            case "final": options.quality = .final
+            default: throw CLIError.invalidValue(flag: argument, value: value)
+            }
         case "--stage":
             let value = try nextValue(for: argument)
             guard let stage = AdobeBaseRenderer.Handle.Stage(rawValue: value) else {
@@ -192,7 +210,8 @@ func run() throws {
         case .tif16:
             try renderEngine.exportTIFF(
                 decoded: decoded, settings: settings, destination: outputURL,
-                maxDimension: options.maxDimension.map { CGFloat($0) }
+                maxDimension: options.maxDimension.map { CGFloat($0) },
+                quality: options.quality
             )
         }
         print(

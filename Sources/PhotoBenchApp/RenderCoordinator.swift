@@ -7,13 +7,15 @@ actor RenderCoordinator {
     func prepareProductionPreview(
         decoded: DecodedPhoto,
         settings: EditSettings,
-        maxDimension: CGFloat = 2_560
+        maxDimension: CGFloat = 2_560,
+        quality: SpatialToneQuality = .final
     ) throws -> PreparedPreviewFrame {
         try Task.checkCancellation()
         let frame = try renderer.prepareProductionPreview(
             decoded: decoded,
             settings: settings,
-            maxDimension: maxDimension
+            maxDimension: maxDimension,
+            quality: quality
         )
         try Task.checkCancellation()
         return frame

@@ -446,7 +446,8 @@ public final class RenderEngine: @unchecked Sendable {
     public func preparePreview(
         decoded: DecodedPhoto,
         settings: EditSettings,
-        maxDimension: CGFloat = 2_560
+        maxDimension: CGFloat = 2_560,
+        quality: SpatialToneQuality = .final
     ) throws -> PreparedPreviewFrame {
         guard maxDimension.isFinite, maxDimension > 0 else {
             throw RenderEngineError.renderFailed(decoded.sourceURL)
@@ -458,7 +459,8 @@ public final class RenderEngine: @unchecked Sendable {
             settings: settings,
             maxDimension: maxDimension,
             downsamplingFilter: .lanczos,
-            outputTransformPlacement: .afterDownsampling
+            outputTransformPlacement: .afterDownsampling,
+            quality: quality
         )
         let image = output.image
         let extent = output.extent
@@ -485,7 +487,8 @@ public final class RenderEngine: @unchecked Sendable {
     public func prepareProductionPreview(
         decoded: DecodedPhoto,
         settings: EditSettings,
-        maxDimension: CGFloat = 2_560
+        maxDimension: CGFloat = 2_560,
+        quality: SpatialToneQuality = .final
     ) throws -> PreparedPreviewFrame {
         guard decoded.info.intent == .fullResolution,
               decoded.info.requestedMaximumDimension == nil,
@@ -498,7 +501,8 @@ public final class RenderEngine: @unchecked Sendable {
         return try preparePreview(
             decoded: decoded,
             settings: settings,
-            maxDimension: maxDimension
+            maxDimension: maxDimension,
+            quality: quality
         )
     }
 
@@ -660,7 +664,10 @@ public final class RenderEngine: @unchecked Sendable {
     }
 
     /// Lightroom基準TIFFと同じsRGBで、量子化誤差を抑えた16bit比較用TIFFを書き出す。
-    /// 比較を高速化する場合だけmaxDimensionを指定し、本番書き出しではnilを使う。
+    /// 比較を高速化する場合だけmaxDimensionを指定し、本番書き出しではnilを使う。`quality`も
+    /// 同じ位置づけ(既定`.final`、`photobench-render --quality interactive`のような
+    /// 計測目的の上書きだけを想定) -- 本番のJPEG書き出し(`exportJPEG`/`exportJPEGMeasured`)
+    /// にはこのパラメータ自体が存在せず、常に`.final`。
     public func exportTIFF(
         decoded: DecodedPhoto,
         settings: EditSettings,
@@ -669,7 +676,8 @@ public final class RenderEngine: @unchecked Sendable {
         downsamplingFilter: TIFFDownsamplingFilter = .affineTransform,
         outputTransformPlacement: OutputTransformPlacement = .afterDownsampling,
         protectedSourceURLs: [URL] = [],
-        allowDestinationReplacement: Bool = true
+        allowDestinationReplacement: Bool = true,
+        quality: SpatialToneQuality = .final
     ) throws -> Double {
         if maxDimension == nil {
             try Self.requireFullResolutionDecodeForExport(decoded)
@@ -690,7 +698,8 @@ public final class RenderEngine: @unchecked Sendable {
             settings: settings,
             maxDimension: maxDimension,
             downsamplingFilter: downsamplingFilter,
-            outputTransformPlacement: outputTransformPlacement
+            outputTransformPlacement: outputTransformPlacement,
+            quality: quality
         )
         let image = output.image
 
@@ -929,7 +938,8 @@ public final class RenderEngine: @unchecked Sendable {
     func apply(
         settings: EditSettings,
         to source: CIImage,
-        sourceURL: URL? = nil
+        sourceURL: URL? = nil,
+        quality: SpatialToneQuality = .final
     ) -> CIImage {
         var image = RelativeColorAdjustment.apply(
             to: source,
@@ -937,9 +947,9 @@ public final class RenderEngine: @unchecked Sendable {
             relativeTint: settings.relativeTint
         )
         let stats = SpatialToneOps.needsSpatial(settings)
-            ? nonRAWAdaptiveStats(source: source, sourceURL: sourceURL) : nil
-        image = applyNonRAWStageP(settings: settings, to: image, adaptiveStats: stats)
-        image = applyNonRAWStageQ(settings: settings, to: image, adaptiveStats: stats)
+            ? nonRAWAdaptiveStats(source: source, sourceURL: sourceURL, quality: quality) : nil
+        image = applyNonRAWStageP(settings: settings, to: image, adaptiveStats: stats, quality: quality)
+        image = applyNonRAWStageQ(settings: settings, to: image, adaptiveStats: stats, quality: quality)
         return image
     }
 
@@ -955,18 +965,24 @@ public final class RenderEngine: @unchecked Sendable {
     /// statistic settings-independent: computed once per photo, never
     /// recomputed for any slider move (RAW's preHS version must recompute
     /// whenever a non-H/S/Texture/Clarity slider changes).
+    /// `quality` joins `sourceURL` in the key for the same reason
+    /// `AdobeBaseRenderer.StatsCacheKey` gained it: an `.interactive`
+    /// (halved-resolution) statistic must never be served back to a later
+    /// `.final` (export) request.
+    struct NonRAWStatsCacheKey: Hashable { var url: URL; var quality: SpatialToneQuality }
     private static let nonRawStatsCacheLock = NSLock()
-    nonisolated(unsafe) private static var nonRawStatsCache: [URL: SpatialAdaptiveStats.Stats] = [:]
+    nonisolated(unsafe) private static var nonRawStatsCache: [NonRAWStatsCacheKey: SpatialAdaptiveStats.Stats] = [:]
     /// `model.md` §1.4/§5: the input JPEG's own sRGB primaries (Rec.709 luma
     /// weights), *not* `SpatialToneOps.ppLuma` (RAW's ProPhoto weights) --
     /// `source` here is still the plain working-space input, never converted
     /// to ProPhoto.
     private static let nonRAWLumaWeights = SIMD3<Double>(0.2126, 0.7152, 0.0722)
 
-    private func nonRAWAdaptiveStats(source: CIImage, sourceURL: URL?) -> SpatialAdaptiveStats.Stats {
-        if let sourceURL {
+    private func nonRAWAdaptiveStats(source: CIImage, sourceURL: URL?, quality: SpatialToneQuality = .final) -> SpatialAdaptiveStats.Stats {
+        let cacheKey = sourceURL.map { NonRAWStatsCacheKey(url: $0, quality: quality) }
+        if let cacheKey {
             Self.nonRawStatsCacheLock.lock()
-            if let cached = Self.nonRawStatsCache[sourceURL] {
+            if let cached = Self.nonRawStatsCache[cacheKey] {
                 Self.nonRawStatsCacheLock.unlock()
                 return cached
             }
@@ -976,8 +992,9 @@ public final class RenderEngine: @unchecked Sendable {
         let diagnosticsEnabled = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] != nil
         let startTime = diagnosticsEnabled ? DispatchTime.now() : nil
 
+        let longEdge = AdobeBaseRenderer.highlightRatioBaseLongEdge(for: quality)
         let stats = SpatialAdaptiveStats.computeStats(
-            image: source, longEdge: AdobeBaseRenderer.highlightRatioBaseLongEdge, lumaWeights: Self.nonRAWLumaWeights
+            image: source, longEdge: longEdge, lumaWeights: Self.nonRAWLumaWeights
         )
         if let startTime {
             let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds &- startTime.uptimeNanoseconds) / 1_000_000
@@ -986,14 +1003,14 @@ public final class RenderEngine: @unchecked Sendable {
             // printed downstream in `applySpatialToneOps`'s own diagnostic
             // line instead. The raw statistics (including `highlightRatioBase`,
             // now non-RAW's kH input too) are cheap and printed eagerly here.
-            let message = "RenderEngine.nonRAWAdaptiveStats: baseHighlightRatio=\(stats.highlightRatioBase) fullHighlightRatio=\(stats.fullHighlightRatio) fullP90=\(stats.fullP90) "
+            let message = "RenderEngine.nonRAWAdaptiveStats: quality=\(quality) baseHighlightRatio=\(stats.highlightRatioBase) fullHighlightRatio=\(stats.fullHighlightRatio) fullP90=\(stats.fullP90) "
                 + "(\(String(format: "%.2f", elapsedMs))ms)\n"
             FileHandle.standardError.write(Data(message.utf8))
         }
 
-        if let sourceURL {
+        if let cacheKey {
             Self.nonRawStatsCacheLock.lock()
-            Self.nonRawStatsCache[sourceURL] = stats
+            Self.nonRawStatsCache[cacheKey] = stats
             Self.nonRawStatsCacheLock.unlock()
         }
         return stats
@@ -1016,7 +1033,10 @@ public final class RenderEngine: @unchecked Sendable {
     /// nor any P-op nor H/S is active, so `.neutral` settings keep the exact
     /// bypass `RelativeColorAdjustmentTests.zeroIsAnExactBypassAndKeepsThe
     /// ExistingPipelineFingerprint` (and this function's own callers) rely on.
-    private func applyNonRAWStageP(settings: EditSettings, to image: CIImage, adaptiveStats: SpatialAdaptiveStats.Stats?) -> CIImage {
+    private func applyNonRAWStageP(
+        settings: EditSettings, to image: CIImage, adaptiveStats: SpatialAdaptiveStats.Stats?,
+        quality: SpatialToneQuality = .final
+    ) -> CIImage {
         let order = SpatialOrder.currentForNonRAW
         let needsSpatial = SpatialToneOps.needsSpatial(settings)
         guard settings.exposure != 0 || ToneOps.needsPostOps(settings) || needsSpatial else {
@@ -1037,12 +1057,12 @@ public final class RenderEngine: @unchecked Sendable {
                     let exposureOnly = AdobeBaseRenderer.buildCubeData { ToneOps.exposureNonRaw($0, ev: settings.exposure) }
                     stage = AdobeBaseRenderer.applyCube(exposureOnly, to: stage)
                 }
-                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW)
+                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW, quality: quality)
                 if ToneOps.needsPostOps(settings) {
                     stage = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCube(exposureNonRaw: 0, settings: settings), to: stage)
                 }
             case .sP1P2:
-                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW)
+                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW, quality: quality)
                 if settings.exposure != 0 || ToneOps.needsPostOps(settings) {
                     stage = AdobeBaseRenderer.applyCube(
                         AdobeBaseRenderer.postOpsCube(exposureNonRaw: settings.exposure, settings: settings), to: stage
@@ -1055,7 +1075,7 @@ public final class RenderEngine: @unchecked Sendable {
                     )
                 }
                 if order == .p1P2S {
-                    stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW)
+                    stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW, quality: quality)
                 }
             // `.postQ`: [S] deferred to `applyNonRAWStageQ`'s tail.
             case .p1SP2:
@@ -1067,7 +1087,7 @@ public final class RenderEngine: @unchecked Sendable {
                         to: stage
                     )
                 }
-                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW)
+                stage = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: stage, adaptiveStats: adaptiveStats, path: .nonRAW, quality: quality)
                 if ToneOps.needsPostOpsAfterContrast(settings) {
                     stage = AdobeBaseRenderer.applyCube(AdobeBaseRenderer.postOpsCubeP2(settings: settings), to: stage)
                 }
@@ -1086,7 +1106,10 @@ public final class RenderEngine: @unchecked Sendable {
     /// exact `CIColorMatrix` kept separate from cube Q -- see
     /// `AdobeBaseRenderer.applyCalibration`'s doc comment) -> working space.
     /// Mirrors `applyNonRAWStageP`'s exact-bypass-at-neutral-settings shape.
-    private func applyNonRAWStageQ(settings: EditSettings, to image: CIImage, adaptiveStats: SpatialAdaptiveStats.Stats?) -> CIImage {
+    private func applyNonRAWStageQ(
+        settings: EditSettings, to image: CIImage, adaptiveStats: SpatialAdaptiveStats.Stats?,
+        quality: SpatialToneQuality = .final
+    ) -> CIImage {
         // **Experiment only** (`SpatialOrder`'s doc comment): `.postQ`
         // defers [S] here, after cube Q/Calibration, instead of
         // `applyNonRAWStageP` running it.
@@ -1115,7 +1138,7 @@ public final class RenderEngine: @unchecked Sendable {
             }
         }
         if deferredSpatial {
-            proPhoto = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: proPhoto, adaptiveStats: adaptiveStats, path: .nonRAW)
+            proPhoto = AdobeBaseRenderer.applySpatialToneOps(settings: settings, to: proPhoto, adaptiveStats: adaptiveStats, path: .nonRAW, quality: quality)
         }
         return AdobeBaseRenderer.applyMatrix(DNGColorSpace.proPhotoToSRGBLinear, to: proPhoto)
     }
@@ -1128,11 +1151,11 @@ public final class RenderEngine: @unchecked Sendable {
     /// including phase2 C3's H/S spatial pass) image, instead of
     /// `decoded.image` (which is always the neutral-settings baseline --
     /// see `LibRawDecoder`).
-    private func baseImage(decoded: DecodedPhoto, settings: EditSettings) -> CIImage {
+    private func baseImage(decoded: DecodedPhoto, settings: EditSettings, quality: SpatialToneQuality = .final) -> CIImage {
         guard let handle = decoded.adobeBase else {
-            return apply(settings: settings, to: decoded.image, sourceURL: decoded.sourceURL)
+            return apply(settings: settings, to: decoded.image, sourceURL: decoded.sourceURL, quality: quality)
         }
-        let rendered = handle.image(settings: settings)
+        let rendered = handle.image(settings: settings, quality: quality)
         return RelativeColorAdjustment.apply(
             to: rendered,
             relativeTemperature: settings.relativeTemperature,
@@ -1159,7 +1182,8 @@ public final class RenderEngine: @unchecked Sendable {
         settings: EditSettings,
         maxDimension: CGFloat?,
         downsamplingFilter: TIFFDownsamplingFilter,
-        outputTransformPlacement: OutputTransformPlacement
+        outputTransformPlacement: OutputTransformPlacement,
+        quality: SpatialToneQuality = .final
     ) throws -> PreparedOutputGraph {
         if let maxDimension {
             guard maxDimension.isFinite, maxDimension > 0 else {
@@ -1167,7 +1191,7 @@ public final class RenderEngine: @unchecked Sendable {
             }
         }
 
-        var image = baseImage(decoded: decoded, settings: settings)
+        var image = baseImage(decoded: decoded, settings: settings, quality: quality)
         if outputTransformPlacement == .legacyBeforeDownsampling {
             image = applyOutputTransformIfRequired(
                 to: image,

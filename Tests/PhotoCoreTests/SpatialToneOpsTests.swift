@@ -398,7 +398,63 @@ struct SpatialToneOpsTests {
         )
     }
 
-    private func runGPUParityTest(context: CIContext, maxOKLabDelta: Double, label: String, shift: SpatialShift = .zero) throws {
+    /// Preview responsiveness (owner-reported slider sluggishness):
+    /// `.interactive`'s coarser Shadows `n_disc` (5, not `.final`'s 10) must
+    /// still keep the GPU and CPU-reference implementations in agreement --
+    /// this is the same GPU/CPU parity check as the tests above, just with
+    /// `quality: .interactive` threaded through both sides, so a mismatch in
+    /// only one of the two files' `nDisc` plumbing (`SpatialToneProcessor.
+    /// swift`'s `applyGPU`/`applySingleOpLLF` vs. `SpatialToneOps.swift`'s
+    /// `applyHighlightsShadows`/`applySingleOpLLF`) would show up here.
+    @Test func gpuProcessorMatchesCPUReferenceAtInteractiveQuality() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.extendedLinearSRGB))
+        let context = CIContext(mtlDevice: device, options: [
+            .workingColorSpace: colorSpace, .outputColorSpace: colorSpace
+        ])
+        try runGPUParityTest(context: context, maxOKLabDelta: 0.3, label: "hardware-metal-interactive", quality: .interactive)
+    }
+
+    /// `SpatialToneQuality.shadowsDiscretizationCount` is the one thing
+    /// `.interactive`/`.final` actually change (`SpatialToneQuality`'s doc
+    /// comment) -- and, end to end, a Shadows-heavy render at the two
+    /// qualities must produce numerically *different* CPU-reference output
+    /// (proving `quality` really reaches `applySingleOpLLF`'s `nDisc`, not
+    /// silently ignored somewhere along the chain), while a Shadows-free
+    /// render (`shadows: 0`, which takes `applyHighlightsShadows`'s early
+    /// no-op guard before `nDisc` is ever read) must be bit-for-bit
+    /// unaffected by `quality` either way.
+    @Test func spatialToneQualityChangesShadowsDiscretizationCountAndOutput() {
+        #expect(SpatialToneQuality.interactive.shadowsDiscretizationCount == 5)
+        #expect(SpatialToneQuality.final.shadowsDiscretizationCount == 10)
+
+        let width = 48, height = 32
+        let (_, rgb) = makeParityTestImage(width: width, height: height)
+
+        let interactive = SpatialToneOps.applyHighlightsShadows(
+            rgb: rgb, width: width, height: height, highlights: 0, shadows: 55, scalePx: 24, quality: .interactive
+        )
+        let final = SpatialToneOps.applyHighlightsShadows(
+            rgb: rgb, width: width, height: height, highlights: 0, shadows: 55, scalePx: 24, quality: .final
+        )
+        let maxDiff = zip(interactive, final).map { a, b in
+            max(abs(a.x - b.x), abs(a.y - b.y), abs(a.z - b.z))
+        }.max() ?? 0
+        #expect(maxDiff > 1e-6, "a coarser Shadows discretization should visibly change at least one pixel")
+
+        let interactiveNoOp = SpatialToneOps.applyHighlightsShadows(
+            rgb: rgb, width: width, height: height, highlights: 0, shadows: 0, scalePx: 24, quality: .interactive
+        )
+        let finalNoOp = SpatialToneOps.applyHighlightsShadows(
+            rgb: rgb, width: width, height: height, highlights: 0, shadows: 0, scalePx: 24, quality: .final
+        )
+        #expect(interactiveNoOp == finalNoOp, "quality must not matter when Highlights/Shadows/Texture/Clarity are all zero")
+    }
+
+    private func runGPUParityTest(
+        context: CIContext, maxOKLabDelta: Double, label: String, shift: SpatialShift = .zero,
+        quality: SpatialToneQuality = .final
+    ) throws {
         let width = 600
         let height = 400
         let (image, rgb) = makeParityTestImage(width: width, height: height)
@@ -413,7 +469,7 @@ struct SpatialToneOpsTests {
         SpatialToneProcessor.resetDiagnostics()
         let processed = try SpatialToneProcessor.apply(
             to: image, highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity,
-            gainScale: .identity, shift: shift
+            gainScale: .identity, shift: shift, quality: quality
         )
 
         var rendered = [Float](repeating: 0, count: width * height * 4)
@@ -425,7 +481,7 @@ struct SpatialToneOpsTests {
 
         let expected = SpatialToneOps.applyHighlightsShadows(
             rgb: rgb, width: width, height: height, highlights: highlights, shadows: shadows, scalePx: scalePx,
-            texture: texture, clarity: clarity, gainScale: .identity, shift: shift
+            texture: texture, clarity: clarity, gainScale: .identity, shift: shift, quality: quality
         )
 
         var maxDelta = 0.0

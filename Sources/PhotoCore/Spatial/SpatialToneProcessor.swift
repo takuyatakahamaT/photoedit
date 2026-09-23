@@ -51,6 +51,32 @@ import Metal
 /// command buffer, and the result is wrapped back into a `CIImage` with
 /// `CIImage(mtlTexture:options:)` -- no custom kernel, no `roi`, no tiling
 /// decision for Core Image to make about this stage at all.
+///
+/// Preview responsiveness (owner-reported: RAW Shadows/Highlights sliders
+/// felt sluggish while dragging, even though the CLI-measured *effect size*
+/// already matches Lightroom): `.interactive` trades a coarser Shadows
+/// discretization sweep (`n_disc` 10 -> 5; Highlights/Texture/Clarity
+/// unaffected -- Highlights takes the `alpha==beta==1` fast path, which
+/// never runs this sweep at all) for a cheaper `apply()` call during a
+/// slider drag. No formula or other constant changes -- only this one
+/// sampling-density knob. `RenderEngine`'s preview path resolves
+/// `.interactive`; export/CLI always resolve `.final` (the default, so
+/// every pre-existing call site keeps its exact prior behavior unchanged).
+public enum SpatialToneQuality: Sendable, Equatable, Hashable {
+    case interactive
+    case final
+
+    /// Shadows' `applySingleOpLLF`/GPU `applySingleOpLLF`'s `nDisc` --
+    /// Highlights never reads this (fast path), Texture/Clarity don't use
+    /// discretization at all.
+    var shadowsDiscretizationCount: Int {
+        switch self {
+        case .interactive: return 5
+        case .final: return 10
+        }
+    }
+}
+
 public enum SpatialToneProcessor {
     enum ProcessorError: Error {
         case deviceUnavailable
@@ -97,7 +123,8 @@ public enum SpatialToneProcessor {
     /// exact, not an approximation.
     public static func apply(
         to image: CIImage, highlights: Double, shadows: Double, scalePx: Double,
-        texture: Double = 0, clarity: Double = 0, gainScale: SpatialGainScale = .identity, shift: SpatialShift = .zero
+        texture: Double = 0, clarity: Double = 0, gainScale: SpatialGainScale = .identity, shift: SpatialShift = .zero,
+        quality: SpatialToneQuality = .final
     ) throws -> CIImage {
         diagnosticsLock.lock()
         applyCallCount += 1
@@ -117,13 +144,13 @@ public enum SpatialToneProcessor {
             diagnosticsLock.lock(); cpuFallbackCallCount += 1; diagnosticsLock.unlock()
             return try applyCPUFallback(
                 to: image, highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity,
-                gainScale: gainScale, shift: shift
+                gainScale: gainScale, shift: shift, quality: quality
             )
         }
         diagnosticsLock.lock(); gpuCallCount += 1; diagnosticsLock.unlock()
         return try applyGPU(
             device: device, to: image, highlights: highlights, shadows: shadows, scalePx: scalePx,
-            texture: texture, clarity: clarity, gainScale: gainScale, shift: shift
+            texture: texture, clarity: clarity, gainScale: gainScale, shift: shift, quality: quality
         )
     }
 
@@ -141,7 +168,8 @@ public enum SpatialToneProcessor {
 
     private static func applyGPU(
         device: MTLDevice, to image: CIImage, highlights: Double, shadows: Double, scalePx: Double,
-        texture: Double, clarity: Double, gainScale: SpatialGainScale, shift: SpatialShift
+        texture: Double, clarity: Double, gainScale: SpatialGainScale, shift: SpatialShift,
+        quality: SpatialToneQuality = .final
     ) throws -> CIImage {
         let resources = try metalResources(for: device)
 
@@ -221,7 +249,7 @@ public enum SpatialToneProcessor {
                 alpha: SpatialToneOps.shadowsParams.alpha,
                 beta: SpatialToneOps.shadowsParams.beta,
                 sigmaR: SpatialToneOps.shadowsParams.sigmaR,
-                levels: levelsS, shift: shift.shadows
+                levels: levelsS, nDisc: quality.shadowsDiscretizationCount, shift: shift.shadows
             )
         }
         if texture != 0 {
@@ -609,7 +637,8 @@ public enum SpatialToneProcessor {
     /// path's single round trip, just entirely on the CPU.
     private static func applyCPUFallback(
         to image: CIImage, highlights: Double, shadows: Double, scalePx: Double,
-        texture: Double = 0, clarity: Double = 0, gainScale: SpatialGainScale = .identity, shift: SpatialShift = .zero
+        texture: Double = 0, clarity: Double = 0, gainScale: SpatialGainScale = .identity, shift: SpatialShift = .zero,
+        quality: SpatialToneQuality = .final
     ) throws -> CIImage {
         let extent = image.extent.integral
         guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else {
@@ -635,7 +664,7 @@ public enum SpatialToneProcessor {
                     outputBase: outRaw.baseAddress!, outputBytesPerRow: bytesPerRow,
                     outputWidth: width, outputHeight: height, offsetX: 0, offsetY: 0,
                     highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity,
-                    gainScale: gainScale, shift: shift
+                    gainScale: gainScale, shift: shift, quality: quality
                 )
             }
         }
@@ -677,7 +706,8 @@ public enum SpatialToneProcessor {
         scalePx: Double,
         texture: Double = 0,
         clarity: Double = 0,
-        gainScale: SpatialGainScale = .identity, shift: SpatialShift = .zero
+        gainScale: SpatialGainScale = .identity, shift: SpatialShift = .zero,
+        quality: SpatialToneQuality = .final
     ) throws {
         guard inputWidth > 0, inputHeight > 0 else { throw ProcessorError.outputConstructionFailed }
         guard offsetX >= 0, offsetY >= 0,
@@ -705,7 +735,7 @@ public enum SpatialToneProcessor {
         let resultStraight = SpatialToneOps.applyHighlightsShadows(
             rgb: rgb, width: inputWidth, height: inputHeight,
             highlights: highlights, shadows: shadows, scalePx: scalePx, texture: texture, clarity: clarity,
-            gainScale: gainScale, shift: shift
+            gainScale: gainScale, shift: shift, quality: quality
         )
 
         for y in 0..<outputHeight {

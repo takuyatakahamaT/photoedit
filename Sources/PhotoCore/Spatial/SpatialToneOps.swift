@@ -1215,7 +1215,9 @@ public enum SpatialToneOps {
     /// `SpatialGainScale`'s doc comment. Every fixture/parity test below
     /// passes `.identity` explicitly; only `SpatialToneProcessor.
     /// processCPUBuffers` (the CPU/software-fallback production path)
-    /// threads through a caller-resolved value.
+    /// threads through a caller-resolved value. `quality` (default `.final`,
+    /// see `SpatialToneQuality`'s doc comment) only ever changes Shadows'
+    /// `nDisc` -- every other constant/formula is identical between the two.
     public static func applyHighlightsShadows(
         rgb: [SIMD3<Double>],
         width: Int,
@@ -1226,7 +1228,8 @@ public enum SpatialToneOps {
         texture: Double = 0,
         clarity: Double = 0,
         gainScale: SpatialGainScale = .identity,
-        shift: SpatialShift = .zero
+        shift: SpatialShift = .zero,
+        quality: SpatialToneQuality = .final
     ) -> [SIMD3<Double>] {
         precondition(rgb.count == width * height, "SpatialToneOps: rgb.count must equal width*height")
         guard highlights != 0 || shadows != 0 || texture != 0 || clarity != 0 else { return rgb }
@@ -1251,7 +1254,7 @@ public enum SpatialToneOps {
             ln = applySingleOpLLF(
                 ln, curve: { interpCurve($0 - sShift, curveTable) },
                 alpha: shadowsParams.alpha, beta: shadowsParams.beta, sigmaR: shadowsParams.sigmaR,
-                levels: levelsS
+                levels: levelsS, nDisc: quality.shadowsDiscretizationCount
             )
         }
         if texture != 0 {
