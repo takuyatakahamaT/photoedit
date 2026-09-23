@@ -46,6 +46,7 @@ int clibraw_shim_decode(const char *path, int halfSize, CLibRawShimResult *outRe
     /// keeps `nativeWidth/nativeHeight` exact regardless of rounding.
     int nativeWidth = raw->sizes.width;
     int nativeHeight = raw->sizes.height;
+    int flip = raw->sizes.flip;
 
     raw->params.output_color = 0;
     raw->params.use_camera_wb = 1;
@@ -108,6 +109,7 @@ int clibraw_shim_decode(const char *path, int halfSize, CLibRawShimResult *outRe
     outResult->nativeWidth = nativeWidth;
     outResult->nativeHeight = nativeHeight;
     outResult->appliedHalfSize = raw->params.half_size ? 1 : 0;
+    outResult->flip = flip;
 
     libraw_dcraw_clear_mem(image);
     libraw_close(raw);

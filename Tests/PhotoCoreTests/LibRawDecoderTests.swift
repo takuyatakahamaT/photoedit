@@ -135,6 +135,49 @@ struct LibRawDecoderTests {
         #expect(decoded.image.extent == CGRect(x: 0, y: 0, width: 3_000, height: 2_000))
     }
 
+    // MARK: - RAW orientation (EXIF/sensor `flip`)
+
+    /// `LibRawDecoder.orientation(forFlip:)`'s own mapping (LibRaw's
+    /// `sizes.flip` -> `CGImagePropertyOrientation`), independent of any
+    /// fixture: 0/3/5/6 are the only values LibRaw/dcraw ever produce, and
+    /// anything else must fall back to `.up` rather than guessing.
+    @Test func mapsLibRawFlipValuesToTheMatchingOrientation() {
+        #expect(LibRawDecoder.orientation(forFlip: 0) == .up)
+        #expect(LibRawDecoder.orientation(forFlip: 3) == .down)
+        #expect(LibRawDecoder.orientation(forFlip: 5) == .left)
+        #expect(LibRawDecoder.orientation(forFlip: 6) == .right)
+        #expect(LibRawDecoder.orientation(forFlip: 1) == .up)
+        #expect(LibRawDecoder.orientation(forFlip: -1) == .up)
+    }
+
+    /// A real portrait RW2 (`exiftool -Orientation` reports EXIF 8 /
+    /// "Rotate 270 CW"; `raw-identify -v` reports `Image flip: 5`): decoding
+    /// must produce the same 4000x6000 canvas Lightroom exports, not
+    /// LibRaw's native sensor-orientation 6000x4000 (the bug being fixed
+    /// here). Personal fixture, so this skips like the others when absent.
+    @Test func decodesPortraitP1581356WithOrientationApplied() throws {
+        let url = projectRoot.appendingPathComponent("exports/lr-measure/round2/extra-raw/P1581356.RW2")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            print("SKIP: P1581356.RW2 がこの環境に無いため、この環境ではスキップします。")
+            return
+        }
+        guard AdobeProfileLocator().locateDCP(uniqueCameraModel: "Panasonic DC-S5") != nil,
+              AdobeProfileLocator().locateAdobeColorLookXMP() != nil
+        else {
+            print("SKIP: Panasonic DC-S5のAdobe DCP/Adobe Color.xmpが見つからないため、この環境ではスキップします。")
+            return
+        }
+
+        let decoded = try LibRawDecoder().decode(url: url)
+        #expect(decoded.info.width == 4_000)
+        #expect(decoded.info.height == 6_000)
+        #expect(decoded.info.nativeWidth == 4_000)
+        #expect(decoded.info.nativeHeight == 6_000)
+        #expect(decoded.info.appliedScaleFactor == 1)
+        #expect(decoded.info.lensCorrection == LibRawDecoder.panasonicLensCorrectionLabel)
+        #expect(decoded.image.extent == CGRect(x: 0, y: 0, width: 4_000, height: 6_000))
+    }
+
     // MARK: - Helpers
 
     private struct PPM16 {

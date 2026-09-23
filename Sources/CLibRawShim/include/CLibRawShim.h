@@ -50,6 +50,13 @@ typedef struct {
     int nativeHeight;
     /// 1 if `half_size` was actually requested for this decode, else 0.
     int appliedHalfSize;
+    /// `raw->sizes.flip`: the rotation needed to display `pixels` (which are
+    /// in the sensor's own native, unrotated orientation) upright, as
+    /// LibRaw/dcraw encode it -- 0 = none, 3 = 180 deg, 5 = 90 deg CCW,
+    /// 6 = 90 deg CW. Captured the same way as `nativeWidth/nativeHeight`
+    /// (an EXIF-derived property of the shot, unaffected by `half_size` or
+    /// any of this shim's other processing params).
+    int flip;
 } CLibRawShimResult;
 
 /// Decodes `path` with the phase1 base-rendering settings (output_color=0,

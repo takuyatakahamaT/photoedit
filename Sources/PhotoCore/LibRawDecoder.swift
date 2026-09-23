@@ -144,11 +144,11 @@ public struct LibRawDecoder: ImageDecoding {
         // own `DistortionCorrection` flag off) decodes exactly as before.
         let scaleFactor: Double = appliedHalfSize ? 0.5 : 1.0
         let distortionInfo = PanasonicRW2Metadata.readDistortionInfo(url: url)
-        let cameraImage: CIImage
-        let correctedWidth: Int
-        let correctedHeight: Int
-        let correctedNativeWidth: Int
-        let correctedNativeHeight: Int
+        var cameraImage: CIImage
+        var correctedWidth: Int
+        var correctedHeight: Int
+        var correctedNativeWidth: Int
+        var correctedNativeHeight: Int
         let lensCorrection: String?
         if let distortionInfo, distortionInfo.correctionEnabled {
             cameraImage = LensDistortion.apply(to: rawCameraImage, info: distortionInfo, scaleFactor: scaleFactor)
@@ -164,6 +164,24 @@ public struct LibRawDecoder: ImageDecoding {
             correctedNativeWidth = nativeWidth > 0 ? nativeWidth : width
             correctedNativeHeight = nativeHeight > 0 ? nativeHeight : height
             lensCorrection = nil
+        }
+
+        // EXIF/camera-sensor orientation (`raw->sizes.flip` via the shim):
+        // independent of, and applied after, the lens-distortion warp above
+        // (that warp is symmetric about the geometric center, so the two
+        // operations commute; rotating last -- still before `makeHandle`,
+        // so `Handle`'s own cached images and everything `RenderEngine`
+        // later builds from `decoded.adobeBase` see the final, correctly
+        // oriented canvas too -- means this code never has to reason about
+        // a rotated center/crop rect). A portrait RW2 (`flip` 5 or 6) swaps
+        // width/height here to match.
+        let orientation = Self.orientation(forFlip: shimResult.flip)
+        if orientation != .up {
+            cameraImage = cameraImage.oriented(orientation)
+            if orientation == .left || orientation == .right {
+                swap(&correctedWidth, &correctedHeight)
+                swap(&correctedNativeWidth, &correctedNativeHeight)
+            }
         }
 
         let handle = AdobeBaseRenderer.makeHandle(
@@ -204,6 +222,45 @@ public struct LibRawDecoder: ImageDecoding {
             ),
             adobeBase: handle
         )
+    }
+
+    /// Maps `CLibRawShimResult.flip` (LibRaw/dcraw's `sizes.flip`: 0 = none,
+    /// 3 = 180 deg, 5 = 90 deg CCW, 6 = 90 deg CW -- see that field's doc
+    /// comment) to the `CGImagePropertyOrientation` describing the same
+    /// correction, verified against a real portrait RW2
+    /// (`exports/lr-measure/round2/extra-raw/P1581356.RW2`: shim
+    /// `flip == 5`, `exiftool -Orientation` reports EXIF orientation 8 /
+    /// "Rotate 270 CW", which is exactly `CGImagePropertyOrientation.left`)
+    /// and empirically against `CIImage.oriented(_:)`'s actual pixel
+    /// movement (an asymmetric single-pixel marker confirms `.left`/`.right`
+    /// rotate the content 90 deg CCW/CW respectively, matching
+    /// `CGImageProperties.h`'s own "- 90 deg CCW"/"- 90 deg CW" comments on
+    /// those cases). Any other raw value (never observed; LibRaw does not
+    /// formally restrict the field to just these four) falls back to `.up`
+    /// (no rotation) rather than guessing.
+    static func orientation(forFlip flip: Int32) -> CGImagePropertyOrientation {
+        // LibRaw's `sizes.flip` mirrors the EXIF orientation dcraw would apply
+        // to make the image upright: 3 = 180°, 5 = EXIF 8 (rotate 270° CW, i.e.
+        // 90° CCW to correct), 6 = EXIF 6 (rotate 90° CW to correct). Mapping
+        // to the matching `CGImagePropertyOrientation` (.left = 8, .right = 6)
+        // lets `CIImage.oriented` undo it. Verified against the camera's own
+        // `CameraOrientation: Rotate CCW` tag on P1581356 (flip 5 -> .left).
+        // NOTE: Lightroom's exports of the two portrait RW2s in round2
+        // (P1581356 / P1581368) match none of the 8 orientations of our
+        // render (mean ΔE00 >= 20 for every one), so they are not usable as
+        // geometry references; the app follows EXIF here.
+        // `PHOTO_BENCH_ORIENTATION_OVERRIDE=<1-8>` forces an orientation for
+        // experiments only.
+        if let raw = ProcessInfo.processInfo.environment["PHOTO_BENCH_ORIENTATION_OVERRIDE"],
+           let value = UInt32(raw), let forced = CGImagePropertyOrientation(rawValue: value) {
+            return forced
+        }
+        switch flip {
+        case 3: return .down
+        case 5: return .left
+        case 6: return .right
+        default: return .up
+        }
     }
 
     private static func wantsHalfSize(intent: ImageDecodeIntent) -> Bool {
