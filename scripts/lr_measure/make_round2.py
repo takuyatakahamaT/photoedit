@@ -187,17 +187,30 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="LR計測round2の教師データ入力セットを生成する")
     parser.add_argument("--extra-raw-dir", type=Path, default=None, help="追加RAW(*.RW2)を置いたフォルダ")
     parser.add_argument("--dry-run", action="store_true", help="ファイルを書かず件数だけ確認する")
+    parser.add_argument(
+        "--out-name", default="round2-photos",
+        help="出力フォルダ名（exports/lr-measure/round2/ 配下）。追加分を別フォルダに出すときに変える（例: round2-extra-photos）",
+    )
+    parser.add_argument(
+        "--only-extra", action="store_true",
+        help="--extra-raw-dir の scene だけを生成する（既存 6 scene を出し直さない）",
+    )
     args = parser.parse_args()
 
+    global PHOTOS
+    PHOTOS = ROUND / args.out_name
     scenes = collect_scenes(args.extra_raw_dir)
+    if args.only_extra:
+        keep = set(scenes) - set(CORE_SCENES) - set(NEW_SCENES)
+        scenes = {k: v for k, v in scenes.items() if k in keep}
     plan = build_plan(scenes)
 
     if args.dry_run:
         summarize(plan, scenes)
         return
 
-    if ROUND.exists() and any(ROUND.iterdir()):
-        raise SystemExit(f"{ROUND} が空でない。上書きしないので中止する（別名にするか中身を消してから再実行）。")
+    if PHOTOS.exists() and any(PHOTOS.iterdir()):
+        raise SystemExit(f"{PHOTOS} が空でない。上書きしないので中止する（--out-name を変えるか中身を消してから再実行）。")
     PHOTOS.mkdir(parents=True, exist_ok=True)
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -218,7 +231,8 @@ def main() -> None:
             "special": None,
         })
 
-    (ROUND / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest_path = ROUND / ("manifest.json" if args.out_name == "round2-photos" else f"manifest-{args.out_name}.json")
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     summarize(plan, scenes)
     print(f"-> {PHOTOS}")
 
