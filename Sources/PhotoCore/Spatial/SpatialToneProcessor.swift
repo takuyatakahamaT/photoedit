@@ -45,10 +45,10 @@ import Metal
 /// recomputations for one `apply()` call, observed as `process(with:...)`
 /// called dozens of times and multi-minute renders on a full-resolution
 /// photo. Neither fix is usable, so this type does its own single, explicit
-/// GPU round trip instead: `CIContext.render(_:to:MTLTexture:commandBuffer:
-/// bounds:colorSpace:)` renders the whole input into one texture exactly
-/// once, this file's own compute dispatches run on that texture in the same
-/// command buffer, and the result is wrapped back into a `CIImage` with
+/// GPU round trip instead: Core Image renders the whole input into one
+/// texture exactly once (a `CIRenderDestination` task that `renderInput`
+/// waits on), this file's own compute dispatches then run on that texture in
+/// their own command buffer, and the result is wrapped back into a `CIImage` with
 /// `CIImage(mtlTexture:options:)` -- no custom kernel, no `roi`, no tiling
 /// decision for Core Image to make about this stage at all.
 ///
@@ -100,6 +100,9 @@ public enum SpatialToneProcessor {
     /// profile the owner-reported "apply() is ~200-350ms and barely moves
     /// with resolution" sluggishness -- dispatch *count* (not per-pixel
     /// work) was the suspected dominant cost; this is how that was measured.
+    /// Since 2026-09-24 the input materialization (`renderInput`) completes
+    /// before this command buffer is created, so the breakdown's encode /
+    /// wait / GPU figures exclude it; `=1`'s per-call total still includes it.
     private static let verboseDiagnosticsEnabled = ProcessInfo.processInfo.environment["PHOTO_BENCH_SPATIAL_DIAG"] == "2"
 
     private static let diagnosticsLock = NSLock()
@@ -176,9 +179,9 @@ public enum SpatialToneProcessor {
         )
     }
 
-    // MARK: - GPU path: one explicit command buffer, no custom kernel
+    // MARK: - GPU path: one explicit input render, one compute command buffer, no custom kernel
 
-    /// Vertical orientation between `CIContext.render(_:to:MTLTexture:...)`
+    /// Vertical orientation between `renderInput`'s `CIRenderDestination`
     /// (write) and `CIImage(mtlTexture:options:)` (read) -- verified by
     /// `SpatialToneOpsTests.gpuRoundTripPreservesVerticalOrientation` with a
     /// top-bright/bottom-dark asymmetric fixture run through an identity
@@ -202,18 +205,15 @@ public enum SpatialToneProcessor {
         let width = Int(extent.width)
         let height = Int(extent.height)
 
-        guard let commandBuffer = resources.commandQueue.makeCommandBuffer() else {
-            throw ProcessorError.commandBufferCreationFailed
-        }
-        commandBuffer.label = "SpatialToneProcessor.apply"
-
         let allocator = TextureAllocator(device: device)
         // The single explicit GPU round trip: render the whole (possibly
-        // cube-chained) input CIImage graph into one texture, once, in this
-        // same command buffer. `.shaderWrite` is required here even though
-        // this file never itself writes to `inputTexture` via compute --
-        // without it, `CIContext.render(to:MTLTexture:)` silently leaves the
-        // texture untouched (no thrown error, no `commandBuffer.error`; it
+        // cube-chained) input CIImage graph into one texture, once, and only
+        // then encode this file's own compute work (see `renderInput` for
+        // why the two no longer share a command buffer). `.shaderWrite` is
+        // required here even though this file never itself writes to
+        // `inputTexture` via compute -- without it, Core Image's texture
+        // render (observed with the earlier `CIContext.render(to:MTLTexture:)`
+        // call) silently leaves the texture untouched (no thrown error, no `commandBuffer.error`; it
         // just never actually renders), because Core Image's own internal
         // Metal pipeline apparently needs compute-shader write access to its
         // destination for at least part of what it does. Found by a minimal
@@ -228,18 +228,12 @@ public enum SpatialToneProcessor {
             device: device, width: width, height: height, format: .rgba32Float,
             usage: [.shaderRead, .shaderWrite, .renderTarget]
         ))
-        // `CIContext.render(_:to:MTLTexture:...)` requires a concrete
-        // `CGColorSpace` (unlike the `toBitmap:` variant, there is no `nil`/
-        // "no color management" overload for a texture destination).
-        // `.extendedLinearSRGB` is this codebase's established "generic
-        // wide-range linear container, no gamut conversion intended" tag
-        // (matching `RenderEngine`'s own `.workingColorSpace` and
-        // `PhotoBenchRender`'s stage-debug TIFF dump) -- verified numerically
-        // unchanged by `SpatialToneOpsTests`' fixture/GPU-parity tests.
-        resources.ciContext.render(
-            image, to: inputTexture, commandBuffer: commandBuffer, bounds: extent, colorSpace: resources.numericPassthroughColorSpace
-        )
+        try renderInput(image, into: inputTexture, bounds: extent, resources: resources)
 
+        guard let commandBuffer = resources.commandQueue.makeCommandBuffer() else {
+            throw ProcessorError.commandBufferCreationFailed
+        }
+        commandBuffer.label = "SpatialToneProcessor.apply"
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
             throw ProcessorError.commandBufferCreationFailed
         }
@@ -337,6 +331,48 @@ public enum SpatialToneProcessor {
             output = output.transformed(by: CGAffineTransform(translationX: extent.origin.x, y: extent.origin.y))
         }
         return output
+    }
+
+    /// Materializes `image` into `texture` and returns only once Core Image
+    /// reports the *whole* render complete.
+    ///
+    /// This deliberately does not use `CIContext.render(_:to:MTLTexture:
+    /// commandBuffer:bounds:colorSpace:)` with this file's own command
+    /// buffer. For a large CPU-backed input (an ImageIO raster such as a
+    /// 6000x4000 16-bit TIFF, lazily decoded via `CIImage(contentsOf:)`),
+    /// that call intermittently left later 1024-px tiles of the destination
+    /// as transparent black (RGBA 0) by the time the compute work encoded
+    /// after it in the same command buffer ran: the two calibration runs on
+    /// 2026-09-24 lost 7 and 5 of 118 renders that way (`CALIBRATION.md`),
+    /// always on the LR-input route and never on the GPU-native
+    /// `CIRAWFilter` route, and in a replay of that sequence the input
+    /// texture's zero-alpha fraction matched the exported TIFF's transparent
+    /// fraction exactly. Rendering through a
+    /// `CIRenderDestination` with Core Image's own command buffer and
+    /// waiting on the returned task leaves Core Image in charge of every
+    /// dependency its tiled upload needs; the compute work is encoded into
+    /// a separate command buffer afterwards.
+    ///
+    /// The destination settings mirror the previous call: a concrete
+    /// `CGColorSpace` is still required for a texture destination, and
+    /// `.extendedLinearSRGB` is this codebase's established "generic
+    /// wide-range linear container, no gamut conversion intended" tag
+    /// (matching `RenderEngine`'s own `.workingColorSpace` and
+    /// `PhotoBenchRender`'s stage-debug TIFF dump) -- verified numerically
+    /// unchanged by `SpatialToneOpsTests`' fixture/GPU-parity tests. Values
+    /// stay unclamped and premultiplied like the old call's: an A/B
+    /// calibration run with only this change kept the 117 artifacts the old
+    /// call had rendered intact byte-identical and repaired exactly the 5 it
+    /// had lost.
+    private static func renderInput(
+        _ image: CIImage, into texture: MTLTexture, bounds: CGRect, resources: MetalResources
+    ) throws {
+        let destination = CIRenderDestination(mtlTexture: texture, commandBuffer: nil)
+        destination.colorSpace = resources.numericPassthroughColorSpace
+        destination.alphaMode = .premultiplied
+        destination.isClamped = false
+        let task = try resources.ciContext.startTask(toRender: image, from: bounds, to: destination, at: .zero)
+        _ = try task.waitUntilCompleted()
     }
 
     /// `SpatialToneOps.applySingleOpLLF`'s GPU counterpart: identical
@@ -929,10 +965,9 @@ public enum SpatialToneProcessor {
     private final class MetalResources {
         let device: MTLDevice
         let commandQueue: MTLCommandQueue
-        /// Dedicated to this file's one `CIContext.render(_:to:MTLTexture:
-        /// commandBuffer:bounds:colorSpace:)` call -- `.cacheIntermediates:
-        /// false` since each render is a one-shot materialization, never
-        /// revisited.
+        /// Dedicated to this file's one input materialization
+        /// (`renderInput`) -- `.cacheIntermediates: false` since each render
+        /// is a one-shot materialization, never revisited.
         let ciContext: CIContext
         let numericPassthroughColorSpace: CGColorSpace
         private let pipelineStates: [String: MTLComputePipelineState]
