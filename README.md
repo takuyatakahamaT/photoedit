@@ -125,6 +125,25 @@ process-freshは新しいworker processですが、timer前のmanifest検証がR
 - RAW固有のMakerNote等はレンダリング済みJPEGへコピーしません。
 - 現在の開発用ルートはこのフォルダです。完成時はユーザーが選んだ外付けSSD上の写真フォルダを復元できる設計です。
 
+## 重い処理は Mac Studio で行う
+
+Mac mini（16GB）はアプリの利用と日常の編集に使い、次の重い処理は Mac Studio（64GB）で行います。Mac mini では、原寸の描画、`swift test`、release ビルド、numpy の原寸比較が重なると、メモリが逼迫して watchdog で再起動したことがあります。
+
+- 全体の `swift test`、release ビルド、`photobench-render` による原寸の描画
+- 実写ゲート（`scripts/lr_measure/`）と、原寸画像の比較・計測
+- 校正の正式 run と WB 観測。校正機は Mac Studio に固定しています（[CALIBRATION.md](./CALIBRATION.md)）
+
+開発中のソースは `scripts/studio/studio-run.sh` で Studio へ送って実行し、結果だけを取り込みます。
+
+```sh
+scripts/studio/studio-run.sh sync
+scripts/studio/studio-run.sh run swift test
+scripts/studio/studio-run.sh run swift build -c release --product photobench-render
+scripts/studio/studio-run.sh fetch <結果の相対パス>
+```
+
+Mac mini で動かすのは、アプリそのものと、`swift test --filter PhotoCoreTests --jobs 2` のように対象を絞った軽い確認だけにします。重い処理を 2 つ以上同時に走らせないでください。
+
 ## 検証
 
 ```sh
@@ -135,9 +154,9 @@ python3 scripts/lr_measure/run_gate.py --render-binary .build/release/photobench
 python3 scripts/lr_measure/compare_renders.py --reference <LR 参照ディレクトリ> --renders <描画ディレクトリ> --no-align
 ```
 
-2026-09-23 時点で `PhotoCoreTests` は **128 件全成功**（Mac mini と Mac Studio の両方）。空間処理は Python 参照実装との fixture 照合（相対誤差 0.0）と GPU／CPU の一致（最大 OKLab 距離 0.004）、レンズ補正は Python オラクルとの照合（< 1e-3 px）を含みます。全体の `swift test` は 2026-09-24 に Mac Studio で 204 件全成功しました。校正 manifest は校正機の Mac Studio に固定しているため、Mac mini では manifest を読み込むテストが実行環境不一致で失敗します（設計どおり）。
+2026-09-23 時点で `PhotoCoreTests` は **128 件全成功**（Mac mini と Mac Studio の両方）。空間処理は Python 参照実装との fixture 照合（相対誤差 0.0）と GPU／CPU の一致（最大 OKLab 距離 0.004）、レンズ補正は Python オラクルとの照合（< 1e-3 px）を含みます。全体の `swift test` は 2026-09-24 に Mac Studio で 206 件全成功しました。校正 manifest は校正機の Mac Studio に固定しているため、Mac mini では manifest を読み込むテストが実行環境不一致で失敗します（設計どおり）。
 
-実写ゲート（Lightroom 書き出し比、30×20 領域平均 ΔE00、Mac Studio で実行）の到達値は `docs/ENGINE_ROADMAP.md` の各フェーズの結果節を正とします。2026-07-24 の formal 校正・性能結果（`CALIBRATION.md`、`BENCHMARK.md`）は履歴として維持し、今回のエンジンの合格証拠には流用しません。
+上のコマンドのうち release ビルドと実写ゲートは、前節のとおり Mac Studio で実行します。実写ゲート（Lightroom 書き出し比、30×20 領域平均 ΔE00）の到達値は `docs/ENGINE_ROADMAP.md` の各フェーズの結果節を正とします。2026-07-24 の formal 校正・性能結果（`CALIBRATION.md`、`BENCHMARK.md`）は履歴として維持し、今回のエンジンの合格証拠には流用しません。
 
 ## 文書
 

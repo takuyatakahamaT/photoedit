@@ -6,8 +6,8 @@
 
 機械可読な正本は、Mac Studioの`~/Documents/app/photo-edit-app-calibration/`配下にある次の2ファイルである（Git管理外）。2026-07-24のMac mini run `51ba2f46-185d-4b87-8345-407d380214cd`は、Mac miniの`.photobench/white-balance-observations/`に履歴として残る。
 
-- `.photobench/white-balance-observations/50a6b2d3-0cce-4fb4-ac72-f627f1ab0b48/run.json`
-- `.photobench/white-balance-observations/50a6b2d3-0cce-4fb4-ac72-f627f1ab0b48/analysis.json`
+- `.photobench/white-balance-observations/4fb4cf01-059f-4193-ac7e-504b654b6853/run.json`
+- `.photobench/white-balance-observations/4fb4cf01-059f-4193-ac7e-504b654b6853/analysis.json`
 
 ## 1. この観測の目的
 
@@ -65,13 +65,13 @@ setter順序は`temperature → tint`を主経路、`tint → temperature`を比
 
 ## 5. 正式証跡
 
-2026-09-24に、校正manifest v4の再固定（処理fingerprint・source一覧・校正機）に合わせて、WB観測manifestのbase hash・source一覧・実行環境を更新し、Mac Studioで再実行した。同日、`ColorOps` v2で校正manifestが変わったため再度実行し、校正runnerのsource変更後にもう一度実行した。40 artifactは直前のrun `f5937ec6…`とバイト一致し、値は`efed3014…`とも同一である。
+2026-09-24に、校正manifest v4の再固定（処理fingerprint・source一覧・校正機）に合わせて、WB観測manifestのbase hash・source一覧・実行環境を更新し、Mac Studioで再実行した。同日、`ColorOps` v2で校正manifestが変わったため再度実行し、校正runnerと空間処理のsource変更後にもそれぞれ実行した。40 artifactは同日の前回までのrunとバイト一致し、値は`efed3014…`とも同一である。
 
 - suite: `dc-s5-lightroom-9.3-white-balance-observation-2026-07-24-v1`
-- run ID: `50a6b2d3-0cce-4fb4-ac72-f627f1ab0b48`
+- run ID: `4fb4cf01-059f-4193-ac7e-504b654b6853`
 - manifest SHA-256: `e0b6735ea9ec7f9fb3cd86e6b71bfd7647d73fc1d37378c0087543bc1261c396`
-- source fingerprint: `3b2651fe313ae1228332c185f61a31dc774778f659a5d9087f0be0e69431a79e`
-- release executable SHA-256: `310575e8dbbdf78029cb28b4d75fb9d57a3bd3ba6ecf9b544615fe563c709294`
+- source fingerprint: `ec3af3440d5129a5f0e8cdf8cc260b3691d928155fa8f3538ff7c9c83b3f5178`
+- release executable SHA-256: `ad4af4c88f229df896b390489187e841a7c191fe53731c4962264f7ba952160f`
 - ExifTool: `13.55`（Homebrew）
 - runtime: macOS `26.5.2` build `25F84`、`Mac13,1`、Apple M1 Max、arm64、release
 - 検証対象: 44 source、40 / 40 artifact、2 development scene、0 holdout
@@ -112,12 +112,12 @@ setter順序の比較は両シーンでbyte exactだった。
 
 ## 7. 校正v4との関係
 
-WB観測manifestは、正式校正v4の入力・scene順・処理契約をbyte exactに継承する。2026-09-24の再固定後、Mac Studioで校正を4回実行した。詳細は[`CALIBRATION.md`](../CALIBRATION.md)にまとめる。
+WB観測manifestは、正式校正v4の入力・scene順・処理契約をbyte exactに継承する。2026-09-24の再固定後、Mac Studioで校正を5回実行した。詳細は[`CALIBRATION.md`](../CALIBRATION.md)にまとめる。
 
-- calibration run ID（正本）: `1834cedc-bbdf-4ae6-b248-0387df5ee8e3`
+- calibration run ID（正本）: `012d7d73-9157-4f93-9562-3fb7e25d8dc3`
 - manifest SHA-256: `1e7742ff99d6d6e8375629d5a7700159803f55816d96bffa54ce84fc786fd905`
-- source fingerprint: `db71a2229bde3a41f8eb3af17c5cb7da35d4421e921cf28090e49a9314707127`
-- release executable SHA-256: `62d9fb1820618361b34e52d5860594283ed6011414ba7159c6529e00768efb12`
+- source fingerprint: `fb79f313aa642ad91cd03de9ae3f42bf82f83496d455be13127020907f139eb4`
+- release executable SHA-256: `7a59d6a60bf017a9e63f13f168f2b5fbcdc34106ee32e3fa15a92e26bbf852fb`
 - 7 inputs、42 source、122 / 122 artifact verified
 
 Lightroom品質は4経路とも、canonical settleは2シーンとも合格した。一方、preview parityは3,072px / 3,840pxともeligible candidateがない。LR-input経路の非決定的な描画欠損は修正済みである。WB観測の構造合格は、これらの既知不合格を解消しない。

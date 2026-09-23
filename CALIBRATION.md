@@ -4,7 +4,7 @@
 対象プロファイル: `panasonic-dc-s5-lightroom-9.3-edr1-v2`
 校正機: Mac Studio（`Mac13,1` / Apple M1 Max / macOS `26.5.2` build `25F84`）
 
-状態: manifest v4を現行PhotoCore契約（Highlights / Shadowsの`SpatialToneOps`、HSL等の`ColorOps` v2）と校正機Mac Studioへ固定し、正式runを4回実行した。4回とも7入力・42 source・122 / 122 artifactの構造・hash・provenance検証に合格した。正本の4回目は、Lightroom品質ゲートが4 / 4経路、canonical settleが2 / 2 sceneで合格し、preview parityは3,072px・3,840pxとも1 / 6比較が不合格で不採用のままである。1回目と2回目で見つかった非決定的な描画欠損（Lightroom書き出し前TIFF入力で、下側の256pxタイル行が透明な黒になる）は修正し、3回目以降の118描画に透明画素はない。4回目はrunnerのGPUメモリ解放だけを直したrunで、成果物は3回目とすべてバイト一致した。このsuiteのRAW経路はCore Image RAW 8で現像しており、アプリのRAW基準現像（LibRaw + Adobe DCP）を通らない。したがって総合画質は未合格であり、Lightroom相当を主張しない。
+状態: manifest v4を現行PhotoCore契約（Highlights / Shadowsの`SpatialToneOps`、HSL等の`ColorOps` v2）と校正機Mac Studioへ固定し、正式runを5回実行した。5回とも7入力・42 source・122 / 122 artifactの構造・hash・provenance検証に合格した。正本の5回目は、Lightroom品質ゲートが4 / 4経路、canonical settleが2 / 2 sceneで合格し、preview parityは3,072px・3,840pxとも1 / 6比較が不合格で不採用のままである。1回目と2回目で見つかった非決定的な描画欠損（Lightroom書き出し前TIFF入力で、下側の256pxタイル行が透明な黒になる）は修正し、3回目以降の118描画に透明画素はない。4回目はrunnerのGPUメモリ解放を、5回目は空間処理の中間テクスチャの使い回しを直したrunで、成果物はどちらも3回目とすべてバイト一致した。このsuiteのRAW経路はCore Image RAW 8で現像しており、アプリのRAW基準現像（LibRaw + Adobe DCP）を通らない。したがって総合画質は未合格であり、Lightroom相当を主張しない。
 
 機械可読な正本は、Mac Studioの`~/Documents/app/photo-edit-app-calibration/.photobench/calibration/run-manifest.json`と`report.json`である（Git管理外）。本書の丸め値と差がある場合はJSONを優先する。2026-07-24に旧エンジンで測った正式runは、末尾の履歴節に残す。
 
@@ -36,18 +36,19 @@ Lightroom適用後の16bit sRGB参照TIFFと、同じシーンのRAW / Lightroom
 
 - suite: `dc-s5-lightroom-9.3-canonical-settle-2026-07-24-v4`
 - manifest SHA-256: `1e7742ff99d6d6e8375629d5a7700159803f55816d96bffa54ce84fc786fd905`（1回目と2回目は`1ce9fec6…`）
-- calibration release executable SHA-256: `62d9fb1820618361b34e52d5860594283ed6011414ba7159c6529e00768efb12`（3回目は`278fb2f5…`、1回目と2回目は同じbinary `0d00b5c3…`）
+- calibration release executable SHA-256: `7a59d6a60bf017a9e63f13f168f2b5fbcdc34106ee32e3fa15a92e26bbf852fb`（4回目は`62d9fb18…`、3回目は`278fb2f5…`、1回目と2回目は同じbinary `0d00b5c3…`）
 - runtime: macOS `26.5.2` build `25F84`、`Mac13,1`、Apple M1 Max、arm64、Core Image `1592.120.2`、release
 - schema: manifest `4` / calibration run manifest `2` / analyzer report `5`
 - 検証対象: 7入力、42 source、122 / 122 artifact
-- 4回目（正本）: run `1834cedc-bbdf-4ae6-b248-0387df5ee8e3`、source commit `f3cb364`、source fingerprint `db71a2229bde3a41f8eb3af17c5cb7da35d4421e921cf28090e49a9314707127`。122 artifactすべてが3回目とバイト一致した。
+- 5回目（正本）: run `012d7d73-9157-4f93-9562-3fb7e25d8dc3`、source commit `d9c0e8e`、source fingerprint `fb79f313aa642ad91cd03de9ae3f42bf82f83496d455be13127020907f139eb4`。122 artifactすべてが4回目とバイト一致した。
+- 4回目: run `1834cedc-bbdf-4ae6-b248-0387df5ee8e3`、source commit `f3cb364`、source fingerprint `db71a2229bde3a41f8eb3af17c5cb7da35d4421e921cf28090e49a9314707127`。122 artifactすべてが3回目とバイト一致した。`.photobench/calibration-archives/1834cedc-bbdf-4ae6-b248-0387df5ee8e3/`へ退避済み。
 - 3回目: run `52fdf05a-6edd-4ee4-85d6-9ce0d31cacd8`、source commit `5aab700`、source fingerprint `dfdad5c47196455457236f8b758ede18d57436365a35630939df1eaed0b8b8a5`。`.photobench/calibration-archives/52fdf05a-6edd-4ee4-85d6-9ce0d31cacd8/`へ退避済み。
 - 2回目: run `e8d7318b-dc35-439c-af7d-b5a498b9e827`、source commit `8ee1648`、source fingerprint `2729638deb32cbdd86272fae5515c744c4daae059e2b111585b0715b2f827525`。`.photobench/calibration-archives/e8d7318b-dc35-439c-af7d-b5a498b9e827/`へ退避済み。
 - 1回目: run `529e6d88-6c9a-4222-8c3e-2686001a7267`、source commit `ffad370`、source fingerprint `29afe6806b9859490def788d1b49dfe5885b0c86793132f0ed51d137124b0e47`。`.photobench/calibration-archives/529e6d88-6c9a-4222-8c3e-2686001a7267/`へ退避済みで、118描画のSHA-256はrun manifestと一致する。
 
-1回目と2回目のsourceの差はアプリの`EditorModel.swift`だけで、runner binaryには含まれない。3回目は`ColorOps` v2と描画欠損の修正を含み、4回目はrunnerの描画ループを1 artifactごとに`autoreleasepool`で囲んだ。analyzerは`--enforce --enforce-preview-parity --enforce-canonical-settle`で4回ともexit `1`だった。
+1回目と2回目のsourceの差はアプリの`EditorModel.swift`だけで、runner binaryには含まれない。3回目は`ColorOps` v2と描画欠損の修正を含み、4回目はrunnerの描画ループを1 artifactごとに`autoreleasepool`で囲み、5回目は空間処理が1回の処理の中で中間テクスチャを使い回すようにした。analyzerは`--enforce --enforce-preview-parity --enforce-canonical-settle`で5回ともexit `1`だった。構造検証は合格し、数値不合格はpreview parityだけである。
 
-4回目から、runnerは各artifactの行にMetalの割り当て量（`currentAllocatedSize`）を出す。4回目は最大16,471 MB、最後16,215 MBで横ばいだった。同じmanifestと入力で`autoreleasepool`を入れる前のrunnerを回すと、最後の値は43,858 MBまで増え続けた。構造検証は合格し、数値不合格はpreview parityだけである。
+4回目から、runnerは各artifactの行にMetalの割り当て量（`currentAllocatedSize`）を出す。4回目は最大16,471 MB、最後16,215 MBで横ばいだった。同じmanifestと入力で`autoreleasepool`を入れる前のrunnerを回すと、最後の値は43,858 MBまで増え続けた。5回目は空間処理の使い回しにより、最大5,098 MB、最後4,969 MBになった。
 
 runnerは開始前後の入力・source・binaryと、artifactのpath・stage・byte count・SHA-256を照合する。analyzerはrun manifest記載の122 artifactだけを正本として再検証する。path traversal、symlink、case-only alias、成果物名衝突、欠測、未知stage、hash・runtime・処理fingerprint不一致は品質評価前にexit `2`、正しく測れた数値不合格はexit `1`とし、欠測を合格へ倒さない。
 
@@ -81,7 +82,7 @@ terminal transformは最大channel基準の比率保持shoulderと、OKLChのL /
 - complete / near clip: `full <= basic`
 - 新規共有highlight plateau面積: `<= 0.0005`
 
-4回目（正本）の結果は次のとおりである。成果物は3回目とバイト一致しているので、値も3回目と同じである。
+5回目（正本）の結果は次のとおりである。成果物は3回目・4回目とバイト一致しているので、値も3回目と同じである。
 
 | シーン / 経路 | 平均ΔE00 basic → full | 平均EV差 basic → full | 新規共有plateau | 判定 |
 |---|---:|---:|---:|---|
@@ -100,7 +101,7 @@ terminal transformは最大channel基準の比率保持shoulderと、OKLChのL /
 
 ## Canonical settle v4
 
-canonical settleは、full-resolution RAWを同じv4 production graphで`basic-legacy`と`full-current`へ通し、最終2,560pxに縮小した後の整数clip countと共有plateauを比較する。4回目（3回目と同値）の結果は次のとおりである。1回目と2回目もclipは`0 → 0`で合格だった。
+canonical settleは、full-resolution RAWを同じv4 production graphで`basic-legacy`と`full-current`へ通し、最終2,560pxに縮小した後の整数clip countと共有plateauを比較する。5回目（3回目と同値）の結果は次のとおりである。1回目と2回目もclipは`0 → 0`で合格だった。
 
 | scene | complete clip pixels basic → full | near clip pixels basic → full | 新規共有plateau面積 | 上限 | 判定 |
 |---|---:|---:|---:|---:|---|
@@ -132,7 +133,7 @@ full-resolution、3,072px、3,840px RAW decodeを`neutral`、`basic-legacy`、`f
 - 正のplateau純面積増加 `<= 0.0001`
 - 参照plateauのsquare-3x3、1px dilation外に生じる新規plateau面積 `<= 0.0001`
 
-4回目（3回目と同値）の結果は次のとおりである。1回目と2回目も不合格は各1 / 6で、同じ比較だった。
+5回目（3回目と同値）の結果は次のとおりである。1回目と2回目も不合格は各1 / 6で、同じ比較だった。
 
 | decode → final | 最大平均ΔE00 | 最大ぼかしΔE00 p95 | 最大絶対EV | 最大plateau純増 | 最大dilation外面積 | 不合格 | 採否 |
 |---:|---:|---:|---:|---:|---:|---:|---|
@@ -169,17 +170,17 @@ LR-input経路の描画で、下側の256pxタイル行が丸ごとRGBA `0`（�
 製品へ接続する前段として、As Shotは既存production decoder delegateへ委ねて一切設定せず、custom Temperature / Tintだけをfresh Core Image RAW 8 filterで観測する独立suiteを追加した。正本、候補集合、代表値、制約、次の受け入れ条件は[`docs/WHITE_BALANCE_OBSERVATION.md`](docs/WHITE_BALANCE_OBSERVATION.md)にまとめる。2026-09-24に校正manifestの再固定と`ColorOps` v2へ追従させ、Mac Studioで再実行した。
 
 - suite: `dc-s5-lightroom-9.3-white-balance-observation-2026-07-24-v1`
-- run ID: `50a6b2d3-0cce-4fb4-ac72-f627f1ab0b48`
+- run ID: `4fb4cf01-059f-4193-ac7e-504b654b6853`
 - manifest SHA-256: `e0b6735ea9ec7f9fb3cd86e6b71bfd7647d73fc1d37378c0087543bc1261c396`
-- source fingerprint: `3b2651fe313ae1228332c185f61a31dc774778f659a5d9087f0be0e69431a79e`
-- release executable SHA-256: `310575e8dbbdf78029cb28b4d75fb9d57a3bd3ba6ecf9b544615fe563c709294`
+- source fingerprint: `ec3af3440d5129a5f0e8cdf8cc260b3691d928155fa8f3538ff7c9c83b3f5178`
+- release executable SHA-256: `ad4af4c88f229df896b390489187e841a7c191fe53731c4962264f7ba952160f`
 - ExifTool: `13.55`（Homebrew）
 - 2 development scene、0 holdout、各18候補、44 source、40 / 40 artifact
 - validation: `passed`
 - adoption status: `exploratory-observation-only`
 - production adoption allowed: `false`
 
-P1524180のCore Image As Shotは固定Lightroom参照に対してmean ΔE00 `3.6660254`、EV `+0.1050280`、P1522877は`2.1292410`、`+0.0294952`だった。fresh filterの中心Temperature / Tintを書き戻したcustom centerとAs Shotの差は、それぞれmean ΔE00 `0.0001513` / `0.0003225`と小さいがbyte exactではない。setter順序比較は両sceneでbyte exactだった。40 artifactは同日の前回run `f5937ec6…`とバイト一致し、値は`efed3014…`とも同一で、7月のMac mini runとの差は各値とも`3e-6`未満である。
+P1524180のCore Image As Shotは固定Lightroom参照に対してmean ΔE00 `3.6660254`、EV `+0.1050280`、P1522877は`2.1292410`、`+0.0294952`だった。fresh filterの中心Temperature / Tintを書き戻したcustom centerとAs Shotの差は、それぞれmean ΔE00 `0.0001513` / `0.0003225`と小さいがbyte exactではない。setter順序比較は両sceneでbyte exactだった。40 artifactは同日の前回までのrun `f5937ec6…`、`50a6b2d3…`とバイト一致し、値は`efed3014…`とも同一で、7月のMac mini runとの差は各値とも`3e-6`未満である。
 
 これは記述的な2scene観測であり、候補の順位付け、Adobe値からApple値への写像、未知sceneへの一般化、またはproduction WBの採用を意味しない。Lightroom側のTemperature / Tint教師sweep、灰色基準と領域別評価、5〜10以上のdevelopment scene、最低2 sealed holdout、preview / export / persistence / Undoへの同一intent接続が先に必要である。
 
@@ -191,7 +192,7 @@ DC-S5ではEDR 1がEDR 2の`> 1`領域の約96.3% / 93.8%を保持しつつ最�
 
 ## 未完了と次の品質作業
 
-- 空間処理のテクスチャpoolは、画像サイズごとのバケットを解放しない。そのため正式runのMetal割り当ては約16GBで横ばいになり、16GBのMac miniではこれだけで足りない。上限の導入を別作業として切り出した。
+- 空間処理の中間は32bit floatのままで、24MPでは1回に約1.4GBを使う。半精度化や原寸処理のタイル分割でさらに減らせるが、未着手である。
 - 校正runnerのRAW経路は旧土台のCore Image RAW 8である。アプリと同じLibRaw + Adobe DCPへ揃えるか、現行エンジン用の校正suiteを別に定義する。`rawDecode`識別子、`rawProfile`、EDR診断の扱いを含む設計判断が要る。
 - 性能基準（`BENCHMARK.md`）は、旧manifestとMac miniに固定した2026-07-24のrunのままで、再固定後は未実行である。benchmark runnerも同じmanifestを読むため、今後はMac Studioでしか実行できない。
 - Core Image RAW 8のcustom WB観測経路は製品へ接続していない。製品のRAW WBはLibRaw経路の絶対WBである。
@@ -201,9 +202,9 @@ DC-S5ではEDR 1がEDR 2の`> 1`領域の約96.3% / 93.8%を保持しつつ最�
 
 ## 回帰テストと再現コマンド
 
-2026-09-24にcommit `f3cb364`をMac Studioで実行した結果は次のとおりである。
+2026-09-24にcommit `d9c0e8e`をMac Studioで実行した結果は次のとおりである。
 
-- Swift Testing: `204 tests / 22 suites`、全件成功
+- Swift Testing: `206 tests / 23 suites`、全件成功
 - Python calibration analyzer: `61 tests`、全件成功
 - Python WB observation analyzer: `17 tests`、全件成功
 

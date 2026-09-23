@@ -86,10 +86,10 @@
 
 ## 実行環境の注意（2026-09-23）
 
-- 個人 Mac mini（16GB）は、原寸 float パイプラインのレンダー・`swift test`・numpy の原寸比較を並行させると watchdog リセットで再起動する（06:01 と 11:27 に発生）。**実装エージェントは 1 体ずつ直列、重い処理は Mac Studio（64GB）で実行**する。入口は `scripts/studio/studio-run.sh`（sync / sync-data / run / fetch）。Studio 側の前提（libraw・pkgconf・`~/.venvs/photobench`・Lightroom CC のプロファイル資産）は整備済み。
+- 個人 Mac mini（16GB）は、原寸 float パイプラインのレンダー・`swift test`・numpy の原寸比較を並行させると watchdog リセットで再起動する（06:01 と 11:27 に発生）。**実装エージェントは 1 体ずつ直列、重い処理は Mac Studio（64GB）で実行**する。2026-09-24 にオーナーが再指示した。Mac mini 固有の挙動を確かめたいときも、原寸の描画は Mac mini で流さない（README の「重い処理は Mac Studio で行う」節）。入口は `scripts/studio/studio-run.sh`（sync / sync-data / run / fetch）。Studio 側の前提（libraw・pkgconf・`~/.venvs/photobench`・Lightroom CC のプロファイル資産）は整備済み。
 - Studio と mini の中立レンダーは同一の結果（0.93 / 1.15 / 1.24）。
 - 校正 suite（`calibration/manifest-v4.json`）の校正機は、2026-09-24 にオーナー判断で Mac Studio へ変更した。正式 run・benchmark・manifest を読み込むテストは Studio でのみ通り、Mac mini では実行環境不一致で fail-closed する。手順は `CALIBRATION.md`。
-- 校正 runner は描画ループを autoreleasepool で囲んでおらず、正式 run 1 回で Metal の割り当てが 43.9GB まで増えていた（9/23 の Mac mini 再起動の一因とみられる）。2026-09-24 に修正し、約 16GB で横ばいになった（commit `f3cb364`）。残る 16GB は空間処理のテクスチャ pool が画像サイズごとに保持する分で、上限の導入は別作業。
+- 校正 runner は描画ループを autoreleasepool で囲んでおらず、正式 run 1 回で Metal の割り当てが 43.9GB まで増えていた（9/23 の Mac mini 再起動の一因とみられる）。2026-09-24 に修正し、約 16GB で横ばいになった（commit `f3cb364`）。続けて、空間処理が 1 回の処理の中で中間テクスチャを使い回すよう直し、pool も直前の呼び出し分だけを残すようにした（commit `d9c0e8e`）。正式 run の Metal 割り当ては最大 5.1GB になった。`photobench-render` で 24MP の RAW を 3 回処理したときのピークメモリは、Studio で 10.4GB から 3.9GB、Mac mini で 10.0GB から 3.8GB に下がった。Mac mini では、修正前はスワップで apply 1 回に 11〜36 秒かかっていたが、修正後は 0.31〜0.34 秒になった。出力はバイト一致した。
 
 ## 成果物・履歴
 
