@@ -69,19 +69,20 @@
 
 ## オーナーにお願いする作業
 
-0. **再ビルドしたアプリの確認（2026-09-24）**: `dist/Photo Bench.app`（デスクトップのリンク）を開き直す。ad-hoc 署名のため写真フォルダの再選択が必要な場合がある。
+0. **LR 追加書き出し（round5、生成済み、2026-09-24）**: Lightroom「ローカル」で `exports/lr-measure/round5/round5-photos/`（150 枚: RAW 105 枚は APFS クローン＋サイドカー、JPEG 45 枚は設定埋め込み）を開き、全選択 → 書き出し（JPG 100%・フルサイズ・sRGB・出力シャープ OFF・ファイル名そのまま）→ `exports/lr-measure/round5/lr-export/`。10〜15 分。手順は同フォルダの `README.md`。目的: night・colorful に残る差（強い Whites −83 / Blacks +89 / Contrast −43 で自前の彩度が LR より落ちる、JPEG では Whites が暗くなりすぎる）を極端な値の実写で直接測る。あわせて 4 プリセット全体を 5 枚の写真で確認し、Split Toning の Blending と未検証の Calibration スライダーを測る。
+1. **再ビルドしたアプリの確認（2026-09-24）**: `dist/Photo Bench.app`（デスクトップのリンク）を開き直す。ad-hoc 署名のため写真フォルダの再選択が必要な場合がある。
    - night・bluesky2 の色（肌や木の赤み、青空、影の色付き）が Lightroom に近づいたか。
    - スライダーのドラッグ中の更新（開いた直後の 1 回目は遅く、2 回目以降は Studio 実測で 0.08〜0.13 秒。mini での体感を教えてほしい）。
-1. **新 UI の実機確認**（2026-09-23 の `f5a7985`。`scripts/build-app.sh` で `dist/Photo Bench.app` を再ビルドしてから）:
+2. **新 UI の実機確認**（2026-09-23 の `f5a7985`。`scripts/build-app.sh` で `dist/Photo Bench.app` を再ビルドしてから）:
    - RAW を開き、基本補正 > ホワイトバランスの色温度／色かぶり補正が撮影時の値から始まり、動かすと「カスタム」になり、「撮影時」で戻る。
    - トーンカーブ: 空き位置クリックで点追加、ドラッグで移動、枠の外へドラッグして離すと削除、「カーブをリセット」。
    - HSL・カラーグレーディング・キャリブレーションがプレビューに反映され、各セクションの「リセット」がそのセクションだけ戻す。
    - ⌘Z / ⇧⌘Z でスライダー 1 回のドラッグやカーブ操作が 1 回の Undo になる。
    - プリセット適用時に旧「HSL・カーブ近似」トグルが無く、HSL／カーブが常に反映される。JPEG 書き出しにも反映される。
-2. **LR 追加書き出し（round2、生成済み）**。`exports/lr-measure/round2/round2-photos/`（153 枚の RAW クローン＋サイドカー、実容量は増えない）を Lightroom「ローカル」で開き、全選択 → 書き出し（JPG 100%・フルサイズ・sRGB・出力シャープ OFF・ファイル名そのまま）を `exports/lr-measure/round2/lr-export-photos/` へ。所要 10〜15 分、約 1.5〜2 GB。手順は同フォルダの `README.md`。内容: A = ハイライト／シャドウの画像適応（全 6 scene）、B = 複数スライダー合成（3 scene）、C = Texture／Clarity／Dehaze の線形性、D = HSL の青。
+3. **LR 追加書き出し（round2、完了済み）**。`exports/lr-measure/round2/round2-photos/`（153 枚の RAW クローン＋サイドカー、実容量は増えない）を Lightroom「ローカル」で開き、全選択 → 書き出し（JPG 100%・フルサイズ・sRGB・出力シャープ OFF・ファイル名そのまま）を `exports/lr-measure/round2/lr-export-photos/` へ。所要 10〜15 分、約 1.5〜2 GB。手順は同フォルダの `README.md`。内容: A = ハイライト／シャドウの画像適応（全 6 scene）、B = 複数スライダー合成（3 scene）、C = Texture／Clarity／Dehaze の線形性、D = HSL の青。
    - 手持ちの RAW を追加したい場合は、フォルダにまとめて `python3 scripts/lr_measure/make_round2.py --extra-raw-dir <dir>` で再生成できる（暗部の面積が違う写真を 5〜10 枚足せると画像適応の fit が安定する）。
    - 周辺光量用の平坦な被写体（グレーカード・曇天）を同じレンズ・同じ絞りで数枚撮れると、フェーズ4 の周辺光量補正に使える（任意）。
-3. 教師データを作れるのは LR 契約中だけ。round2 の書き出しが済むまで契約を継続する。
+4. 教師データを作れるのは LR 契約中だけ。round5 の書き出しが済むまで契約を継続する。
 
 ## 実行環境の注意（2026-09-23）
 
