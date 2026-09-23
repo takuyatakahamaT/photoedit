@@ -299,13 +299,10 @@ final class EditorModel: ObservableObject {
         } else {
             finishSliderGesture()
             flushPendingEditSave()
-            // Owner-reported preview sluggishness: the drag itself just ran
-            // at `.interactive` quality (`scheduleRender()`'s own check of
-            // `activeSliderGesturePhotoID`, now `nil` again after
-            // `finishSliderGesture()` above) -- re-render once more at
-            // `.final` so the settled result the user is looking at matches
-            // what an export would actually produce.
-            scheduleRender()
+            // No extra `.final` re-render here: the preview always uses
+            // `.interactive` quality (its difference from `.final` is mean
+            // ΔE00 0.03〜0.08, below perception), and the owner reported the
+            // post-release re-render as a ~0.7s lag. Exports still use `.final`.
         }
     }
 
@@ -501,13 +498,13 @@ final class EditorModel: ObservableObject {
         let revision = renderRevision
         let capturedSettings = renderSettings
         let coordinator = renderCoordinator
-        // Owner-reported preview sluggishness (RAW Shadows/Highlights felt
-        // laggy while dragging, even though the measured *effect size*
-        // already matches Lightroom): render at cheaper `.interactive`
-        // quality while a slider drag is in flight, `.final` otherwise --
-        // `sliderEditingChanged(false)` schedules one more `.final` render
-        // once the drag ends so the settled preview always matches export.
-        let quality: SpatialToneQuality = activeSliderGesturePhotoID != nil ? .interactive : .final
+        // The preview always renders at `.interactive` spatial quality
+        // (Shadows discretization 5 instead of 10, 375px statistics): it is
+        // visually indistinguishable from `.final` (mean ΔE00 0.03〜0.08) and
+        // about twice as fast, and a settled-state `.final` re-render after
+        // each drag was perceived as lag. Export paths (`exportFromPanel` →
+        // `RenderEngine.exportJPEG`) keep `.final`.
+        let quality: SpatialToneQuality = .interactive
         hasPreviewInFlight = true
         os_signpost(
             .event,
