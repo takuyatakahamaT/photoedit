@@ -49,6 +49,7 @@ Finderから`open-photo.command`をダブルクリックします。ターミナ
 - RAW とカラー編集途中は extended-linear sRGB を保持し、preview / 指定サイズ時は edge-clamped Lanczos で縮小した後に terminal sRGB transform を適用
 - 原寸 sRGB JPEG を書き出し。原本・既存ファイルは上書きしない
 - `photobench-render` CLI で GUI 無しに書き出し（計測ゲート用）。`PHOTO_BENCH_PREVIEW_ROUTE=metal-direct` の実験的な直接表示経路は従来どおり
+- `photobench-engine`: NIHO Desktop の写真編集タブが使うときだけ起動する現像エンジン（標準入出力の JSON 行＋バイナリ、[docs/ENGINE_PROTOCOL.md](docs/ENGINE_PROTOCOL.md)）。`scripts/package-engine.sh` が LibRaw などの dylib を同梱した `dist/engine/` を作り、NIHO Desktop のビルドが取り込む（niho-coliving/niho-app#16314）
 
 ## 画質校正の現在地（2026-07-24 時点の履歴）
 
