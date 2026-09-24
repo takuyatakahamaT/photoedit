@@ -22,7 +22,8 @@ let package = Package(
         ),
         .executable(name: "PhotoBenchBenchmark", targets: ["PhotoBenchBenchmark"]),
         .executable(name: "photobench-render", targets: ["PhotoBenchRender"]),
-        .executable(name: "photobench-preview-bench", targets: ["PhotoBenchPreviewBench"])
+        .executable(name: "photobench-preview-bench", targets: ["PhotoBenchPreviewBench"]),
+        .executable(name: "photobench-engine", targets: ["PhotoBenchEngine"])
     ],
     targets: [
         .systemLibrary(
@@ -81,6 +82,14 @@ let package = Package(
             dependencies: ["PhotoCore"],
             path: "Sources/PhotoBenchPreviewBench"
         ),
+        // `photobench-engine --stdio`: PhotoCore as a rendering engine that NIHO
+        // Desktop runs as a child process (docs/ENGINE_PROTOCOL.md). Packaged
+        // with its Homebrew dylibs by scripts/package-engine.sh.
+        .executableTarget(
+            name: "PhotoBenchEngine",
+            dependencies: ["PhotoCore"],
+            path: "Sources/PhotoBenchEngine"
+        ),
         .testTarget(
             name: "PhotoCoreTests",
             dependencies: ["PhotoCore", "CLibRawShim"],
@@ -95,6 +104,11 @@ let package = Package(
             name: "PhotoBenchCalibrationSupportTests",
             dependencies: ["PhotoBenchCalibrationSupport", "PhotoCore"],
             path: "Tests/PhotoBenchCalibrationSupportTests"
+        ),
+        .testTarget(
+            name: "PhotoBenchEngineTests",
+            dependencies: ["PhotoBenchEngine", "PhotoCore"],
+            path: "Tests/PhotoBenchEngineTests"
         )
     ]
 )
