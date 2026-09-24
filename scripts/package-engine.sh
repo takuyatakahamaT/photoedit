@@ -39,7 +39,9 @@ if $DIRTY; then
 fi
 VERSION="$SEMVER+$BUILD_METADATA"
 
-# 1. release ビルド。commit は __TEXT,__pb_engine_ver に焼き込む（EngineVersion.swift）。
+# 1. release ビルド。NIHO Desktop.app の Contents/MacOS に置かれても Dock に2つ目のアイコンを出さないよう、
+#    LSBackgroundOnly の Info.plist を __TEXT,__info_plist に埋め込む（scripts/engine-Info.plist）。
+#    commit は __TEXT,__pb_engine_ver に焼き込む（EngineVersion.swift）。
 #    リンクだけをやり直させるため、前の実行ファイルを消してからビルドする。
 /bin/mkdir -p "$WORK"
 VERSION_FILE="$WORK/version-$BUILD_METADATA.txt"
@@ -48,6 +50,7 @@ BIN_DIR="$("$SWIFT" build -c release --product "$PRODUCT" --package-path "$ROOT"
 /bin/rm -f "$BIN_DIR/$PRODUCT"
 "$SWIFT" build -c release --product "$PRODUCT" --jobs "$JOBS" --package-path "$ROOT" \
     -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __pb_engine_ver -Xlinker "$VERSION_FILE" \
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$ROOT/scripts/engine-Info.plist" \
     -Xlinker -headerpad_max_install_names
 
 # 2. 配置、dylib の収集と install name の書き換え、ad-hoc 署名、ライセンス、engine.json。
