@@ -61,6 +61,16 @@ RAW 以外と `profile: "fallback"` の RAW には `relativeTemperature` / `rela
 - result: `{"engineVersion": "0.1.0+<git sha>", "protocolVersion": 1}`
   `<git sha>` は 12 桁。未コミットの変更を含むビルドは `+<git sha>.dirty`、`scripts/package-engine.sh` を通さない開発ビルドは `+dev`
 
+### `profileStatus`
+この Mac の Adobe のカメラプロファイルがどこにあるか。写真を開かずに、ファイルがあるかだけを見る（中身は読まない）。NIHO Desktop の写真編集の「設定」が、基準現像が Adobe か macOS かを出すのに使う（NIHO #16592）。
+- params: なし
+- result: `{"available": true, "lookSource": "sharedCameraRaw" | null, "dcpSources": ["sharedCameraRaw", "lightroom"]}`
+  - `lookSource`: `open` が使う Adobe Color の出どころ。`dcpSources`: カメラの DCP が 1 つ以上ある出どころ（探す順）。`available` は両方あるとき true
+  - 出どころ: `userCameraRaw`（`~/Library/Application Support/Adobe/CameraRaw`）/ `sharedCameraRaw`（`/Library/Application Support/Adobe/CameraRaw`。Adobe DNG Converter と Camera Raw が入れる）/ `lightroom`（Lightroom のアプリの中）/ `lightroomClassic`（Lightroom Classic のアプリの中）
+  - `available` が true でも、入っている版より新しいカメラの RAW は `profile: "fallback"` で開く（その機種の DCP が無い）
+  - 結果はキャッシュしない。エンジンの動いている間に DNG Converter を入れても、次の `profileStatus` と `open` から見える
+  - 外付けのディスクにある Lightroom を見に行くことがあるので、読み込みの行とも `render` とも別の列で答える
+
 ### `builtinPresets`
 エンジンに同梱した NIHO のプリセット（bluesky2 / colorful / night / pastel）。
 - params: なし

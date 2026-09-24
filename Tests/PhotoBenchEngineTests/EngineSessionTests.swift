@@ -34,6 +34,32 @@ struct EngineSessionTests {
         #expect(list.allSatisfy { ($0["xmp"] as? String)?.hasPrefix("<x:xmpmeta") == true })
     }
 
+    @Test func profileStatusReportsWhereTheAdobeProfilesComeFrom() throws {
+        let harness = SessionHarness(profileStatus: .init(
+            lookSource: .sharedCameraRaw, dcpSources: [.sharedCameraRaw, .lightroom]
+        ))
+        let found = try harness.call("profileStatus")
+        #expect(found.ok)
+        #expect(found.result?["available"] as? Bool == true)
+        #expect(found.result?["lookSource"] as? String == "sharedCameraRaw")
+        #expect(found.result?["dcpSources"] as? [String] == ["sharedCameraRaw", "lightroom"])
+
+        let missing = try SessionHarness().call("profileStatus")
+        #expect(missing.ok)
+        #expect(missing.result?["available"] as? Bool == false)
+        #expect(missing.result?["lookSource"] is NSNull)
+        #expect(missing.result?["dcpSources"] as? [String] == [])
+    }
+
+    @Test func profileStatusDoesNotWaitForTheWorkQueue() throws {
+        let harness = SessionHarness(profileStatus: .init(lookSource: .lightroom, dcpSources: [.lightroom]))
+        let gate = harness.holdQueue()
+        defer { gate.signal() }
+        let response = try harness.call("profileStatus")
+        #expect(response.ok)
+        #expect(response.result?["available"] as? Bool == true)
+    }
+
     @Test func openReportsThePhotoAndNeutralSettings() throws {
         let harness = SessionHarness()
         let response = try harness.call("open", ["path": "/photos/P1.RW2"])

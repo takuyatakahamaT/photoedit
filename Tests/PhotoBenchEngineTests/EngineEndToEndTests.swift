@@ -26,6 +26,12 @@ struct EngineEndToEndTests {
         #expect(hello.result?["protocolVersion"] as? Int == 1)
         #expect((hello.result?["engineVersion"] as? String)?.hasPrefix("0.1.0+") == true)
 
+        // Which Adobe install is found depends on the Mac; only the shape is fixed.
+        let status = try engine.call(100, "profileStatus")
+        #expect(status.ok, "\(engine.log)")
+        #expect(status.result?["available"] is Bool)
+        #expect(status.result?["dcpSources"] is [String])
+
         // A line that is not JSON is answered with id 0; the engine goes on.
         try engine.sendRaw("this is not json")
         let invalid = try engine.readResponse()

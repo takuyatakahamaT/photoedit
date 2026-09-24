@@ -338,6 +338,44 @@ struct AdobeProfileTests {
         #expect(AdobeProfileLocator().locateAdobeColorLookXMP() != nil)
     }
 
+    @Test func statusReportsTheInstallsFromFileExistenceOnly() throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent("adobe-status-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: base) }
+        // The shared Camera Raw folder, as Adobe DNG Converter installs it. The
+        // DCP is not a real profile: status() must not parse it.
+        let shared = base.appendingPathComponent("shared")
+        let sharedDCP = shared.appendingPathComponent("CameraProfiles/Adobe Standard/Cam Adobe Standard.dcp")
+        let sharedLook = shared.appendingPathComponent("Settings/Adobe/Profiles/Adobe Raw/Adobe Color.xmp")
+        for file in [sharedDCP, sharedLook] {
+            try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("x".utf8).write(to: file)
+        }
+        // An app root searched non-recursively: a DCP one folder down does not count.
+        let app = base.appendingPathComponent("app")
+        let nestedDCP = app.appendingPathComponent("CameraProfiles/Adobe Standard/Nested/Cam.dcp")
+        try fm.createDirectory(at: nestedDCP.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: nestedDCP)
+
+        let empty = AdobeProfileLocator.InstallRoot(baseDirectory: base.appendingPathComponent("none"), source: .userCameraRaw)
+        let sharedRoot = AdobeProfileLocator.InstallRoot(baseDirectory: shared, source: .sharedCameraRaw)
+        let appRoot = AdobeProfileLocator.InstallRoot(
+            baseDirectory: app, dcpSubdirectory: "CameraProfiles/Adobe Standard", recursive: false, source: .lightroom
+        )
+
+        let status = AdobeProfileLocator(searchRoots: [empty, sharedRoot, appRoot]).status()
+        #expect(status == .init(lookSource: .sharedCameraRaw, dcpSources: [.sharedCameraRaw]))
+        #expect(status.isAvailable)
+
+        // Both halves are needed.
+        try fm.removeItem(at: sharedLook)
+        let withoutLook = AdobeProfileLocator(searchRoots: [empty, sharedRoot, appRoot]).status()
+        #expect(withoutLook == .init(lookSource: nil, dcpSources: [.sharedCameraRaw]))
+        #expect(!withoutLook.isAvailable)
+        #expect(!AdobeProfileLocator(searchRoots: [empty, appRoot]).status().isAvailable)
+        #expect(AdobeProfileLocator(searchRoots: []).status() == .init(lookSource: nil, dcpSources: []))
+    }
+
     // MARK: - Property tests (no external asset needed)
 
     @Test func identityHueSatMapPreservesInputIn2Point5DTable() {

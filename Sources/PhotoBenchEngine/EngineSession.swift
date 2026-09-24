@@ -53,7 +53,8 @@ final class RenderTicket: @unchecked Sendable {
 ///
 /// `handle(line:)` is called for each request line in order, from one
 /// thread. Cheap requests (`hello`, `builtinPresets`, `presetSettings`,
-/// `close`) answer on that thread; `open`, `render` and `export` run one at
+/// `close`) answer on that thread; `profileStatus` looks at the disk on a
+/// queue of its own; `open`, `render` and `export` run one at
 /// a time on a serial work queue, so PhotoCore's `RenderEngine` is used
 /// serially, as by the Photo Bench app's `RenderCoordinator` actor, and at
 /// most one full-resolution decode is in memory.
@@ -74,6 +75,8 @@ final class EngineSession: @unchecked Sendable {
     private let sink: ResponseSink
     private let terminate: @Sendable (Int32) -> Void
     private let workQueue: DispatchQueue
+    private let profileStatus: @Sendable () -> AdobeProfileLocator.Status
+    private let statusQueue = DispatchQueue(label: "life.niho.photobench.engine.status", qos: .utility)
     private let lock = NSLock()
     private var photos: [String: PhotoEntry] = [:]
     private var useClock: UInt64 = 0
@@ -87,12 +90,14 @@ final class EngineSession: @unchecked Sendable {
             label: "life.niho.photobench.engine.work",
             qos: .userInitiated,
             autoreleaseFrequency: .workItem
-        )
+        ),
+        profileStatus: @escaping @Sendable () -> AdobeProfileLocator.Status = { AdobeProfileLocator().status() }
     ) {
         self.backend = backend
         self.sink = sink
         self.terminate = terminate
         self.workQueue = workQueue
+        self.profileStatus = profileStatus
     }
 
     // MARK: - Input
@@ -135,6 +140,14 @@ final class EngineSession: @unchecked Sendable {
                         protocolVersion: EngineVersion.protocolVersion
                     )
                 ))
+            case .profileStatus:
+                // Lightroom may live on a slow external disk, so the checks
+                // wait neither the input thread nor a render.
+                let requestID = request.id
+                statusQueue.async { [self] in
+                    guard !shuttingDown else { return }
+                    send(.success(id: requestID, result: ProfileStatusResult(profileStatus())))
+                }
             case .builtinPresets:
                 send(.success(id: request.id, result: BuiltinPresets.result))
             case .presetSettings:

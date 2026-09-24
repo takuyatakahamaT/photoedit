@@ -93,6 +93,15 @@ struct EngineProtocolTests {
 
     // MARK: - Responses
 
+    @Test func profileStatusWritesAMissingLookSourceAsNull() throws {
+        let response = try ParsedResponse(.success(
+            id: 3, result: ProfileStatusResult(.init(lookSource: nil, dcpSources: [.lightroom]))
+        ))
+        #expect(response.result?["available"] as? Bool == false)
+        #expect(response.result?["lookSource"] is NSNull)
+        #expect(response.result?["dcpSources"] as? [String] == ["lightroom"])
+    }
+
     @Test func successAndFailureHeadersFollowTheProtocol() throws {
         let hello = try ParsedResponse(.success(id: 1, result: HelloResult(engineVersion: "0.1.0+dev", protocolVersion: 1)))
         #expect(hello.id == 1)

@@ -29,18 +29,57 @@ public struct AdobeProfileLocator: Sendable {
         public var recursive: Bool
         /// Where under `baseDirectory` "Adobe Color.xmp" lives.
         public var lookXMPRelativePath: String
+        /// Which Adobe install this root is, for `status()`.
+        public var source: Source
 
         public init(
             baseDirectory: URL,
             dcpSubdirectory: String = "CameraProfiles",
             recursive: Bool = true,
-            lookXMPRelativePath: String = "Settings/Adobe/Profiles/Adobe Raw/Adobe Color.xmp"
+            lookXMPRelativePath: String = "Settings/Adobe/Profiles/Adobe Raw/Adobe Color.xmp",
+            source: Source = .custom
         ) {
             self.baseDirectory = baseDirectory
             self.dcpSubdirectory = dcpSubdirectory
             self.recursive = recursive
             self.lookXMPRelativePath = lookXMPRelativePath
+            self.source = source
         }
+    }
+
+    /// The Adobe install a search root belongs to.
+    public enum Source: String, Sendable, Equatable, CaseIterable {
+        /// `~/Library/Application Support/Adobe/CameraRaw`.
+        case userCameraRaw
+        /// `/Library/Application Support/Adobe/CameraRaw`: Adobe DNG Converter
+        /// (its `com.adobe.CameraRawProfiles` package) and Camera Raw install here.
+        case sharedCameraRaw
+        /// Inside the Lightroom (cloud) app.
+        case lightroom
+        /// Inside the Lightroom Classic app.
+        case lightroomClassic
+        /// A root passed to `init(searchRoots:)` (tests).
+        case custom
+    }
+
+    /// What `status()` found, without opening a photo.
+    public struct Status: Sendable, Equatable {
+        /// The install whose "Adobe Color.xmp" `locateAdobeColorLookXMP()`
+        /// uses; `nil` when there is none.
+        public var lookSource: Source?
+        /// Installs with at least one `.dcp` where `locateDCP` searches, in
+        /// search order.
+        public var dcpSources: [Source]
+
+        public init(lookSource: Source?, dcpSources: [Source]) {
+            self.lookSource = lookSource
+            self.dcpSources = dcpSources
+        }
+
+        /// Both halves exist, so a RAW whose camera Adobe supports opens with
+        /// the Adobe base rendering. A camera newer than the install still
+        /// falls back (`locateDCP` finds no matching model).
+        public var isAvailable: Bool { lookSource != nil && !dcpSources.isEmpty }
     }
 
     public struct LocatedDCP: Sendable {
@@ -58,24 +97,73 @@ public struct AdobeProfileLocator: Sendable {
         var roots: [InstallRoot] = []
         let home = FileManager.default.homeDirectoryForCurrentUser
         roots.append(InstallRoot(
-            baseDirectory: home.appendingPathComponent("Library/Application Support/Adobe/CameraRaw")
+            baseDirectory: home.appendingPathComponent("Library/Application Support/Adobe/CameraRaw"),
+            source: .userCameraRaw
         ))
         roots.append(InstallRoot(
-            baseDirectory: URL(fileURLWithPath: "/Library/Application Support/Adobe/CameraRaw")
+            baseDirectory: URL(fileURLWithPath: "/Library/Application Support/Adobe/CameraRaw"),
+            source: .sharedCameraRaw
         ))
         roots.append(InstallRoot(
             baseDirectory: URL(
                 fileURLWithPath: "/Applications/Adobe Lightroom CC/Adobe Lightroom.app/Contents/Resources"
             ),
             dcpSubdirectory: "CameraProfiles/Adobe Standard",
-            recursive: false
+            recursive: false,
+            source: .lightroom
         ))
         roots.append(InstallRoot(
             baseDirectory: URL(
                 fileURLWithPath: "/Applications/Adobe Lightroom Classic/Adobe Lightroom Classic.app/Contents/Resources"
-            )
+            ),
+            source: .lightroomClassic
         ))
         return roots
+    }
+
+    /// Which installs could supply the assets, from file existence only (no
+    /// `.dcp` is parsed and no camera model is needed), for a settings screen
+    /// to say where the base rendering comes from. Nothing is cached, here or
+    /// in `locateDCP` / `locateAdobeColorLookXMP()`, so an install made while
+    /// the engine runs shows up at once.
+    public func status() -> Status {
+        var lookSource: Source?
+        var dcpSources: [Source] = []
+        for root in searchRoots {
+            let look = root.baseDirectory.appendingPathComponent(root.lookXMPRelativePath)
+            if lookSource == nil, FileManager.default.fileExists(atPath: look.path) {
+                lookSource = root.source
+            }
+            let dcpDirectory = root.baseDirectory.appendingPathComponent(root.dcpSubdirectory)
+            if !dcpSources.contains(root.source),
+               Self.containsDCPFile(under: dcpDirectory, recursive: root.recursive) {
+                dcpSources.append(root.source)
+            }
+        }
+        return Status(lookSource: lookSource, dcpSources: dcpSources)
+    }
+
+    /// Stops at the first `.dcp`, so a full install (about 1,500 of them) is
+    /// not walked.
+    private static func containsDCPFile(under directory: URL, recursive: Bool) -> Bool {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: directory.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return false
+        }
+        if recursive {
+            guard let enumerator = fm.enumerator(
+                at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+            ) else { return false }
+            for case let url as URL in enumerator where url.pathExtension.caseInsensitiveCompare("dcp") == .orderedSame {
+                return true
+            }
+            return false
+        }
+        guard let contents = try? fm.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else { return false }
+        return contents.contains { $0.pathExtension.caseInsensitiveCompare("dcp") == .orderedSame }
     }
 
     /// Finds a `.dcp` whose `UniqueCameraModel` matches `uniqueCameraModel`

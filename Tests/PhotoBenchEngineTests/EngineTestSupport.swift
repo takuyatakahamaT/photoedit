@@ -220,11 +220,13 @@ final class FakeBackend: EngineBackend, @unchecked Sendable {
 }
 
 /// A session over `FakeBackend`, with its own work queue so a test can
-/// hold the queue, and a recorded `terminate`.
+/// hold the queue, a recorded `terminate`, and a fixed `profileStatus` (no
+/// Adobe install unless the test gives one).
 final class SessionHarness: @unchecked Sendable {
     let backend = FakeBackend()
     let sink = CollectingSink()
     let queue = DispatchQueue(label: "PhotoBenchEngineTests.work")
+    let profileStatus: AdobeProfileLocator.Status
     private let lock = NSLock()
     private var terminationStatus: Int32?
     private var nextID = 1_000
@@ -232,8 +234,13 @@ final class SessionHarness: @unchecked Sendable {
         backend: backend,
         sink: sink,
         terminate: { [weak self] status in self?.recordTermination(status) },
-        workQueue: queue
+        workQueue: queue,
+        profileStatus: { [profileStatus] in profileStatus }
     )
+
+    init(profileStatus: AdobeProfileLocator.Status = .init(lookSource: nil, dcpSources: [])) {
+        self.profileStatus = profileStatus
+    }
 
     var terminated: Int32? {
         lock.lock()

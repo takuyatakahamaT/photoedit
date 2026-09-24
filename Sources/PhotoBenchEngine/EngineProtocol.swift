@@ -53,6 +53,7 @@ func describe(_ error: Error) -> String {
 
 enum EngineMethod: String, Sendable, CaseIterable {
     case hello
+    case profileStatus
     case builtinPresets
     case presetSettings
     case open
@@ -191,6 +192,36 @@ struct EmptyResult: Encodable, Sendable {}
 struct HelloResult: Encodable, Sendable {
     let engineVersion: String
     let protocolVersion: Int
+}
+
+/// Where this Mac's Adobe camera profiles come from
+/// (`AdobeProfileLocator.status()`), without opening a photo.
+struct ProfileStatusResult: Encodable, Sendable {
+    let available: Bool
+    let lookSource: String?
+    let dcpSources: [String]
+
+    init(_ status: AdobeProfileLocator.Status) {
+        available = status.isAvailable
+        lookSource = status.lookSource?.rawValue
+        dcpSources = status.dcpSources.map(\.rawValue)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case available, lookSource, dcpSources
+    }
+
+    /// `lookSource` is written as explicit `null` (documented as `... | null`).
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(available, forKey: .available)
+        if let lookSource {
+            try container.encode(lookSource, forKey: .lookSource)
+        } else {
+            try container.encodeNil(forKey: .lookSource)
+        }
+        try container.encode(dcpSources, forKey: .dcpSources)
+    }
 }
 
 struct BuiltinPresetsResult: Encodable, Sendable {
