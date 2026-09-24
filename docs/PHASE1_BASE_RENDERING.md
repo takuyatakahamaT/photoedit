@@ -60,6 +60,8 @@ HueSatMap／LookTable／RGBTone は画素ごとの色変換なので、CPUで 64
 3. `/Applications/Adobe Lightroom CC/Adobe Lightroom.app/Contents/Resources/CameraProfiles/Adobe Standard/*.dcp`
 4. `/Applications/Adobe Lightroom Classic/Adobe Lightroom Classic.app/Contents/Resources/CameraProfiles/**`（存在すれば）
 
+確認済み（2026-09-25）: 3 は Lightroom CC の実機。2 は Adobe DNG Converter 18.6 のインストーラー（`com.adobe.CameraRawProfiles`、root 権限で `/Library/Application Support/Adobe/CameraRaw` に入れる）の目録で、`CameraProfiles/Adobe Standard/*.dcp` と `Settings/Adobe/Profiles/Adobe Raw/Adobe Color.xmp` の両方が入り、Lightroom のものとバイト単位で同じ（DC-S5 の DCP と Adobe Color を照合）。つまり Lightroom の無い Mac でも、DNG Converter を入れれば同じ基準現像になる。1・4 は推測のまま。
+
 一致条件は DCP の `UniqueCameraModel`（例 `Panasonic DC-S5`）と LibRaw の make+model の大小文字無視一致。`ProfileName == "Adobe Standard"` を優先。Adobe Color は各インストール先の `Settings/Adobe/Profiles/Adobe Raw/Adobe Color.xmp`。**資産はリポジトリへコピーしない。** 見つからない場合は `nil` を返し、呼び出し側がCore Image経路へフォールバックする。
 
 ### ファイル構成（新規）

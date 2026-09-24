@@ -11,15 +11,14 @@ public struct AdobeProfileLocator: Sendable {
     /// One install location to search, pairing a `.dcp` search location
     /// with that same installation's "Adobe Color.xmp" path.
     ///
-    /// JUDGMENT CALL: only root 3 (Lightroom CC) has been directly verified
-    /// to exist on a development machine; roots 1/2/4's exact
-    /// `Settings/Adobe/Profiles/Adobe Raw/Adobe Color.xmp` sibling layout
-    /// under their respective bases is inferred by analogy to root 3's
-    /// (confirmed) `CameraProfiles` / `Settings` sibling structure under
-    /// the same `Resources` directory, not independently confirmed. If a
-    /// future machine's Camera Raw install differs, only
-    /// `defaultSearchRoots()` needs adjusting -- callers only depend on the
-    /// injectable `init(searchRoots:)`.
+    /// Verified layouts: root 3 (Lightroom CC) on a development machine, and
+    /// root 2 from the Adobe DNG Converter 18.6 installer (2026-09-25): its
+    /// `com.adobe.CameraRawProfiles` package installs into root 2 both
+    /// `CameraProfiles/Adobe Standard/*.dcp` and
+    /// `Settings/Adobe/Profiles/Adobe Raw/Adobe Color.xmp`, byte-identical to
+    /// Lightroom's copies. Roots 1/4 are still inferred by analogy. If a
+    /// future install differs, only `defaultSearchRoots()` needs adjusting --
+    /// callers only depend on the injectable `init(searchRoots:)`.
     public struct InstallRoot: Sendable, Equatable {
         public var baseDirectory: URL
         /// Where under `baseDirectory` to look for `.dcp` files.
