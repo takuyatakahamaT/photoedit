@@ -1,4 +1,14 @@
-# Photo Bench（仮称）
+# Photo Bench（旧 NIHO camera）
+
+## 保守方針（2026-10-16）
+
+色・トーンの現像エンジンと写真編集アプリの開発は、NIHO monorepo の [`packages/develop-engine`](https://github.com/niho-coliving/niho-app/tree/main/packages/develop-engine) と [`apps/camera`](https://github.com/niho-coliving/niho-app/tree/main/apps/camera) へ移りました。新しい NIHO camera は、NIHO アプリ・NIHO Desktop と同じ現像エンジンと編集面を使います。
+
+**このリポジトリは `niho-camera-cutout`（Apple Vision による端末内の背景除去）以外を凍結します。** 旧アプリ、色・トーンのエンジン、校正、`photobench-engine` の新規開発・配布は再開しません。`PhotoDecoder` の点カーブ variant の既定（`.b`）も変更しません。背景除去の NIHO camera への同梱元は monorepo の [`tools/niho-camera-cutout`](https://github.com/niho-coliving/niho-app/tree/main/packages/develop-engine/tools/niho-camera-cutout) です。
+
+以下は凍結時点の実装・検証・開発手順の記録です。新しい色・トーンの修正は monorepo に行い、2つのエンジンへ別々に追加しないでください。移行の管理: [NIHO camera C6 #18394](https://github.com/niho-coliving/niho-app/issues/18394)。
+
+---
 
 自分専用のmacOS向けローカル写真現像・整理アプリです。目的は、クラウドやAI機能を必要としないオーナーがLightroomの有料契約を終了し、ローカルだけで同等の実用画質・操作感・非破壊編集へ移行できることです。現在は**Phase 0の証跡基盤、P1 preview parity v3評価、原寸decode graphのMetal直接表示プロトタイプまで実装した段階**です。縮小RAW decode候補は品質未達で不採用、Metal直接表示は実画面への提示完了を確認できていないため起動時に明示した場合のみ有効で、既定は従来表示です。JPEGとLumix RW2の読込み、8つの基本調整、XMPプリセット解析、HDR値を保持したカラー処理、原寸JPEG書き出し、Lightroom基準TIFFとの比較までは動きますが、**Lightroomを解約できる完成度にはまだ達していません**。
 
